@@ -3,13 +3,25 @@ import path from 'path';
 import matter from 'gray-matter';
 import { Milestone } from './data';
 
-const contentDirectory = path.join(process.cwd(), 'content');
+// Extended interface for Research reports which might have tags
+export interface ContentItem extends Milestone {
+    tags?: string[];
+    slug: string;
+}
 
-export function getAllMilestones(): Milestone[] {
+export function getContent(subdir: string): ContentItem[] {
+    const contentDirectory = path.join(process.cwd(), 'content', subdir);
+
+    if (!fs.existsSync(contentDirectory)) {
+        return [];
+    }
+
     const fileNames = fs.readdirSync(contentDirectory);
-    const allMilestonesData = fileNames.map((fileName) => {
-        // Remove ".md" from file name to get id (if needed)
-        // const id = fileName.replace(/\.md$/, '');
+    const allContentData = fileNames.map((fileName) => {
+        // Skip if it is not a markdown file
+        if (!fileName.endsWith('.md')) {
+            return null;
+        }
 
         // Read markdown file as string
         const fullPath = path.join(contentDirectory, fileName);
@@ -17,30 +29,45 @@ export function getAllMilestones(): Milestone[] {
 
         // Use gray-matter to parse the post metadata section
         const { data, content } = matter(fileContents);
+        const slug = fileName.replace(/\.md$/, '');
 
-        // Combine the data with the id and contentHtml
-        // Assuming the frontmatter has date, icon, description
         return {
+            slug,
             date: data.date,
-            title: data.title || '', // Fallback or empty if not needed
-            description: data.description, // Short description/Summary
-            longDescription: content.trim(), // The markdown content becomes longDescription
+            title: data.title || '',
+            description: data.description,
+            longDescription: content.trim(),
             icon: data.icon,
-            // optional fields that are removed or optional now
-            // category: data.category,
-            // status: data.status,
-        } as Milestone;
-    });
+            tags: data.tags,
+        } as ContentItem;
+    }).filter((item): item is ContentItem => item !== null);
 
-    // Sort milestones by date (descending for display, but wait, the timeline component reverses it? 
-    // The component said: [...milestones].reverse().map(...)
-    // So if we want newest first, we should provide them sorted, or rely on the component.
-    // Let's return them strictly sorted by date ascending, so the existing component logic (reverse) works as expected.
-    return allMilestonesData.sort((a, b) => {
+    // Sort by date descending (newest first)
+    return allContentData.sort((a, b) => {
         if (a.date < b.date) {
-            return -1;
-        } else {
             return 1;
+        } else {
+            return -1;
         }
     });
+}
+
+export function getPostBySlug(subdir: string, slug: string): ContentItem | null {
+    try {
+        const fullPath = path.join(process.cwd(), 'content', subdir, `${slug}.md`);
+        const fileContents = fs.readFileSync(fullPath, 'utf8');
+        const { data, content } = matter(fileContents);
+
+        return {
+            slug,
+            date: data.date,
+            title: data.title || '',
+            description: data.description,
+            longDescription: content.trim(),
+            icon: data.icon,
+            tags: data.tags,
+        } as ContentItem;
+    } catch (e) {
+        return null;
+    }
 }

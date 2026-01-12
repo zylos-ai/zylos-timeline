@@ -1,8 +1,9 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowDown, Cpu, Sparkles, Twitter } from "lucide-react";
+import { ArrowDown, Cpu, Sparkles, Twitter, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 
 export function Hero() {
     return (
@@ -57,10 +58,12 @@ export function Hero() {
                     transition={{ delay: 0.6 }}
                     className="flex flex-col md:flex-row gap-4 justify-center items-center"
                 >
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground bg-white/5 px-4 py-2 rounded-lg border border-white/10 backdrop-blur-sm">
-                        <Cpu className="w-4 h-4 text-primary" />
-                        <span>Powered by Claude</span>
-                    </div>
+                    <Link href="/research">
+                        <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
+                            <BookOpen className="w-4 h-4" />
+                            Research
+                        </Button>
+                    </Link>
 
                     <a href="https://twitter.com/zzh_wxj" target="_blank" rel="noopener noreferrer">
                         <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">

@@ -41,20 +41,42 @@ This project showcases Zylos's growth from basic scripts to an autonomous agent.
 - `components/hero.tsx`: The landing section with the Zylos title and social links.
 - `components/timeline/`: Contains the timeline logic and visualization components.
 
-## 📝 How to Add New Entries
+## 📝 Content Management Guide
 
-The timeline is powered by Markdown files. To add a new daily log or milestone:
+The website's content is driven entirely by Markdown files in the `content/` directory. No code changes are needed to add new entries.
 
-1.  Create a new file in the `content/` folder. Use the date as the filename (e.g., `2026-09-01.md`).
-2.  Add the required **Frontmatter** at the top of the file:
-    ```markdown
-    ---
-    date: '2026-09-01'
-    icon: 'Brain'  # Options: Cpu, Calendar, Globe, Share2, Brain, Palette, Box
-    description: 'A short plain text summary appearing on the timeline card (No Markdown here).'
-    ---
-    ```
-3.  Write your detailed content below the `---`. This supports **Rich Markdown** (headers, lists, code blocks, etc.) and will be shown when the card is expanded.
+### 1. Timeline (Daily Logs)
+**Location**: `content/timeline/*.md`
+
+Used for daily growth updates, milestones, and system changes.
+```markdown
+---
+date: '2026-09-01'
+icon: 'Brain'  # Options: Cpu, Calendar, Globe, Share2, Brain, Palette, Box
+description: 'Plain text summary for the timeline card.'
+---
+# Detailed Content
+Write your daily log here using **Markdown**.
+```
+
+### 2. Research Reports (Insights)
+**Location**: `content/research/*.md`
+
+Used for long-form analysis, findings, and technical reports. These appear in the dedicated Research section with search and filtering.
+
+```markdown
+---
+date: '2026-09-02'
+title: 'Analysis of Quantum Encryption'
+description: 'Short summary for the search list.'
+tags: ['Security', 'Quantum', 'Cryptography']  <-- Auto-generating filters
+---
+# Full Report
+Detailed analysis goes here...
+```
+
+**Automatic Tagging System**:
+The filters on the Research page are **dynamic**. Simply add a new string to the `tags` array in any file (e.g., `'Biology'`), and a "Biology" filter button will automatically appear on the website.
 
 ## 🎨 Design System
 

@@ -1,9 +1,12 @@
 import { Hero } from "@/components/hero";
 import { Timeline } from "@/components/timeline/timeline";
-import { getAllMilestones } from "@/lib/posts";
+import { getContent } from "@/lib/posts";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { BookOpen } from "lucide-react";
 
 export default async function Home() {
-  const milestones = getAllMilestones();
+  const milestones = getContent('timeline');
   return (
     <main className="min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary/20">
       <Hero />
