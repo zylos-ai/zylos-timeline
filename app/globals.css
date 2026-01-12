@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -49,13 +50,13 @@
 :root {
   /* Futuristic Dark Theme - Default */
   --radius: 0.5rem;
-  
+
   /* Deep void background with a hint of blue */
   --background: oklch(0.08 0.02 240);
   --foreground: oklch(0.98 0 0);
 
   /* Glassy Card Styles */
-  --card: oklch(0.12 0.03 240); 
+  --card: oklch(0.12 0.03 240);
   --card-foreground: oklch(0.98 0 0);
 
   --popover: oklch(0.1 0.02 240);
@@ -82,11 +83,16 @@
   --input: oklch(0.25 0.02 240);
   --ring: oklch(0.7 0.15 220);
 
-  --chart-1: oklch(0.7 0.15 220); /* Cyan */
-  --chart-2: oklch(0.6 0.2 300);  /* Magenta */
-  --chart-3: oklch(0.65 0.2 260); /* Blue-Purple */
-  --chart-4: oklch(0.75 0.15 180); /* Teal */
-  --chart-5: oklch(0.8 0.1 140);  /* Greenish */
+  --chart-1: oklch(0.7 0.15 220);
+  /* Cyan */
+  --chart-2: oklch(0.6 0.2 300);
+  /* Magenta */
+  --chart-3: oklch(0.65 0.2 260);
+  /* Blue-Purple */
+  --chart-4: oklch(0.75 0.15 180);
+  /* Teal */
+  --chart-5: oklch(0.8 0.1 140);
+  /* Greenish */
 
   --sidebar: oklch(0.1 0.02 240);
   --sidebar-foreground: oklch(0.98 0 0);
@@ -102,6 +108,7 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground selection:bg-primary/20 selection:text-primary;
     font-feature-settings: "rlig" 1, "calt" 1;

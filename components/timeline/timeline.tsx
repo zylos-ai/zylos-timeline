@@ -2,11 +2,15 @@
 
 import React from 'react';
 import { TimelineItem } from './timeline-item';
-import { milestones } from '@/lib/data';
+import { Milestone } from '@/lib/data';
 import { motion, useScroll, useTransform } from 'framer-motion';
 import { useRef } from 'react';
 
-export function Timeline() {
+interface TimelineProps {
+    milestones: Milestone[];
+}
+
+export function Timeline({ milestones }: TimelineProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const { scrollYProgress } = useScroll({
         target: containerRef,

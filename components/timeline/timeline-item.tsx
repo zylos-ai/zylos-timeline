@@ -7,6 +7,8 @@ import { Calendar, Cpu, Globe, Share2, Brain, Palette, Box, ChevronDown, Circle 
 import { cn } from '@/lib/utils';
 
 
+import ReactMarkdown from 'react-markdown';
+
 const icons = {
     Calendar,
     Cpu,
@@ -84,7 +86,11 @@ export function TimelineItem({ milestone, index }: TimelineItemProps) {
                                     transition={{ duration: 0.3 }}
                                     className="mt-4 pt-4 border-t border-white/10 text-sm text-foreground/80 leading-relaxed"
                                 >
-                                    {milestone.longDescription}
+                                    <div className="prose prose-invert prose-sm max-w-none prose-p:text-foreground/80 prose-headings:text-foreground/90 prose-a:text-primary prose-a:underline hover:prose-a:text-primary/80 prose-code:text-primary/90 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
+                                        <ReactMarkdown>
+                                            {milestone.longDescription || ''}
+                                        </ReactMarkdown>
+                                    </div>
                                 </motion.div>
                             )}
                         </AnimatePresence>
