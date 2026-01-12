@@ -32,7 +32,7 @@ export function Timeline({ milestones }: TimelineProps) {
             </div>
 
             <div className="flex flex-col gap-12 md:gap-24 relative z-10">
-                {[...milestones].reverse().map((milestone, index) => (
+                {milestones.map((milestone, index) => (
                     <TimelineItem key={milestone.date} milestone={milestone} index={index} />
                 ))}
             </div>

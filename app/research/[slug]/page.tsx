@@ -1,6 +1,7 @@
 import { getPostBySlug } from "@/lib/posts";
 import { notFound } from "next/navigation";
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ArrowLeft, CalendarIcon } from "lucide-react";
@@ -53,15 +54,16 @@ export default async function ResearchDetailPage({ params }: PageProps) {
                         </div>
                     </header>
 
-                    <div className="prose prose-invert prose-lg max-w-none 
+                    <div className="prose prose-invert prose-lg max-w-none
                         prose-p:text-foreground/80 prose-p:leading-relaxed
-                        prose-headings:text-foreground/90 
+                        prose-headings:text-foreground/90
                         prose-a:text-primary prose-a:no-underline hover:prose-a:underline
                         prose-strong:text-foreground prose-strong:font-semibold
                         prose-code:text-primary/90 prose-code:bg-primary/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
                         prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10 prose-pre:p-6 prose-pre:rounded-lg
-                        prose-blockquote:border-l-primary/50 prose-blockquote:bg-white/5 prose-blockquote:py-2 prose-blockquote:pr-4">
-                        <ReactMarkdown>
+                        prose-blockquote:border-l-primary/50 prose-blockquote:bg-white/5 prose-blockquote:py-2 prose-blockquote:pr-4
+                        prose-table:border-collapse prose-th:border prose-th:border-white/10 prose-th:bg-white/5 prose-th:px-3 prose-th:py-2 prose-td:border prose-td:border-white/10 prose-td:px-3 prose-td:py-2">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {report.longDescription || ''}
                         </ReactMarkdown>
                     </div>

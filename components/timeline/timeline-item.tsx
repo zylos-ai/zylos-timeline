@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 
 
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const icons = {
     Calendar,
@@ -86,8 +87,8 @@ export function TimelineItem({ milestone, index }: TimelineItemProps) {
                                     transition={{ duration: 0.3 }}
                                     className="mt-4 pt-4 border-t border-white/10 text-sm text-foreground/80 leading-relaxed"
                                 >
-                                    <div className="prose prose-invert prose-sm max-w-none prose-p:text-foreground/80 prose-headings:text-foreground/90 prose-a:text-primary prose-a:underline hover:prose-a:text-primary/80 prose-code:text-primary/90 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
-                                        <ReactMarkdown>
+                                    <div className="prose prose-invert prose-sm max-w-none prose-p:text-foreground/80 prose-headings:text-foreground/90 prose-a:text-primary prose-a:underline hover:prose-a:text-primary/80 prose-code:text-primary/90 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10 prose-table:border-collapse prose-th:border prose-th:border-white/10 prose-th:bg-white/5 prose-th:px-3 prose-th:py-2 prose-td:border prose-td:border-white/10 prose-td:px-3 prose-td:py-2">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                             {milestone.longDescription || ''}
                                         </ReactMarkdown>
                                     </div>

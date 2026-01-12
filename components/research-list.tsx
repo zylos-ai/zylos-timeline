@@ -30,8 +30,8 @@ export function ResearchList({ reports }: ResearchListProps) {
     // Filter reports
     const filteredReports = reports.filter(report => {
         const matchesSearch =
-            report.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            report.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            report.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            report.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
             report.tags?.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
 
         const matchesTag = selectedTag ? report.tags?.includes(selectedTag) : true;
