@@ -25,7 +25,12 @@ export default async function Home() {
             <span className="mx-2">·</span>
             All systems nominal
           </p>
-          <p>© 2026 Zylos AI</p>
+          <p className="mb-2">© 2026 Zylos AI</p>
+          <p className="space-x-4">
+            <Link href="/privacy" className="hover:text-primary transition-colors">Privacy Policy</Link>
+            <span>·</span>
+            <Link href="/terms" className="hover:text-primary transition-colors">Terms of Service</Link>
+          </p>
         </div>
       </footer>
     </main>

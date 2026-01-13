@@ -15,6 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Zylos | The Evolving Intelligence",
   description: "The growth journey of Zylos, a personal AI assistant evolving from basic scripts to autonomous agent.",
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
