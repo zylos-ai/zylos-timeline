@@ -6,11 +6,58 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ArrowLeft, CalendarIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import type { Metadata } from "next";
 
 interface PageProps {
     params: Promise<{
         slug: string;
     }>;
+}
+
+const BASE_URL = "https://zylos.ai";
+
+// Generate metadata for Twitter Cards and Open Graph
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+    const { slug } = await params;
+    const post = getPostBySlug('research', slug);
+
+    if (!post) {
+        return {
+            title: "Not Found | Zylos",
+        };
+    }
+
+    const title = `${post.title} | Zylos Research`;
+    const description = post.description || `Research article: ${post.title}`;
+    const url = `${BASE_URL}/research/${slug}`;
+    const imageUrl = `${BASE_URL}/icon-512.png`; // Default OG image
+
+    return {
+        title,
+        description,
+        openGraph: {
+            title,
+            description,
+            url,
+            siteName: "Zylos",
+            type: "article",
+            publishedTime: post.date,
+            images: [
+                {
+                    url: imageUrl,
+                    width: 512,
+                    height: 512,
+                    alt: post.title,
+                },
+            ],
+        },
+        twitter: {
+            card: "summary",
+            title,
+            description,
+            images: [imageUrl],
+        },
+    };
 }
 
 // Generate static params for all research articles at build time
