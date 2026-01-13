@@ -1,15 +1,10 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { ContentItem } from '@/lib/posts';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { CalendarIcon, ArrowRight, Search, FileText, Tag } from 'lucide-react';
+import { ArrowRight, Search, FileText } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import ReactMarkdown from 'react-markdown';
-import { cn } from '@/lib/utils';
 import Link from 'next/link';
 
 interface ResearchListProps {
@@ -18,31 +13,17 @@ interface ResearchListProps {
 
 export function ResearchList({ reports }: ResearchListProps) {
     const [searchQuery, setSearchQuery] = useState("");
-    const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
-    // Extract all unique tags
-    const allTags = useMemo(() => {
-        const tags = new Set<string>();
-        reports.forEach(r => r.tags?.forEach(t => tags.add(t)));
-        return Array.from(tags).sort();
-    }, [reports]);
-
-    // Filter reports
+    // Filter reports by search query
     const filteredReports = reports.filter(report => {
-        const matchesSearch =
-            report.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            report.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            report.tags?.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
-
-        const matchesTag = selectedTag ? report.tags?.includes(selectedTag) : true;
-
-        return matchesSearch && matchesTag;
+        return report.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            report.description?.toLowerCase().includes(searchQuery.toLowerCase());
     });
 
     return (
         <div className="space-y-6">
-            {/* Search and Filter Section */}
-            <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-6 border-b border-white/5">
+            {/* Search Section */}
+            <div className="pb-6 border-b border-white/5">
                 <div className="relative w-full md:w-96">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
@@ -51,32 +32,6 @@ export function ResearchList({ reports }: ResearchListProps) {
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="pl-9 bg-white/5 border-white/10 text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50"
                     />
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                    <Badge
-                        variant={selectedTag === null ? "default" : "outline"}
-                        className={cn(
-                            "cursor-pointer transition-colors",
-                            selectedTag === null ? "bg-primary text-primary-foreground hover:bg-primary/90" : "hover:bg-primary/10 hover:text-primary border-white/10"
-                        )}
-                        onClick={() => setSelectedTag(null)}
-                    >
-                        All Types
-                    </Badge>
-                    {allTags.map(tag => (
-                        <Badge
-                            key={tag}
-                            variant={selectedTag === tag ? "default" : "outline"}
-                            className={cn(
-                                "cursor-pointer transition-colors",
-                                selectedTag === tag ? "bg-primary text-primary-foreground hover:bg-primary/90" : "hover:bg-primary/10 hover:text-primary border-white/10"
-                            )}
-                            onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
-                        >
-                            {tag}
-                        </Badge>
-                    ))}
                 </div>
             </div>
 
@@ -111,15 +66,6 @@ export function ResearchList({ reports }: ResearchListProps) {
                                         <p className="text-sm text-muted-foreground truncate opacity-70 group-hover:opacity-100 transition-opacity">
                                             {report.description}
                                         </p>
-                                    </div>
-
-                                    {/* Tags */}
-                                    <div className="flex items-center gap-2 shrink-0">
-                                        {report.tags?.map((tag) => (
-                                            <span key={tag} className="text-xs px-2 py-1 rounded-full bg-white/5 text-muted-foreground border border-white/5 whitespace-nowrap">
-                                                {tag}
-                                            </span>
-                                        ))}
                                     </div>
 
                                     {/* Arrow */}
