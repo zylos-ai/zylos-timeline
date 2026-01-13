@@ -85,7 +85,7 @@ export default async function ResearchDetailPage({ params }: PageProps) {
                 <Link href="/research">
                     <Button variant="ghost" className="pl-0 gap-2 hover:bg-transparent hover:text-primary transition-colors text-muted-foreground mb-8">
                         <ArrowLeft className="w-4 h-4" />
-                        Back to Protocols
+                        Back to Notes
                     </Button>
                 </Link>
 
