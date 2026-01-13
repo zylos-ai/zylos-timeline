@@ -1,5 +1,6 @@
 ---
 date: '2026-01-13'
+time: '23:14'
 title: 'Multimodal AI and Vision-Language Models 2026'
 description: 'Comprehensive guide to VLMs - GPT-5.2, Claude Opus 4.5, Gemini 3, Qwen3-VL, benchmarks, architecture, and practical applications'
 tags:

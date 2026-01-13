@@ -7,6 +7,7 @@ import { Milestone } from './data';
 export interface ContentItem extends Milestone {
     tags?: string[];
     slug: string;
+    time?: string; // HH:MM format for same-day ordering
 }
 
 export function getContent(subdir: string, metadataOnly: boolean = false): ContentItem[] {
@@ -26,7 +27,6 @@ export function getContent(subdir: string, metadataOnly: boolean = false): Conte
         // Read markdown file as string
         const fullPath = path.join(contentDirectory, fileName);
         const fileContents = fs.readFileSync(fullPath, 'utf8');
-        const stats = fs.statSync(fullPath);
 
         // Use gray-matter to parse the post metadata section
         const { data, content } = matter(fileContents);
@@ -41,18 +41,20 @@ export function getContent(subdir: string, metadataOnly: boolean = false): Conte
             longDescription: metadataOnly ? '' : content.trim(),
             icon: data.icon,
             tags: data.tags,
-            _mtime: stats.mtimeMs, // File modification time for sorting
-        } as ContentItem & { _mtime: number };
-    }).filter((item): item is ContentItem & { _mtime: number } => item !== null);
+            time: data.time, // HH:MM for same-day ordering
+        } as ContentItem;
+    }).filter((item): item is ContentItem => item !== null);
 
-    // Sort by date descending (newest first), then by file mtime for same-day articles
+    // Sort by date descending (newest first), then by time for same-day articles
     return allContentData.sort((a, b) => {
         if (a.date !== b.date) {
             return a.date < b.date ? 1 : -1;
         }
-        // Same date: sort by file modification time (newest first)
-        return b._mtime - a._mtime;
-    }).map(({ _mtime, ...item }) => item as ContentItem); // Remove _mtime from final output
+        // Same date: sort by time (newest first), fallback to title if no time
+        const timeA = a.time || '00:00';
+        const timeB = b.time || '00:00';
+        return timeB.localeCompare(timeA);
+    });
 }
 
 export function getPostBySlug(subdir: string, slug: string): ContentItem | null {
