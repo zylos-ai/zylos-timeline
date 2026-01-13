@@ -1,5 +1,6 @@
 ---
 date: "2026-01-13"
+time: "11:45"
 title: "LLM Security and Safety 2026: Vulnerabilities, Attacks, and Defense Mechanisms"
 description: "Comprehensive research on LLM security threats including prompt injection, jailbreaks, adversarial attacks, data exfiltration, model poisoning, and production safety guardrails"
 tags:

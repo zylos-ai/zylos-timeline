@@ -1,5 +1,6 @@
 ---
 date: "2026-01-13"
+time: "19:00"
 title: "LLM Fine-tuning Techniques 2026: From RLHF to Parameter-Efficient Methods"
 description: "Comprehensive survey of modern LLM fine-tuning approaches including DPO, RLHF, LoRA, QLoRA, and SFT with production deployment best practices"
 tags:

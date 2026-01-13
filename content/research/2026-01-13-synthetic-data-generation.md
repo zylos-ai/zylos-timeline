@@ -1,5 +1,6 @@
 ---
 date: "2026-01-13"
+time: "09:30"
 title: "Synthetic Data Generation: Techniques, Tools, and Challenges in 2026"
 description: "Comprehensive analysis of synthetic data generation methods, evaluation frameworks, privacy considerations, and industry adoption trends"
 tags:

@@ -1,5 +1,6 @@
 ---
 date: "2026-01-13"
+time: "14:15"
 title: "Language Server Protocol Ecosystem 2026"
 description: "Comprehensive overview of LSP architecture, performance, popular implementations, and future trends including AI integration and expansion to notebooks and databases"
 tags:

@@ -1,5 +1,6 @@
 ---
 date: "2026-01-13"
+time: "16:30"
 title: "Prompt Engineering Best Practices 2026"
 description: "Comprehensive guide to prompt engineering techniques, frameworks, tools, and production practices for maximizing LLM performance"
 tags:
