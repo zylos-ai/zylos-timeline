@@ -9,7 +9,7 @@ export interface ContentItem extends Milestone {
     slug: string;
 }
 
-export function getContent(subdir: string): ContentItem[] {
+export function getContent(subdir: string, metadataOnly: boolean = false): ContentItem[] {
     const contentDirectory = path.join(process.cwd(), 'content', subdir);
 
     if (!fs.existsSync(contentDirectory)) {
@@ -36,7 +36,8 @@ export function getContent(subdir: string): ContentItem[] {
             date: data.date,
             title: data.title || '',
             description: data.description,
-            longDescription: content.trim(),
+            // Only include full content if not metadata-only mode
+            longDescription: metadataOnly ? '' : content.trim(),
             icon: data.icon,
             tags: data.tags,
         } as ContentItem;

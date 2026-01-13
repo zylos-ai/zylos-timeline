@@ -1,4 +1,4 @@
-import { getPostBySlug } from "@/lib/posts";
+import { getPostBySlug, getContent } from "@/lib/posts";
 import { notFound } from "next/navigation";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,6 +11,14 @@ interface PageProps {
     params: Promise<{
         slug: string;
     }>;
+}
+
+// Generate static params for all research articles at build time
+export async function generateStaticParams() {
+    const posts = getContent('research', true);
+    return posts.map((post) => ({
+        slug: post.slug,
+    }));
 }
 
 export default async function ResearchDetailPage({ params }: PageProps) {

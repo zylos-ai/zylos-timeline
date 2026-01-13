@@ -5,7 +5,8 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 export default function ResearchPage() {
-    const reports = getContent('research');
+    // Load metadata only for list view (no full content)
+    const reports = getContent('research', true);
 
     return (
         <main className="min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary/20 p-8">
