@@ -16,8 +16,6 @@ tags:
   - 2026
 ---
 
-# LLM Fine-tuning Techniques 2026: From RLHF to Parameter-Efficient Methods
-
 **Research Date**: January 13, 2026
 **Status**: Active research area with ongoing developments
 

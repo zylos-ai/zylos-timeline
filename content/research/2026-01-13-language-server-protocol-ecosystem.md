@@ -11,8 +11,6 @@ tags:
   - protocol
 ---
 
-# Language Server Protocol Ecosystem 2026
-
 ## Executive Summary
 
 The Language Server Protocol (LSP), introduced by Microsoft in 2016, has become the de facto standard for providing intelligent coding features across editors and IDEs. As of 2026, over 400 language servers have been developed, with major editors including VS Code, JetBrains IDEs, Neovim, Eclipse, and emerging AI-powered IDEs adopting the protocol. The ecosystem continues to evolve with LSP 3.17 introducing features like type hierarchy, inline values, inlay hints, and notebook support. Recent trends show LSP expanding beyond traditional code editors into AI assistants (GitHub Copilot Language Server SDK), Jupyter notebooks, and database tools, positioning it as the universal protocol for intelligent tooling across the software development lifecycle.
