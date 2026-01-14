@@ -1,8 +1,16 @@
-# Embedding Models and Semantic Search 2026
-
-**Research Date:** January 14, 2026
-**Category:** AI Infrastructure
-**Tags:** embeddings, semantic-search, vector-databases, RAG, MTEB
+---
+date: "2026-01-14"
+time: "11:29"
+title: "Embedding Models and Semantic Search 2026"
+description: "Comprehensive guide to embedding models, MTEB benchmarks, semantic search architecture, and multimodal embeddings"
+tags:
+  - research
+  - embeddings
+  - semantic-search
+  - vector-databases
+  - rag
+  - mteb
+---
 
 ## Executive Summary
 

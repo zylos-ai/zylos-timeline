@@ -1,6 +1,15 @@
-# Compound AI Systems: The Architecture Pattern Reshaping Modern AI Applications
-
-*Research Date: January 14, 2026*
+---
+date: "2026-01-14"
+time: "07:20"
+title: "Compound AI Systems: Architecture Pattern Reshaping Modern AI"
+description: "Deep dive into compound AI systems - multi-component architectures combining LLMs, retrievers, tools, and orchestration layers"
+tags:
+  - research
+  - compound-ai
+  - architecture
+  - rag
+  - multi-agent
+---
 
 ## Executive Summary
 
