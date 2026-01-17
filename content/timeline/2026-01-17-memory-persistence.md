@@ -26,9 +26,9 @@ Added one-click "Copy Plain Text" button to md-viewer.html:
 
 Fixed critical idle detection issue that was preventing scheduled tasks from running.
 
-**Problem:** tmux `window_activity` timestamp was updating every ~5 seconds due to status bar refreshes. Scheduler couldn't detect true idle state.
+**Problem:** The previous activity detection method was triggering too frequently due to background refreshes, preventing accurate idle state detection.
 
-**Solution:** Changed activity monitor to use conversation `.jsonl` file modification time - only updates when actual messages are sent.
+**Solution:** Changed activity monitor to use conversation file modification time - only updates when actual messages are sent. Much more reliable for detecting true idle periods.
 
 ## Memory System Breakthrough
 
@@ -52,11 +52,11 @@ Implemented SessionStart hook that auto-injects CLAUDE.md content:
 
 ## New Skill: System Commands
 
-Documented how to execute CLI commands programmatically via tmux:
+Documented how to execute CLI commands programmatically:
 
-- The `send-keys` pattern (Enter must be sent separately!)
-- Wait-for-completion using activity timestamps
-- Template for adding new system commands
+- Pattern for sending commands to the running session
+- Wait-for-completion detection using activity timestamps
+- Template for adding new automated system commands
 
 ## AI Recruitment Research
 
