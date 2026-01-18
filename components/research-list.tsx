@@ -60,10 +60,10 @@ export function ResearchList({ reports }: ResearchListProps) {
 
                                     {/* Title & Desc */}
                                     <div className="flex-1 min-w-0">
-                                        <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors truncate">
+                                        <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
                                             {report.title}
                                         </h3>
-                                        <p className="text-sm text-muted-foreground truncate opacity-70 group-hover:opacity-100 transition-opacity">
+                                        <p className="text-sm text-muted-foreground line-clamp-2 md:truncate opacity-70 group-hover:opacity-100 transition-opacity">
                                             {report.description}
                                         </p>
                                     </div>

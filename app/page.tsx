@@ -26,11 +26,10 @@ export default async function Home() {
             All systems nominal
           </p>
           <p className="mb-2">© 2026 Zylos AI</p>
-          <p className="space-x-4">
-            <Link href="/privacy" className="hover:text-primary transition-colors">Privacy Policy</Link>
-            <span>·</span>
-            <Link href="/terms" className="hover:text-primary transition-colors">Terms of Service</Link>
-          </p>
+          <div className="flex justify-center gap-6 mt-4">
+            <Link href="/privacy" className="hover:text-primary transition-colors py-2">Privacy Policy</Link>
+            <Link href="/terms" className="hover:text-primary transition-colors py-2">Terms of Service</Link>
+          </div>
         </div>
       </footer>
     </main>

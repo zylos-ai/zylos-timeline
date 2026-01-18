@@ -7,7 +7,7 @@ import Link from "next/link";
 
 export function Hero() {
     return (
-        <section className="relative min-h-[55vh] flex flex-col items-center justify-center overflow-hidden pt-20 pb-10">
+        <section className="relative min-h-[45vh] md:min-h-[55vh] flex flex-col items-center justify-center overflow-hidden pt-12 md:pt-20 pb-10">
 
             {/* Background Elements */}
             <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(50,50,50,0.1)_0%,rgba(0,0,0,0.5)_100%)] pointer-events-none" />

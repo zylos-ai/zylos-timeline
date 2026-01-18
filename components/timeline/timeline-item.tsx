@@ -48,7 +48,7 @@ export function TimelineItem({ milestone, index }: TimelineItemProps) {
 
             {/* Content Side */}
             <div className={cn(
-                "w-[calc(100%-3rem)] md:w-5/12 ml-12 md:ml-0 flex flex-col",
+                "w-[calc(100%-2rem)] md:w-5/12 ml-8 md:ml-0 flex flex-col",
                 isEven ? "md:mr-auto md:items-end" : "md:ml-auto md:items-start"
             )}>
                 <div className={cn(
