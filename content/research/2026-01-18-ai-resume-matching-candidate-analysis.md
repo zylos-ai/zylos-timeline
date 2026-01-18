@@ -11,8 +11,6 @@ tags:
   - hr-tech
 ---
 
-# AI-Powered Candidate Matching and Resume Parsing in 2026
-
 ## Executive Summary
 
 The recruitment technology landscape in 2026 is defined by the convergence of large language models (LLMs), semantic embeddings, and knowledge graph technologies, fundamentally transforming how organizations source, screen, and match candidates to positions. AI-powered resume parsing has evolved from rigid keyword-based systems achieving 60-70% accuracy to contextual LLM-based approaches reaching 90%+ accuracy, while reducing screening time by 70-80%.
