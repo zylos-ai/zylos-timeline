@@ -38,7 +38,7 @@ export function TimelineItem({ milestone, index }: TimelineItemProps) {
             setIsExpanded(false);
             setTimeout(() => {
                 itemRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 50);
+            }, 350);
         } else {
             setIsExpanded(true);
         }
