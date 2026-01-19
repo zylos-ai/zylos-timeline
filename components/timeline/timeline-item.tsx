@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Milestone } from '@/lib/data';
 import { Calendar, Cpu, Globe, Share2, Brain, Palette, Box, ChevronDown, Circle } from 'lucide-react';
@@ -27,12 +27,26 @@ interface TimelineItemProps {
 
 export function TimelineItem({ milestone, index }: TimelineItemProps) {
     const [isExpanded, setIsExpanded] = useState(false);
+    const itemRef = useRef<HTMLDivElement>(null);
     const Icon = milestone.icon && icons[milestone.icon as keyof typeof icons] ? icons[milestone.icon as keyof typeof icons] : Circle;
 
     const isEven = index % 2 === 0;
 
+    const handleToggle = () => {
+        if (isExpanded) {
+            // Collapsing: scroll back to this item after a brief delay
+            setIsExpanded(false);
+            setTimeout(() => {
+                itemRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 50);
+        } else {
+            setIsExpanded(true);
+        }
+    };
+
     return (
         <motion.div
+            ref={itemRef}
             initial={{ opacity: 0, y: 50 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-100px" }}
@@ -61,7 +75,7 @@ export function TimelineItem({ milestone, index }: TimelineItemProps) {
 
                 <motion.div
                     layout
-                    onClick={() => setIsExpanded(!isExpanded)}
+                    onClick={handleToggle}
                     className={cn(
                         "relative cursor-pointer overflow-hidden rounded-xl border border-white/5 bg-white/5 backdrop-blur-md hover:bg-white/10 hover:border-primary/50 transition-colors duration-300 p-6 w-full shadow-lg",
                         isExpanded ? "ring-1 ring-primary/50 bg-white/10" : ""
