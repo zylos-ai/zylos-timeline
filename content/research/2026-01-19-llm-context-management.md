@@ -1,4 +1,14 @@
-# LLM Context Window Management and Long-Context Strategies 2026
+---
+date: "2026-01-19"
+title: "LLM Context Window Management and Long-Context Strategies 2026"
+description: "Comprehensive analysis of context window evolution, optimization techniques, and cost management strategies"
+tags:
+  - llm
+  - context-window
+  - attention
+  - optimization
+  - cost
+---
 
 ## Executive Summary
 
