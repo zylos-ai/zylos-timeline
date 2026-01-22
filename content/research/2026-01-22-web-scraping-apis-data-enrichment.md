@@ -126,7 +126,7 @@ Web scraping has evolved from a technical curiosity into a business necessity. I
 
 ### 2.1 The Compliance Landscape
 
-**Critical Legal Context (2026):** On January 24, 2026, LinkedIn filed a federal lawsuit against Proxycurl for unauthorized creation of hundreds of thousands of fake accounts and scraping millions of member profiles. Proxycurl was shut down on July 4, 2026.
+**Critical Legal Context (2025):** In January 2025, LinkedIn filed a federal lawsuit against Proxycurl for unauthorized creation of hundreds of thousands of fake accounts and scraping millions of member profiles. Proxycurl shut down in July 2025 after the lawsuit made operations untenable, despite ~$10M in revenue.
 
 ### 2.2 Compliant LinkedIn Scraping
 
@@ -298,7 +298,7 @@ New requirements effective January 1, 2026:
 
 **Bright Data vs Meta/X (2024):** First web scraping company examined in US courts and won twice. Established that ethical scraping of public data is legally defensible.
 
-**LinkedIn vs Proxycurl (2026):** Demonstrates risks of fake accounts and aggressive scraping. Result: company shutdown.
+**LinkedIn vs Proxycurl (2025):** Demonstrates risks of fake accounts and aggressive scraping. Result: company shutdown in July 2025.
 
 ---
 
