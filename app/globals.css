@@ -114,3 +114,24 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+/* Make tables scrollable on mobile */
+.prose table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  white-space: nowrap;
+}
+
+.prose table th,
+.prose table td {
+  white-space: nowrap;
+}
+
+/* Allow text to wrap in table cells on larger screens */
+@media (min-width: 768px) {
+  .prose table th,
+  .prose table td {
+    white-space: normal;
+  }
+}
