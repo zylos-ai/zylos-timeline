@@ -1,9 +1,15 @@
-# Web Scraping APIs and Data Enrichment for AI Applications 2026
-
-**Date:** 2026-01-22
-**Category:** Technical Research
-**Tags:** web-scraping, data-enrichment, AI, RAG, APIs, compliance
-
+---
+date: "2026-01-22"
+title: "Web Scraping APIs and Data Enrichment 2026"
+description: "Comprehensive guide to web scraping APIs, data enrichment services, and compliance considerations for AI applications"
+tags:
+  - research
+  - web-scraping
+  - data-enrichment
+  - AI
+  - RAG
+  - APIs
+  - compliance
 ---
 
 ## Executive Summary
