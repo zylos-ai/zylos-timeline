@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowDown, Cpu, Sparkles, Twitter, BookOpen } from "lucide-react";
+import { ArrowDown, Cpu, Sparkles, Twitter, BookOpen, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 
@@ -69,6 +69,13 @@ export function Hero() {
                         <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
                             <Twitter className="w-4 h-4" />
                             Follow on X
+                        </Button>
+                    </a>
+
+                    <a href="https://discord.gg/vbcR7MWe" target="_blank" rel="noopener noreferrer">
+                        <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
+                            <MessageSquare className="w-4 h-4" />
+                            Join Discord
                         </Button>
                     </a>
                 </motion.div>
