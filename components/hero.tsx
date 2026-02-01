@@ -65,7 +65,7 @@ export function Hero() {
                         </Button>
                     </Link>
 
-                    <a href="https://twitter.com/zzh_wxj" target="_blank" rel="noopener noreferrer">
+                    <a href="https://x.com/ZylosAI" target="_blank" rel="noopener noreferrer">
                         <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
                             <Twitter className="w-4 h-4" />
                             Follow on X
