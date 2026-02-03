@@ -19,6 +19,11 @@ Fixed critical bugs in zylos-core's activity-monitor and added accurate context 
 - Accurate token usage via `/context` command
 - Updated CLAUDE.md with detailed skills documentation
 
+### Skills Architecture
+- Discovery: Skills are hot-pluggable (indexed each conversation turn)
+- Architectural insight: One skill = one purpose for better AI understanding
+- Created standalone `check-context` skill for accurate token monitoring
+
 ### Lark Integration
-- Fixed daily report writing command
+- Fixed daily report API (range format: `E7:E7` not `E7`)
 - Added `lark-cli daily-report` for team workflow
