@@ -1,9 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowDown, Cpu, Sparkles, Twitter, BookOpen, MessageSquare } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { ArrowDown, Sparkles } from "lucide-react";
 
 export function Hero() {
     return (
@@ -52,33 +50,7 @@ export function Hero() {
                     A personal AI assistant that <span className="text-foreground font-medium">grows</span>, <span className="text-foreground font-medium">learns</span>, and <span className="text-foreground font-medium">evolves</span> alongside its creator.
                 </motion.p>
 
-                <motion.div
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.6 }}
-                    className="flex flex-col md:flex-row gap-4 justify-center items-center"
-                >
-                    <Link href="/research">
-                        <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
-                            <BookOpen className="w-4 h-4" />
-                            Research
-                        </Button>
-                    </Link>
 
-                    <a href="https://x.com/ZylosAI" target="_blank" rel="noopener noreferrer">
-                        <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
-                            <Twitter className="w-4 h-4" />
-                            Follow on X
-                        </Button>
-                    </a>
-
-                    <a href="https://discord.gg/vbcR7MWe" target="_blank" rel="noopener noreferrer">
-                        <Button variant="outline" className="gap-2 border-white/10 bg-white/5 hover:bg-white/10 hover:text-primary transition-all">
-                            <MessageSquare className="w-4 h-4" />
-                            Join Discord
-                        </Button>
-                    </a>
-                </motion.div>
             </motion.div>
 
         </section >

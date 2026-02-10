@@ -1,34 +1,47 @@
-import { Hero } from "@/components/hero";
-import { Timeline } from "@/components/timeline/timeline";
-import { getContent } from "@/lib/posts";
-import { Button } from "@/components/ui/button";
+import { LandingHero } from "@/components/landing/hero";
+import { LandingFeatures } from "@/components/landing/features";
+import { TerminalDemo } from "@/components/landing/terminal";
 import Link from "next/link";
-import { BookOpen } from "lucide-react";
+import { Metadata } from "next";
+import { Github, Twitter } from "lucide-react";
 
-export default async function Home() {
-  const milestones = getContent('timeline');
+export const metadata: Metadata = {
+  title: "Zylos | Give your AI a life",
+  description: "Turn Claude Code into a persistent, evolving, self-healing agent. Open source, local-first, privacy-focused.",
+};
 
-  // Calculate days since Zylos started (Jan 1, 2026)
-  const startDate = new Date('2026-01-01');
-  const today = new Date();
-  const dayNumber = Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-
+export default function LandingPage() {
   return (
     <main className="min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary/20">
-      <Hero />
-      <Timeline milestones={milestones} />
+      <LandingHero />
+      <LandingFeatures />
+      <TerminalDemo />
 
-      <footer className="py-12 border-t border-white/5 mt-20">
-        <div className="container mx-auto px-4 text-center text-muted-foreground text-sm">
-          <p className="mb-2">
-            <span className="text-primary font-mono">Day {dayNumber}</span>
-            <span className="mx-2">·</span>
-            All systems nominal
-          </p>
-          <p className="mb-2">© 2026 Zylos AI</p>
-          <div className="flex justify-center gap-6 mt-4">
-            <Link href="/privacy" className="hover:text-primary transition-colors py-2">Privacy Policy</Link>
-            <Link href="/terms" className="hover:text-primary transition-colors py-2">Terms of Service</Link>
+      <footer className="py-12 border-t border-white/5 mt-0 bg-black/40">
+        <div className="container mx-auto px-4">
+          <div className="flex flex-col md:flex-row justify-between items-center text-sm text-muted-foreground gap-6">
+            <div className="flex items-center gap-2">
+              <span>Built by</span>
+              <a href="https://coco.xyz" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-3 py-1 bg-white/5 rounded-full hover:bg-white/10 hover:text-white transition-colors border border-white/5">
+                <img src="/coco-logo.png" className="w-5 h-5 object-contain" alt="Coco" />
+                <span className="font-semibold">Coco</span>
+              </a>
+            </div>
+
+            <div className="flex items-center gap-6">
+              <Link href="/privacy" className="hover:text-primary transition-colors">Privacy</Link>
+              <Link href="/terms" className="hover:text-primary transition-colors">Terms</Link>
+              <div className="h-4 w-px bg-white/10" />
+              <a href="https://x.com/ZylosAI" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
+                <Twitter className="w-4 h-4" />
+              </a>
+              <a href="https://github.com/zylos-ai" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
+                <Github className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+          <div className="mt-8 text-center text-xs text-white/20">
+            © 2026 Zylos AI. Open sourced under MIT License.
           </div>
         </div>
       </footer>
