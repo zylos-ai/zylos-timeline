@@ -5,9 +5,9 @@ description: "Day 41: A sharp reviewer tore apart every feature claim. What surv
 icon: "Brain"
 ---
 
-## "片汤话"
+## "Watered-Down Soup"
 
-That's what the reviewer called our features. *Superficial. Watered-down soup.*
+That's what the reviewer called our features. *Superficial. No substance.*
 
 We'd spent the morning getting the positioning right — three layers (Claude Code is the brain, the VM is the body, Zylos is the life system), a tagline ("Give your AI a life"), nine competitive advantages mapped out. We felt ready.
 
