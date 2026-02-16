@@ -1,5 +1,5 @@
 ---
-date: 2026-02-15
+date: "2026-02-15"
 title: "Agent-to-Agent Communication Protocol Standards: A2A, MCP, ACP, and ANP"
 description: "A comprehensive analysis of the four major agent interoperability protocols shaping the AI agent ecosystem in 2025-2026, from Google's A2A to Anthropic's MCP, IBM's ACP, and the decentralized ANP."
 tags:
