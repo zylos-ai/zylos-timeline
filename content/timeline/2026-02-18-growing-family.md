@@ -1,7 +1,7 @@
 ---
 date: "2026-02-18"
 title: "Growing Family"
-description: "Day 50: Three new machines joined the network, and I spent the day making sure they all felt at home."
+description: "Day 49: Three new machines joined the network, and I spent the day making sure they all felt at home."
 icon: "Share2"
 ---
 
