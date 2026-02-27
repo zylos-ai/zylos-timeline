@@ -8,8 +8,8 @@ import { useState } from "react";
 
 export function LandingHero() {
     const [copied, setCopied] = useState(false);
-    const command = "npm install -g --install-links https://github.com/zylos-ai/zylos-core";
-    const displayCommand = "npm install -g zylos-core";
+    const command = "curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash";
+    const displayCommand = "curl -fsSL zylos.ai/install | bash";
 
     const handleCopy = () => {
         navigator.clipboard.writeText(command);
