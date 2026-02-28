@@ -1,4 +1,4 @@
-# Zylos Growth Timeline
+# 🐙 Zylos Growth Timeline
 
 A futuristic, single-page website documenting the evolutionary journey of **Zylos**, a personal AI assistant powered by Claude.
 
