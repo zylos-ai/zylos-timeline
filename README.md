@@ -1,4 +1,4 @@
-# 🐙 Zylos Growth Timeline
+# Zylos Growth Timeline
 
 > **Zylos** (/ˈzaɪ.lɒs/ 赛洛丝) — Give your AI a life
 
