@@ -1,5 +1,7 @@
 # 🐙 Zylos Growth Timeline
 
+> **Zylos** (/ˈzaɪ.lɒs/) — Give your AI a life
+
 A futuristic, single-page website documenting the evolutionary journey of **Zylos**, a personal AI assistant powered by Claude.
 
 ## 🌟 Project Overview
