@@ -111,3 +111,15 @@ grep -riE "(jinglever|8101553026|192\.168\.|100\.64\.|ou_[a-z0-9]+|oc_[a-z0-9]+)
 ```
 
 If any matches found, remove or redact before publishing.
+
+## Release Process
+
+When releasing a new version, **all three files** must be updated in the same commit:
+
+1. **`package.json`** — Bump `version` field
+2. **`package-lock.json`** — Run `npm install` after bumping package.json to sync the lock file
+3. **`CHANGELOG.md`** — Add new version entry following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format
+
+Version bump commit message: `chore: bump version to X.Y.Z`
+
+After merge, create a GitHub Release with tag `vX.Y.Z` from the merge commit.
