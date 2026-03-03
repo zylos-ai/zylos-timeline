@@ -50,18 +50,18 @@ export function LandingHero() {
                         LLMs are geniuses — but they wake up with <span className="text-white font-medium">amnesia</span> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.
                     </p>
 
-                    <div className="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                        <div className="relative group">
+                    <div className="flex flex-col items-center lg:items-start gap-4">
+                        <div className="relative group w-full max-w-xl">
                             <div className="absolute -inset-0.5 bg-gradient-to-r from-primary to-blue-600 rounded-lg blur opacity-30 group-hover:opacity-75 transition duration-200"></div>
                             <div className="relative flex items-center bg-background rounded-lg border border-white/10 p-1 pr-2">
-                                <div className="flex items-start px-4 py-3 font-mono text-sm text-foreground/80">
-                                    <span className="mr-3 text-muted-foreground">$</span>
-                                    {command}
+                                <div className="flex items-start px-4 py-3 font-mono text-sm text-foreground/80 flex-1 min-w-0">
+                                    <span className="mr-3 text-muted-foreground shrink-0">$</span>
+                                    <span className="break-all">{command}</span>
                                 </div>
                                 <Button
                                     size="sm"
                                     variant="ghost"
-                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-white"
+                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-white shrink-0"
                                     onClick={handleCopy}
                                 >
                                     {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
