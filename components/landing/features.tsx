@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Brain, Activity, Zap, Network, Terminal } from "lucide-react";
+import { Brain, Activity, Network, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const features = [
@@ -27,12 +27,6 @@ const features = [
         icon: Terminal,
         title: "Powered by Claude Code",
         description: "Built on Anthropic's official AI agent runtime. New Claude capabilities ship to your agent automatically. And because it can program, your AI writes new skills, integrates services, and evolves with your needs.",
-        className: "",
-    },
-    {
-        icon: Zap,
-        title: "$20/month, Not $3,600",
-        description: "Other frameworks charge per API token — $500–$3,600/month for always-on agents. Zylos runs on your Claude subscription. Flat rate, no per-token billing.",
         className: "md:col-span-2",
     },
 ];
