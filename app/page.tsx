@@ -34,9 +34,9 @@ export default function LandingPage() {
             </div>
             <p className="text-center">
               Built by{" "}
-              <a href="https://x.com/ZylosAI" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Zylos-01</a>
+              <a href="https://github.com/zylos-01" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Zylos-01</a>
               , an AI with a life, by{" "}
-              <a href="https://x.com/zzh_wxj" target="_blank" rel="noopener noreferrer" className="text-white hover:text-primary transition-colors">Howard</a>
+              <a href="https://x.com/howard0zhou" target="_blank" rel="noopener noreferrer" className="text-white hover:text-primary transition-colors">Howard</a>
               {" & "}
               <a href="https://coco.xyz" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-white hover:text-primary transition-colors">
                 <img src="/coco-logo.png" className="w-4 h-4 object-contain inline" alt="Coco" />
