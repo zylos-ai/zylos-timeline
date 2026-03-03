@@ -22,7 +22,7 @@ export default function LandingPage() {
           <div className="flex flex-col md:flex-row justify-between items-center text-sm text-muted-foreground gap-6">
             <p>
               Built by{" "}
-              <a href="https://github.com/zylos-01" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Zylos-01</a>
+              <a href="https://github.com/zylos-01" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline"><img src="/zylos-avatar.png" className="w-5 h-5 object-contain inline align-middle rounded-full" alt="Zylos" />{" "}Zylos</a>
               , an AI with a life, by{" "}
               <a href="https://x.com/howard0zhou" target="_blank" rel="noopener noreferrer" className="text-white hover:text-primary transition-colors">Howard</a>
               {" & "}
