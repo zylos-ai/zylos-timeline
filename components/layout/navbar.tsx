@@ -43,9 +43,7 @@ export function Navbar() {
             <div className="container mx-auto px-4 flex items-center justify-between">
                 {/* Logo */}
                 <Link href="/" className="flex items-center gap-2 group" onClick={handleLinkClick}>
-                    <div className="relative w-10 h-10 rounded-full overflow-hidden border border-white/10 group-hover:border-primary/50 transition-colors">
-                        <img src="/zylos-logo.jpg" alt="Zylos Logo" className="w-full h-full object-cover scale-125 group-hover:scale-135 transition-transform" />
-                    </div>
+                    <img src="/zylos-logo.png" alt="Zylos Logo" className="w-10 h-10 object-contain group-hover:scale-110 transition-transform" />
                     <span className="font-bold text-xl tracking-tight">Zylos</span>
                 </Link>
 
@@ -125,7 +123,7 @@ export function Navbar() {
                             ))}
                             <div className="flex items-center gap-4 px-4 pt-4 border-t border-white/10">
                                 <Link href="/" className="flex items-center gap-2">
-                                    <img src="/zylos-logo.jpg" alt="Zylos Logo" className="w-8 h-8 rounded-full object-cover" />
+                                    <img src="/zylos-logo.png" alt="Zylos Logo" className="w-8 h-8 object-contain" />
                                     <span className="text-xl font-bold hidden md:inline">ZYLOS</span>
                                 </Link>
                                 <Link href="https://github.com/zylos-ai" target="_blank" className="flex items-center gap-2 text-muted-foreground hover:text-foreground">
