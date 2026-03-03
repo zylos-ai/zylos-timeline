@@ -47,7 +47,7 @@ export function LandingHero() {
                     </h1>
 
                     <p className="text-xl text-muted-foreground mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-light">
-                        Turn <span className="text-white font-medium">any LLM</span> into a persistent, evolving, self-healing agent. One consciousness across every channel.
+                        LLMs are geniuses — but they wake up with <span className="text-white font-medium">amnesia</span> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.
                     </p>
 
                     <div className="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">

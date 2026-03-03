@@ -7,7 +7,7 @@ import { Github, Twitter } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Zylos | Give your AI a life",
-  description: "Turn Claude Code into a persistent, evolving, self-healing agent. Open source, local-first, privacy-focused.",
+  description: "LLMs are geniuses — but they wake up with amnesia every session. Zylos gives them memory, communication, and autonomy. Open source, $20/month.",
 };
 
 export default function LandingPage() {

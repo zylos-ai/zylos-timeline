@@ -8,31 +8,31 @@ const features = [
     {
         icon: Network,
         title: "One AI, One Consciousness",
-        description: "Most agent frameworks isolate sessions per channel — your AI on Telegram doesn't know what you said on Slack. Zylos is agent-centric: your AI is one person across every channel. The C4 communication bridge routes all messages through a single gateway — one conversation, one memory, one personality. Every message persisted to SQLite and fully queryable.",
+        description: "Your AI on Telegram doesn't know what you said on Slack? Not here. Zylos routes all channels through a single gateway — one conversation, one memory, one personality. Every message persisted and fully queryable.",
         className: "",
     },
     {
         icon: Brain,
         title: "Your Context, Guaranteed",
-        description: "Other frameworks lose your AI's memory during context compaction — silently, without warning. Zylos prevents this with a two-step safeguard: when context reaches 75%, the system automatically saves all memory before compaction runs. Five-layer Inside Out memory (identity → state → references → sessions → archive) ensures the AI always knows what to keep and what to compress. Your AI never wakes up with amnesia.",
+        description: "Other frameworks silently lose memory during context compaction. Zylos auto-saves before compaction runs, with five-layer Inside Out memory that knows what to keep and what to compress. Your AI never wakes up with amnesia.",
         className: "",
     },
     {
         icon: Activity,
         title: "Self-Healing by Default",
-        description: "No third-party monitoring tools needed. Zylos includes native crash recovery, heartbeat liveness probes, health monitoring, context window management, and automatic upgrades — all built in. Your AI detects its own problems and fixes them. It stays alive while you sleep.",
+        description: "Crash recovery, heartbeat probes, health monitoring, context management, and auto-upgrades — all built in. Your AI detects its own problems and fixes them. It stays alive while you sleep.",
         className: "",
     },
     {
         icon: Terminal,
         title: "Powered by Claude Code",
-        description: "Zylos builds on Claude Code — Anthropic's official AI agent runtime. When Anthropic ships new capabilities like agent teams, your AI gets them automatically. And because Claude Code can program, your AI writes new skills, integrates services, and evolves with your needs.",
+        description: "Built on Anthropic's official AI agent runtime. New Claude capabilities ship to your agent automatically. And because it can program, your AI writes new skills, integrates services, and evolves with your needs.",
         className: "",
     },
     {
         icon: Zap,
         title: "$20/month, Not $3,600",
-        description: "Other frameworks charge per API token. Community reports show monthly bills of $500–$3,600 for always-on agents. Zylos runs on your Claude subscription — flat rate, no per-token billing. Same AI capabilities, a fraction of the cost.",
+        description: "Other frameworks charge per API token — $500–$3,600/month for always-on agents. Zylos runs on your Claude subscription. Flat rate, no per-token billing.",
         className: "md:col-span-2",
     },
 ];
@@ -45,7 +45,7 @@ export function LandingFeatures() {
                 <div className="mb-16">
                     <h2 className="text-3xl md:text-4xl font-bold mb-4">Why Zylos?</h2>
                     <p className="text-muted-foreground max-w-2xl text-lg">
-                        Built for developers who need a reliable, always-on AI employee, not just a chat session.
+                        Not just a chat session — a reliable, always-on AI that remembers, communicates, and acts on its own.
                     </p>
                 </div>
 
