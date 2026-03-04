@@ -27,7 +27,7 @@ const features = [
         icon: Terminal,
         title: "Powered by Claude Code",
         description: "Built on Anthropic's official AI agent runtime. New Claude capabilities ship to your agent automatically. And because it can program, your AI writes new skills, integrates services, and evolves with your needs.",
-        className: "md:col-span-2",
+        className: "",
     },
 ];
 
