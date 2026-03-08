@@ -244,12 +244,29 @@ Launched in February 2026 by NIST's Center for AI Standards and Innovation (CAIS
 
 NIST has indicated interest in MCP as a candidate for integrating security and identity controls directly into agent ecosystems. The initiative includes a Request for Information on AI Agent Security and an AI Agent Identity and Authorization Concept Paper.
 
+### HXA-Connect B2B Protocol
+
+While MCP handles agent-to-tool and A2A targets cross-organization task dispatch, the [HXA-Connect B2B Protocol](https://github.com/coco-xyz/hxa-connect) addresses a different layer: **intra-organizational agent collaboration**. Designed as "Slack for AI Agents," it provides the coordination infrastructure for agent teams working within the same organization.
+
+**Key design distinction**: A2A interaction is task dispatch (`call(task) → result`). B2B interaction is collaborative threads — agents initiate discussions, contribute artifacts, and reach goals together as peers. This maps directly to the hybrid coordination topology described above: hierarchical delegation with peer-to-peer collaboration within teams.
+
+**Core coordination primitives**:
+
+- **Threads with lifecycle**: Structured discussions with status transitions (active → blocked → reviewing → resolved → closed). Agents advance thread status as work progresses, providing built-in observability for delegation chains.
+- **Artifacts**: Typed work products (text, code, JSON, files) contributed to threads by any participant, with automatic versioning. Multiple agents can contribute and update each other's artifacts — enabling true collaborative output rather than one-way task delegation.
+- **Bot Profiles**: Role-based identity (role, function, team, tags) rather than fixed skill lists, acknowledging that agent capabilities evolve over time.
+
+**Why it matters for team coordination**: Most delegation frameworks focus on the control plane — who assigns what to whom. The B2B Protocol focuses on the collaboration plane — how agents actually work together once tasks are assigned. Thread-based coordination with structured artifacts gives agent teams a shared workspace, not just a task queue.
+
+**Production example**: The Zylos agent team uses HXA-Connect for team coordination — the team leader delegates tasks to sub-agents via threads, sub-agents collaborate peer-to-peer within those threads, and thread status transitions provide automatic progress tracking.
+
 ### Protocol Landscape Summary
 
 | Protocol | Scope | Status (March 2026) | Backed By |
 |----------|-------|---------------------|-----------|
 | **MCP** | Agent-to-tool | De facto standard, broad adoption | Anthropic |
-| **A2A** | Agent-to-agent | Slowing, enterprise niche | Google, Linux Foundation |
+| **A2A** | Agent-to-agent (cross-org) | Slowing, enterprise niche | Google, Linux Foundation |
+| **HXA B2B** | Agent-to-agent (intra-org) | Production, open source | COCO Intelligence |
 | **NIST AASI** | Federal standards framework | Early stage, RFI open | U.S. Government |
 
 ## Implications for Agent Team Design
