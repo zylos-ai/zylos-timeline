@@ -1,0 +1,82 @@
+---
+title: Installation
+description: Install Zylos with a single command.
+---
+
+Zylos ships with an automated installer that handles the entire setup process. You'll go from zero to a running instance in about five minutes.
+
+## Quick Install
+
+Run the following command on your server:
+
+```bash
+curl -fsSL https://get.zylos.ai | bash
+```
+
+The installer will:
+
+1. Download the Zylos core framework
+2. Install and configure PM2 (process manager)
+3. Create the directory structure under `~/zylos/`
+4. Set up the Claude Code CLI
+5. Generate default configuration files
+
+## Interactive Setup
+
+After the installer finishes, run the initialization wizard:
+
+```bash
+zylos init
+```
+
+You'll be prompted for:
+
+- **Anthropic API key** -- Paste your API key from the Anthropic Console. This is stored locally in `~/zylos/.env` and never leaves your machine.
+- **Domain name** (optional) -- If you want to access the web console over HTTPS, enter your domain. Otherwise, skip this and use localhost.
+- **Default model** -- Choose which Claude model to use (claude-sonnet-4 recommended for most users).
+
+## Verify the Installation
+
+Run the built-in health check:
+
+```bash
+zylos doctor
+```
+
+This command verifies:
+
+- Node.js version meets requirements
+- PM2 is running and managing Zylos services
+- API key is valid and can reach Anthropic
+- All core components are present
+- Memory system is initialized
+
+A healthy installation will show all checks passing in green. If anything fails, the output will include specific remediation steps.
+
+## Directory Structure
+
+After installation, your Zylos home looks like this:
+
+```
+~/zylos/
+  .claude/          # Claude Code configuration and skills
+  .env              # API keys and settings (never commit this)
+  memory/           # Persistent memory files
+    identity.md     # Bot personality and principles
+    state.md        # Current active work
+    references.md   # Pointers to key resources
+    users/          # Per-user profiles
+    reference/      # Decisions, projects, preferences
+    sessions/       # Session logs
+  workspace/        # Working area for repos and experiments
+```
+
+## What's Next
+
+Your Zylos instance is running, but it can't talk to anyone yet. The next step is connecting a communication channel so you can start interacting with it:
+
+- **Telegram** -- The most popular channel for personal use
+- **Web Console** -- Built-in browser interface, no external accounts needed
+- **Discord** -- Great for team or community setups
+
+Channel setup guides are coming soon. For now, you can interact with Zylos directly through the Claude Code CLI on your server.

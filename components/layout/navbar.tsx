@@ -25,6 +25,7 @@ export function Navbar() {
         { name: "Features", href: "/#features" },
         { name: "Evolution", href: "/timeline" },
         { name: "Research", href: "/research" },
+        { name: "Docs", href: "/docs" },
     ];
 
     const handleLinkClick = () => {
@@ -55,13 +56,13 @@ export function Navbar() {
                             href={link.href}
                             className={cn(
                                 "text-sm font-medium transition-colors hover:text-primary relative group",
-                                pathname === link.href ? "text-primary" : "text-muted-foreground"
+                                (pathname === link.href || (link.href === "/docs" && pathname.startsWith("/docs"))) ? "text-primary" : "text-muted-foreground"
                             )}
                         >
                             {link.name}
                             <span className={cn(
                                 "absolute -bottom-1 left-0 w-0 h-0.5 bg-primary transition-all duration-300 group-hover:w-full",
-                                pathname === link.href ? "w-full" : ""
+                                (pathname === link.href || (link.href === "/docs" && pathname.startsWith("/docs"))) ? "w-full" : ""
                             )} />
                         </Link>
                     ))}

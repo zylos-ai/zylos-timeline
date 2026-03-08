@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { GoogleAnalytics } from "@/components/google-analytics";
 import { Navbar } from "@/components/layout/navbar";
+import { RootProvider } from "fumadocs-ui/provider/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -42,9 +43,17 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
-        <GoogleAnalytics />
-        <Navbar />
-        {children}
+        <RootProvider
+          theme={{
+            defaultTheme: "dark",
+            forcedTheme: "dark",
+            enableSystem: false,
+          }}
+        >
+          <GoogleAnalytics />
+          <Navbar />
+          {children}
+        </RootProvider>
       </body>
     </html>
   );
