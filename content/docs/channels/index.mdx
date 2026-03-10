@@ -26,11 +26,11 @@ All channels feed into a single conversation stream. When you message Zylos on T
 ## Architecture
 
 ```
-Telegram ──┐
-            ├── C4 Communication Bridge ── Claude Agent
-Lark ───────┤
-            ├──
-Web Console ┘
+Telegram ───┐
+             ├── C4 Communication Bridge ── Claude Agent
+Lark ────────┤
+             │
+Web Console ─┘
 ```
 
 Each channel is a separate **component** that you install and configure independently. They all connect to the C4 Communication Bridge, which queues and delivers messages to and from the Claude agent.
