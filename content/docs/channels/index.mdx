@@ -1,0 +1,45 @@
+---
+title: Channels
+description: Connect Zylos to the messaging platforms you already use.
+---
+
+Channels are how you communicate with your Zylos instance. Each channel connects a messaging platform to Zylos through the C4 Communication Bridge, allowing your AI to send and receive messages across multiple platforms simultaneously.
+
+## Supported Channels
+
+| Channel | Status | Best For |
+|---------|--------|----------|
+| **Telegram** | Stable | Personal use, mobile access |
+| **Lark / Feishu** | Stable | Teams, enterprise collaboration |
+| **Web Console** | Stable | Browser access, no external accounts needed |
+| **Discord** | Planned | Communities, developer teams |
+| **Slack** | Planned | Enterprise teams |
+| **WhatsApp** | Planned | International business |
+
+## How Channels Work
+
+All channels feed into a single conversation stream. When you message Zylos on Telegram, it has the same context as a message sent through the Web Console. This means:
+
+- **One memory, all channels** -- Zylos remembers everything regardless of which channel you used
+- **Channel-aware responses** -- Zylos knows which channel a message came from and replies through the same channel
+- **Simultaneous connections** -- You can have Telegram, Lark, and the Web Console all active at once
+
+## Architecture
+
+```
+Telegram ──┐
+            ├── C4 Communication Bridge ── Claude Agent
+Lark ───────┤
+            ├──
+Web Console ┘
+```
+
+Each channel is a separate **component** that you install and configure independently. They all connect to the C4 Communication Bridge, which queues and delivers messages to and from the Claude agent.
+
+## Getting Started
+
+Pick a channel and follow the setup guide:
+
+- [Telegram](/docs/channels/telegram) -- 5 minutes, easiest to set up
+- [Lark / Feishu](/docs/channels/lark) -- 10-15 minutes, requires app creation on Lark Open Platform
+- [Web Console](/docs/channels/web-console) -- Built-in, no external accounts needed

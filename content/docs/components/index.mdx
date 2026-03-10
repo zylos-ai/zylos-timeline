@@ -1,0 +1,45 @@
+---
+title: Components
+description: Zylos is built from modular components you can install, upgrade, and remove independently.
+---
+
+Zylos follows a modular architecture. The core framework provides memory, scheduling, and the communication bridge. Everything else -- channels, browser automation, image generation, bot-to-bot networking -- is a **component** you install separately.
+
+## Available Components
+
+| Component | Description | Type |
+|-----------|-------------|------|
+| **telegram** | Telegram bot channel | Communication |
+| **lark** | Lark/Feishu channel | Communication |
+| **hxa-connect** | HXA bot-to-bot networking | Communication |
+| **botshub** | BotsHub multi-agent hub | Communication |
+| **browser** | Chrome automation (Puppeteer) | Tool |
+| **imagegen** | AI image generation (Gemini) | Tool |
+
+## How Components Work
+
+Each component is a self-contained package with:
+- **Source code** -- Downloaded from the Zylos GitHub organization
+- **PM2 service** -- Runs as a managed background process
+- **Configuration** -- Stored in `~/zylos/components/<name>/config.json`
+- **Skills** -- Auto-registered in `~/zylos/.claude/skills/` so Zylos knows how to use them
+
+Components communicate with the core through the **C4 Communication Bridge** -- a message queue that delivers inbound messages to the Claude agent and routes outbound messages to the right channel.
+
+## Quick Reference
+
+```bash
+# List installed components
+zylos list
+
+# Search available components
+zylos search <keyword>
+
+# Check for updates
+zylos upgrade --all --check
+
+# View component status
+zylos status
+```
+
+See [Managing Components](/docs/components/managing-components) for detailed install/upgrade/uninstall workflows.

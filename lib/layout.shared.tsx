@@ -6,19 +6,7 @@ export function baseOptions(): BaseLayoutProps {
       title: 'Zylos',
       url: '/',
     },
-    links: [
-      {
-        text: 'Features',
-        url: '/#features',
-      },
-      {
-        text: 'Evolution',
-        url: '/timeline',
-      },
-      {
-        text: 'Research',
-        url: '/research',
-      },
-    ],
+    githubUrl: 'https://github.com/zylos-ai',
+    links: [],
   };
 }

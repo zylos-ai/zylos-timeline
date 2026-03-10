@@ -1,0 +1,155 @@
+---
+title: Lark / Feishu
+description: Connect Zylos to Lark (international) or Feishu (飞书, China) for team communication.
+---
+
+The Lark channel connects Zylos to Lark (international) or Feishu (飞书, China mainland). It works through a webhook -- Lark sends events to your server, and Zylos processes them through the C4 Communication Bridge.
+
+**Estimated setup time:** 10-15 minutes
+
+## Prerequisites
+
+- A Lark or Feishu account with access to the developer console
+- Zylos installed and running on your server
+- A **domain name** with HTTPS pointed at your server (required for Lark webhooks)
+
+## Step 1: Create a Lark Application
+
+1. Go to the developer console:
+   - **Lark:** [open.larksuite.com](https://open.larksuite.com)
+   - **Feishu:** [open.feishu.cn](https://open.feishu.cn)
+2. Click **Create Enterprise Self-Built Application**
+3. Fill in the app name (e.g., "Zylos") and description
+4. Click **Create**
+
+## Step 2: Add Bot Capability
+
+1. In your new application, find **Add Application Capability**
+2. Click the **Robot** card to add bot functionality
+3. Go to **Credentials and Basic Information**
+4. Copy your **App ID** and **App Secret**
+
+## Step 3: Configure Permissions
+
+Go to **Permission Management** and add the following scopes. You can import them as JSON in the developer console:
+
+Essential permissions:
+- `im:message` -- Send messages
+- `im:message:send_as_bot` -- Send as bot
+- `im:message.p2p_msg:readonly` -- Read DMs
+- `im:message.group_at_msg:readonly` -- Read group @mentions
+- `im:chat.members:bot_access` -- Access chats the bot is in
+- `im:resource` -- Upload/download files and images
+- `contact:user.base:readonly` -- Read basic user info
+
+See the [full permissions list](https://github.com/zylos-ai/zylos-lark) in the component repository for the complete JSON you can import.
+
+## Step 4: Get Verification Token
+
+1. Go to **Events and Callbacks**
+2. Click the **Encryption Strategy** tab
+3. Copy the **Verification Token** (required)
+4. Optionally copy the **Encrypt Key** (recommended for security)
+
+## Step 5: Install the Lark Component
+
+In your Zylos session, tell Zylos:
+
+```
+Install the Lark component
+```
+
+Or install manually:
+
+```bash
+zylos install lark
+```
+
+When prompted, provide:
+- **App ID**
+- **App Secret**
+- **Verification Token**
+- **Encrypt Key** (optional)
+
+## Step 6: Configure Webhook URL
+
+After installation, Zylos will tell you the webhook URL. It follows this format:
+
+```
+https://your-domain.com/lark/webhook
+```
+
+Go back to the Lark developer console:
+1. Navigate to **Events and Callbacks**
+2. Select **Send events to developer server**
+3. Paste the webhook URL
+4. Subscribe to these events:
+   - `im.message.receive_v1` -- Receive messages
+   - `im.chat.member.bot.added_v1` -- Bot added to group
+5. Click **Save**
+
+## Step 7: Publish the Application
+
+1. Go to **Version Management and Release**
+2. Click **Create Version**
+3. Fill in a version number and notes
+4. Click **Save**, then **Release**
+5. Wait for admin approval (if required by your organization)
+
+## Step 8: Start Chatting
+
+1. Open your Lark/Feishu client
+2. Search for your bot by name
+3. Send a direct message -- Zylos will respond
+
+### Adding to Groups
+
+1. Open a group chat
+2. Go to **Group Settings** > **Bots** > **Add Bot**
+3. Search for your application name and add it
+4. @mention the bot to interact with it in the group
+
+## Access Control
+
+Similar to Telegram, you can configure who can interact with the bot:
+
+```bash
+# Manage via admin CLI
+node ~/zylos/components/lark/src/admin.js config set dmPolicy allowlist
+node ~/zylos/components/lark/src/admin.js whitelist add <lark_user_id>
+```
+
+## Lark vs Feishu
+
+The component works with both platforms. The only differences are:
+- **Developer console URL** -- `open.larksuite.com` vs `open.feishu.cn`
+- **API endpoints** -- Handled automatically by the component
+- **Permission names** -- Identical between platforms
+
+## Troubleshooting
+
+### Webhook verification fails
+- Ensure your domain has valid HTTPS (Lark requires it)
+- Check that the webhook URL is reachable from the internet
+- Verify the Verification Token matches between Lark console and your config
+
+### Bot doesn't respond in groups
+- Make sure the bot is added to the group
+- Check that you're @mentioning the bot
+- Verify `im.message.receive_v1` is subscribed in Events and Callbacks
+
+### Messages not arriving
+- Check the service: `pm2 status zylos-lark`
+- Check logs: `pm2 logs zylos-lark --lines 50`
+- Verify the application is published and approved
+
+## Configuration Reference
+
+| Setting | Location | Description |
+|---------|----------|-------------|
+| `LARK_APP_ID` | `~/zylos/.env` | App ID from developer console |
+| `LARK_APP_SECRET` | `~/zylos/.env` | App Secret from developer console |
+| `verification_token` | `config.json` | Webhook verification token |
+| `encrypt_key` | `config.json` | Optional encryption key |
+| Config file | `~/zylos/components/lark/config.json` | Full runtime configuration |
+| PM2 service | `zylos-lark` | Service name for pm2 commands |

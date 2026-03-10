@@ -1,0 +1,89 @@
+---
+title: Configuration
+description: How Zylos configuration works -- environment variables, config files, and secrets.
+---
+
+Zylos uses a layered configuration system. Secrets go in `.env` files, runtime settings go in `config.json` files, and behavioral instructions go in `CLAUDE.md`.
+
+## Environment File
+
+The main configuration file is `~/zylos/.env`. This holds API keys, tokens, and global settings.
+
+```bash
+# Core settings
+TZ=Asia/Shanghai
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Domain and proxy (optional)
+DOMAIN=your-domain.com
+HTTPS_PROXY=http://proxy:port
+
+# Channel credentials
+TELEGRAM_BOT_TOKEN=110201543:AAH...
+LARK_APP_ID=cli_a9f...
+LARK_APP_SECRET=...
+```
+
+> Never commit `.env` to version control. It's in `.gitignore` by default.
+
+## Config Files
+
+Each component has a `config.json` in its directory:
+
+```
+~/zylos/components/telegram/config.json
+~/zylos/components/lark/config.json
+```
+
+These contain non-sensitive runtime configuration like access policies, group settings, and feature flags. They're safe to inspect and modify.
+
+## Editing Configuration
+
+### Through Zylos
+
+The easiest way to change settings is to ask Zylos:
+
+```
+Change the Telegram DM policy to allowlist
+```
+
+Zylos knows where each setting lives and will make the change for you.
+
+### Manually
+
+1. Edit the relevant file (`~/zylos/.env` or a component's `config.json`)
+2. Restart the affected service:
+
+```bash
+# Restart a specific component
+pm2 restart zylos-telegram
+
+# Restart all services
+pm2 restart all
+```
+
+## Key Settings
+
+### Global Settings (in `~/zylos/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `TZ` | Timezone (e.g., `Asia/Shanghai`, `America/New_York`) |
+| `DOMAIN` | Your server's domain name (for HTTPS) |
+| `HTTPS_PROXY` | HTTP proxy for outbound connections |
+
+### Per-Component Settings
+
+Each component documents its settings in its SKILL.md file. Common patterns:
+
+- **Credentials** -- Stored in `~/zylos/.env` with the component prefix (e.g., `TELEGRAM_BOT_TOKEN`)
+- **Access control** -- Stored in `config.json` under `dmPolicy`, `groupPolicy`, `allowFrom`
+- **Feature flags** -- Stored in `config.json` under component-specific keys
+
+## Security
+
+- API keys and tokens are stored only in `.env` files
+- `.env` files have restricted permissions (`600`)
+- Zylos never exposes secrets in group chats or logs
+- Component configs (`config.json`) do not contain sensitive values

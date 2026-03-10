@@ -1,0 +1,5 @@
+{
+  "title": "Channels",
+  "defaultOpen": true,
+  "pages": ["index", "telegram", "lark", "web-console"]
+}
