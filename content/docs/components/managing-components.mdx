@@ -12,11 +12,11 @@ The `zylos` CLI handles component lifecycle management. You can also ask Zylos d
 Just tell Zylos what you want:
 
 ```
-Install the Telegram component
+Add the Telegram component
 ```
 
 Zylos will:
-1. Run `zylos install telegram`
+1. Run `zylos add telegram`
 2. Ask for any required credentials (e.g., Bot Token)
 3. Save credentials to `~/zylos/.env`
 4. Configure the component
@@ -25,7 +25,7 @@ Zylos will:
 ### Through the CLI
 
 ```bash
-zylos install <component-name>
+zylos add <component-name>
 ```
 
 After the CLI finishes downloading, Zylos handles the rest -- configuration, service setup, and verification.
@@ -35,16 +35,10 @@ After the CLI finishes downloading, Zylos handles the rest -- configuration, ser
 ### Check for updates
 
 ```bash
-# Check all components
-zylos upgrade --all --check
+# Check all components for updates
+zylos upgrade --check
 
-# Check a specific component
-zylos upgrade <component-name> --check
-```
-
-### Perform the upgrade
-
-```bash
+# Upgrade a specific component
 zylos upgrade <component-name>
 ```
 
@@ -78,10 +72,11 @@ Each component lives in `~/zylos/components/<name>/`:
 ~/zylos/components/telegram/
   src/              # Source code
   config.json       # Runtime configuration
-  .env              # Component-specific secrets (if any)
   data/             # Persistent data
   ecosystem.config.cjs  # PM2 service definition
 ```
+
+Secrets (API keys, tokens) are stored in the global `~/zylos/.env` file, not in component directories.
 
 The corresponding skill is auto-linked at `~/zylos/.claude/skills/<name>/`.
 

@@ -10,7 +10,7 @@ Zylos ships with an automated installer that handles the entire setup process. Y
 Run the following command on your server:
 
 ```bash
-curl -fsSL https://get.zylos.ai | bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash
 ```
 
 The installer will:
@@ -33,7 +33,7 @@ You'll be prompted for:
 
 - **Anthropic API key** -- Paste your API key from the Anthropic Console. This is stored locally in `~/zylos/.env` and never leaves your machine.
 - **Domain name** (optional) -- If you want to access the web console over HTTPS, enter your domain. Otherwise, skip this and use localhost.
-- **Default model** -- Choose which Claude model to use (claude-sonnet-4 recommended for most users).
+- **Timezone** -- Your preferred timezone (e.g., `Asia/Shanghai`, `America/New_York`).
 
 ## Verify the Installation
 

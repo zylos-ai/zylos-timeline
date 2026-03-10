@@ -28,22 +28,22 @@ The Telegram channel lets you chat with Zylos through a Telegram bot. It uses lo
 
 ## Step 2: Install the Telegram Component
 
-In your Zylos session (via Claude Code CLI or any connected channel), tell Zylos:
+In the Claude Code CLI on your server, tell Zylos:
 
 ```
-Install the Telegram component
+Add the Telegram component
 ```
 
-Zylos will run `zylos install telegram` and guide you through the setup. When prompted, paste your Bot Token.
+Zylos will run `zylos add telegram` and guide you through the setup. When prompted, paste your Bot Token.
 
 Alternatively, install manually:
 
 ```bash
-zylos install telegram
+zylos add telegram
 ```
 
 The installer will:
-1. Download the component from the Zylos registry
+1. Download the component from the Zylos GitHub repository
 2. Set up the PM2 service (`zylos-telegram`)
 3. Ask for your Bot Token and save it to `~/zylos/.env`
 

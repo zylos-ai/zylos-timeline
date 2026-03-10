@@ -11,7 +11,7 @@ The Lark channel connects Zylos to Lark (international) or Feishu (飞书, China
 
 - A Lark or Feishu account with access to the developer console
 - Zylos installed and running on your server
-- A **domain name** with HTTPS pointed at your server (required for Lark webhooks)
+- A **domain name** with HTTPS pointed at your server (required for Lark webhooks). If you configured a domain during `zylos init`, Caddy automatically handles SSL certificates.
 
 ## Step 1: Create a Lark Application
 
@@ -71,16 +71,16 @@ See the [full permissions list](https://github.com/zylos-ai/zylos-lark) in the c
 
 ## Step 5: Install the Lark Component
 
-In your Zylos session, tell Zylos:
+In the Claude Code CLI on your server, tell Zylos:
 
 ```
-Install the Lark component
+Add the Lark component
 ```
 
 Or install manually:
 
 ```bash
-zylos install lark
+zylos add lark
 ```
 
 When prompted, provide:
