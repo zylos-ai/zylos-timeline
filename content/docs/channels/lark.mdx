@@ -18,16 +18,30 @@ The Lark channel connects Zylos to Lark (international) or Feishu (飞书, China
 1. Go to the developer console:
    - **Lark:** [open.larksuite.com](https://open.larksuite.com)
    - **Feishu:** [open.feishu.cn](https://open.feishu.cn)
+
+![Lark Developer open platform](/docs/images/lark-open-platform.png)
+
 2. Click **Create Enterprise Self-Built Application**
+
+![Click create enterprise app](/docs/images/lark-create-app.png)
+
 3. Fill in the app name (e.g., "Zylos") and description
+
+![App creation form](/docs/images/lark-create-app-form.png)
+
 4. Click **Create**
 
 ## Step 2: Add Bot Capability
 
 1. In your new application, find **Add Application Capability**
 2. Click the **Robot** card to add bot functionality
+
+![Add bot capability to your application](/docs/images/lark-add-bot-capability.png)
+
 3. Go to **Credentials and Basic Information**
 4. Copy your **App ID** and **App Secret**
+
+![App ID and App Secret on the credentials page](/docs/images/lark-credentials.png)
 
 ## Step 3: Configure Permissions
 
@@ -44,12 +58,16 @@ Essential permissions:
 
 See the [full permissions list](https://github.com/zylos-ai/zylos-lark) in the component repository for the complete JSON you can import.
 
+![Permission management with batch import](/docs/images/lark-batch-import-permissions.png)
+
 ## Step 4: Get Verification Token
 
 1. Go to **Events and Callbacks**
 2. Click the **Encryption Strategy** tab
 3. Copy the **Verification Token** (required)
 4. Optionally copy the **Encrypt Key** (recommended for security)
+
+![Verification Token and Encrypt Key](/docs/images/lark-verification-token.png)
 
 ## Step 5: Install the Lark Component
 
@@ -88,6 +106,8 @@ Go back to the Lark developer console:
    - `im.chat.member.bot.added_v1` -- Bot added to group
 5. Click **Save**
 
+![Event subscription configuration](/docs/images/lark-events.png)
+
 ## Step 7: Publish the Application
 
 1. Go to **Version Management and Release**
@@ -95,6 +115,8 @@ Go back to the Lark developer console:
 3. Fill in a version number and notes
 4. Click **Save**, then **Release**
 5. Wait for admin approval (if required by your organization)
+
+![Create and publish a version](/docs/images/lark-publish-version.png)
 
 ## Step 8: Start Chatting
 
