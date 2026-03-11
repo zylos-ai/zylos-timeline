@@ -3,99 +3,107 @@ title: Installation
 description: Install Zylos with a single command.
 ---
 
-Zylos ships with an automated installer that handles the entire setup process. You'll go from zero to a running instance in about five minutes.
+## Requirements
 
-## Quick Install
+- **Linux or macOS** -- Ubuntu 22.04+, Debian 12+, RHEL, or macOS. 2+ cores, 4+ GB RAM, 20+ GB disk.
+- **Node.js 20.20+** -- The installer will install it via nvm if missing.
+- **Claude subscription** or **Anthropic API key** -- [Get one here](https://console.anthropic.com).
 
-Run the following command on your server:
+## Install
+
+One command handles everything — dependencies, CLI, and setup wizard:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash
 ```
 
-The installer will:
+The wizard will ask for your authentication method, domain (optional), and timezone. Once complete, all services start automatically.
 
-1. Install the `zylos` CLI as a global npm package (`npm install -g zylos`)
-2. Install and configure PM2 (process manager)
-3. Create the directory structure under `~/zylos/`
-4. Set up the Claude Code CLI
-5. Generate default configuration files
-
-## Interactive Setup
-
-After the installer finishes, run the initialization wizard:
+Prefer to install manually?
 
 ```bash
+npm install -g --install-links https://github.com/zylos-ai/zylos-core
 zylos init
 ```
 
-You'll be prompted for:
-
-- **Authentication** -- Either an Anthropic API key or a Claude Max setup token. Both are stored locally in `~/zylos/.env` and never leave your machine. You can also provide these via environment variables (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`).
-- **Domain name** (optional) -- If you want to access the web console over HTTPS, enter your domain. Caddy will automatically provision SSL certificates. Otherwise, skip this and use localhost.
-- **Timezone** -- Your preferred timezone (e.g., `Asia/Shanghai`, `America/New_York`).
-
-The wizard also installs and configures Caddy (the HTTP server), sets up PM2 services, and generates a web console password.
-
-**Non-interactive mode** is available for automated deployments:
-
-```bash
-zylos init --yes --api-key sk-ant-... --domain example.com --timezone UTC
-```
-
-Run `zylos init --help` for all available options.
-
-## Verify the Installation
-
-Run the built-in health check:
+## Verify
 
 ```bash
 zylos doctor
 ```
 
-This command verifies:
+Checks system dependencies, Claude authentication, and service status. Auto-fixes issues when possible.
 
-- Node.js version meets requirements
-- PM2 is running and managing Zylos services
-- API key is valid and can reach Anthropic
-- All core components are present
-- Memory system is initialized
+## Talk to Your Agent
 
-A healthy installation will show all checks passing in green. If anything fails, the output will include specific remediation steps.
+Start chatting right now:
 
-## Directory Structure
-
-After installation, your Zylos home looks like this:
-
-```
-~/zylos/
-  .env                # API keys and settings (never commit this)
-  .zylos/             # Core framework files and component registry
-  .claude/            # Claude Code configuration and skills
-    skills/           # Skill source code (managed by zylos CLI)
-  components/         # Runtime data for installed components
-  memory/             # Persistent memory files
-    identity.md       # Bot personality and principles
-    state.md          # Current active work
-    references.md     # Pointers to key resources
-    users/            # Per-user profiles
-    reference/        # Decisions, projects, preferences
-    sessions/         # Session logs
-  activity-monitor/   # C2 status files and logs
-  comm-bridge/        # C4 message database and attachments
-  scheduler/          # C5 task database
-  http/               # Caddy config and public files
-  pm2/                # PM2 ecosystem configuration
-  workspace/          # Working area for repos and experiments
-  logs/               # System logs
+```bash
+zylos shell
 ```
 
-## What's Next
+The [Web Console](/docs/channels/web-console) is also built in — access it via your domain or `http://localhost:3456`.
 
-Your Zylos instance is running, but it can't talk to anyone yet. The next step is connecting a communication channel so you can start interacting with it:
+Need more channels? See [all available channels](/docs/channels), then:
 
-- [Telegram](/docs/channels/telegram) -- The most popular channel for personal use (5 min setup)
-- [Web Console](/docs/channels/web-console) -- Built-in browser interface, no external accounts needed
-- [Lark / Feishu](/docs/channels/lark) -- Great for teams and enterprise use
+```bash
+zylos add <channel-name>
+```
 
-You can also interact with Zylos directly through the Claude Code CLI on your server.
+---
+
+## Advanced Options
+
+### Non-interactive mode
+
+For CI/CD or headless servers — pass flags to skip all prompts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash -s -- \
+  -y --setup-token sk-ant-oat01-xxx --domain agent.example.com --https
+```
+
+| Flag | Description |
+|------|-------------|
+| -y | Non-interactive mode |
+| --setup-token | Claude setup token |
+| --api-key | Anthropic API key |
+| --domain | Domain for HTTPS |
+| --timezone | IANA timezone |
+| --https / --no-https | Enable or disable HTTPS |
+| --caddy / --no-caddy | Install or skip Caddy |
+| --web-password | Web console password |
+| --no-init | Install CLI only, skip setup |
+| --branch | Install from a specific branch |
+| -q | Quiet output |
+
+Run `zylos init --help` for the full list. Also activates automatically when no TTY is available, `CI=true`, or `NONINTERACTIVE=1` is set.
+
+### Docker
+
+```bash
+docker run -d --name zylos \
+  -e CLAUDE_CODE_OAUTH_TOKEN=YOUR_TOKEN_HERE \
+  -p 3456:3456 \
+  -v zylos-data:/home/zylos/zylos \
+  -v claude-config:/home/zylos/.claude \
+  ghcr.io/zylos-ai/zylos-core:latest
+```
+
+See the [Docker Deployment Guide](https://github.com/zylos-ai/zylos-core/blob/main/docs/docker.md) for Docker Compose, environment variables, and NAS setup.
+
+### Windows / ChromeOS / unsupported platforms
+
+Use Claude Code's SSH feature to install on a remote Linux machine:
+
+```bash
+claude --ssh user@your-linux-server
+# Then ask Claude to install Zylos, or run the installer directly
+```
+
+### Uninstall
+
+```bash
+zylos uninstall --self          # Interactive removal
+zylos uninstall --self --force  # Skip prompts
+```

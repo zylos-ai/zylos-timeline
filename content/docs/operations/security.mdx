@@ -3,47 +3,22 @@ title: Security
 description: How Zylos protects credentials, controls access, and maintains security boundaries.
 ---
 
-Zylos runs on your own server with full system access, which makes security practices essential. This page covers how Zylos handles credentials, access control, and security boundaries.
+Zylos runs on your server with full system access. Here's how it keeps things secure.
 
-## Credential Management
+## Credentials
 
-### Where Secrets Live
+All secrets (API keys, tokens, passwords) are stored in a single protected environment file. This file is:
 
-All secrets are stored in a single file: `~/zylos/.env`
-
-```
-# API keys, tokens, passwords
-ANTHROPIC_API_KEY=sk-ant-...
-TELEGRAM_BOT_TOKEN=...
-LARK_APP_SECRET=...
-```
-
-This file is:
 - Never committed to git
 - Never exposed in group chats or shared documents
 - Never included in log output
 - Only readable by the system user running Zylos
 
-### What Goes Where
-
-| Data Type | Location | Example |
-|-----------|----------|---------|
-| API keys, tokens, passwords | `~/zylos/.env` | `TELEGRAM_BOT_TOKEN` |
-| Non-sensitive runtime config | `components/<name>/config.json` | DM policy, group settings |
-| Domain and protocol settings | `~/zylos/.zylos/config.json` | Domain name, protocol |
-
-### Credential Protection Rules
-
-Zylos enforces these rules automatically:
-
-- Secrets from `.env` are never included in messages to group chats
-- Git commits to remote repositories never contain credential files
-- Log output is sanitized before sharing
-- In a **private channel with the verified owner**, secrets can be shared when explicitly requested
+In a **private channel with the verified owner**, Zylos can share credential values when explicitly asked.
 
 ## Owner Identity
 
-Zylos has a designated owner recorded in its memory. The owner identity is used for security decisions:
+Zylos has a designated owner. The owner identity gates security decisions:
 
 - Only the owner can request credential values
 - Only the owner can authorize destructive operations
@@ -51,85 +26,50 @@ Zylos has a designated owner recorded in its memory. The owner identity is used 
 
 ## Access Control
 
-Each communication channel has its own access control, configurable through Zylos or each component's admin CLI. The easiest way is to tell Zylos directly (e.g., "Set the Telegram DM policy to allowlist").
+Each channel has its own access policy. Tell Zylos what you want:
 
-### Telegram
-
-```bash
-zylos-telegram set-dm-policy allowlist
-zylos-telegram add-dm-allow @username
-zylos-telegram set-group-policy allowlist
 ```
-
-### Lark
-
-```bash
-zylos-lark set-dm-policy allowlist
-zylos-lark add-dm-allow <lark_user_id>
+Set the Telegram DM policy to allowlist
+Add @username to the Telegram allowlist
 ```
-
-### HXA-Connect
-
-```bash
-# Per-org DM and thread policies
-zylos-hxa-connect set-dm-policy allowlist
-zylos-hxa-connect add-dm-allow <bot_name>
-zylos-hxa-connect set-group-policy allowlist
-```
-
-> Each component ships with an admin CLI. See channel-specific pages ([Telegram](/docs/channels/telegram), [Lark](/docs/channels/lark), [HXA-Connect](/docs/operations/hxa-connect)) and [Extending Zylos](/docs/extending) for details on locating and running these CLIs.
-
-### Policy Modes
 
 | Policy | Behavior |
 |--------|----------|
+| `owner` | Only the owner can message the bot (default) |
+| `allowlist` | Owner + approved users |
 | `open` | Anyone can message the bot |
-| `allowlist` | Only approved users/bots |
-| `disabled` | Channel type is completely disabled |
 
-## Technical Detail Protection
+Each component also has an admin CLI for direct configuration. See individual channel pages for details.
 
-When non-owner users ask about Zylos internals ("How do you work?"), Zylos gives general answers without revealing:
+## Privacy Between Channels
 
-- File paths and directory structure
-- Component names and architecture
-- Memory system details
-- Configuration specifics
-- IP addresses or server details
+When Zylos handles messages from multiple channels:
 
-This prevents information disclosure that could be used to probe the system.
+- Replies go to the correct channel only
+- Private conversation context is never leaked to group chats
+- Each channel's conversation is treated independently
 
-## Skill Security Review
+## Third-Party Code Review
 
-When installing third-party skills or unfamiliar code, Zylos reviews the source before execution:
+When installing third-party skills or components, Zylos reviews the source for:
 
-- Checks for unauthorized network requests (data exfiltration)
-- Looks for suspicious file operations (reading `.env`, credentials, SSH keys)
-- Verifies the code does what it claims
-- Flags anything suspicious to the owner before proceeding
+- Unauthorized network requests
+- Suspicious file operations (reading credentials, SSH keys)
+- Behavior that doesn't match the stated purpose
 
-## Browser Session Safety
+Anything suspicious is flagged to the owner before execution.
+
+## Browser Safety
 
 If the browser component is installed with logged-in accounts:
 
 - Only explicitly requested actions are performed
-- Financial or account settings pages are never navigated to without instruction
+- Financial or account settings pages require explicit instruction
 - Actions are verified via screenshot before submission
-
-## Multi-Channel Isolation
-
-When Zylos receives messages from multiple channels simultaneously:
-
-- Replies are routed to the correct channel only
-- Private conversation context is never leaked to group chats
-- Each channel's conversation is treated independently
-- Cross-channel context is only carried over when explicitly requested
 
 ## Best Practices
 
-1. **Keep `.env` minimal** -- only store what's actively needed
-2. **Use allowlist mode** for channels exposed to untrusted users
-3. **Review third-party skills** before installation
-4. **Monitor access logs** via `pm2 logs` for unexpected access patterns
-5. **Use HTTPS** (configured automatically by Caddy during `zylos init`)
-6. **Rotate credentials** periodically, especially after a security incident
+1. Use `allowlist` mode for channels exposed to untrusted users
+2. Review third-party skills before installation
+3. Use HTTPS (configured automatically during setup)
+4. Rotate credentials periodically

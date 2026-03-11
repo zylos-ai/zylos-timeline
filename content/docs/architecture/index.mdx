@@ -20,7 +20,8 @@ Zylos is built around a set of numbered **core systems** (C1–C6) that together
               ┌───────────┼───────────┐
               ▼           ▼           ▼
           Telegram      Lark     Web Console
-          Channel      Channel     Channel
+           Slack      WhatsApp     DingTalk
+                    and more...
 ```
 
 ### C1 -- Claude Code
@@ -51,8 +52,8 @@ A Caddy-based web server that handles HTTPS, reverse proxying, file sharing, and
 
 Components are modular add-ons that extend Zylos. Each component is a self-contained package with its own source code, configuration, and PM2 service. Components fall into two categories:
 
-- **Channel components** connect Zylos to a communication platform (Telegram, Lark, Web Console, HXA-Connect)
-- **Capability components** add new abilities (browser automation, image generation)
+- **Channel components** connect Zylos to a communication platform (Telegram, Lark, Slack, WhatsApp, and more)
+- **Capability components** add new abilities (browser automation, image generation, Notion integration)
 
 All components are managed through the `zylos` CLI. See [Components](/docs/components) for the full list.
 

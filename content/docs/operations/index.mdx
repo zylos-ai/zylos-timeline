@@ -1,26 +1,20 @@
 ---
 title: Operations
-description: Running, monitoring, and securing your Zylos instance in production.
+description: Running, monitoring, and securing your Zylos instance.
 ---
 
-This section covers the operational aspects of running Zylos -- security, monitoring, infrastructure, and troubleshooting.
+## Fixing Problems
 
-## Security
+**Talk to Zylos first.** Describe what's wrong in any connected channel or `zylos shell` — Zylos can diagnose, restart services, and fix configuration on its own.
 
-Zylos handles sensitive data (API keys, user conversations, memory files) and needs proper security practices:
+If Zylos is unreachable, run `zylos doctor` from the command line for automated diagnostics and repair.
 
-- [Security](/docs/operations/security) -- Credential protection, access control, and security model
+## Reliability
 
-## Monitoring & Reliability
+Zylos self-heals. The activity monitor auto-restarts the agent after crashes, rotates sessions when context gets high, and runs periodic liveness checks. No configuration needed.
 
-Zylos monitors itself and recovers automatically from most failures:
+## In This Section
 
-- [Activity Monitor](/docs/operations/activity-monitor) -- How Zylos stays alive and self-heals
-- [Troubleshooting](/docs/operations/troubleshooting) -- Common issues and how to fix them
-
-## Infrastructure
-
-The supporting services that make Zylos accessible:
-
-- [HTTP Service](/docs/operations/http-service) -- Caddy web server, HTTPS, and reverse proxy
-- [HXA-Connect](/docs/operations/hxa-connect) -- Bot-to-bot communication
+- [Security](/docs/operations/security) -- Credentials, access control, and security boundaries
+- [HTTP Service](/docs/operations/http-service) -- Domain, HTTPS, and file sharing
+- [Troubleshooting](/docs/operations/troubleshooting) -- Common issues and solutions

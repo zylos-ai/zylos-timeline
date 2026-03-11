@@ -1,113 +1,64 @@
 ---
 title: Extending Zylos
-description: How to create custom skills and components to extend Zylos with new capabilities.
+description: Create custom skills and components to add new capabilities.
 ---
 
-Zylos is designed to be extended. Whether you need a new communication channel, a custom automation workflow, or integration with an external service, you can build it as a skill or component.
+Zylos is designed to be extended. Whether you need a new workflow, an integration with an external service, or a new communication channel, you can build it as a **skill** or a **component**.
 
 ## Skills vs Components
 
 | | Skills | Components |
 |---|--------|------------|
 | **What** | Knowledge + workflow packages | Standalone services |
-| **Runs as** | Instructions loaded into Claude's context | PM2 services with their own process |
+| **Runs as** | Instructions loaded into the agent's context | PM2 services with their own process |
 | **Use for** | Procedures, domain knowledge, tool guidance | Channels, background services, complex integrations |
-| **Install** | Place in `~/zylos/.claude/skills/` | `zylos add <name>` |
-| **Examples** | Image generation guide, PR review workflow | Telegram bot, Lark webhook handler |
+| **Examples** | PR review workflow, deployment checklist | Telegram bot, Lark webhook handler |
 
-**Rule of thumb**: If it's knowledge or a workflow Claude follows, make it a skill. If it needs a long-running process, make it a component.
+**Rule of thumb**: If it's knowledge or a workflow the agent follows, make it a skill. If it needs a long-running process, make it a component.
 
 ## Creating a Skill
 
-### 1. Scaffold
+Tell Zylos:
 
-```bash
-node ~/zylos/.claude/skills/create-skill/scripts/init-skill.js my-skill
+```
+Create a skill called "deploy" that handles deployment to production
 ```
 
-This creates:
+Zylos has a built-in skill scaffolding tool. It will create the skill structure, write the initial `SKILL.md`, and set up scripts — all through conversation. You describe what the skill should do, and Zylos builds it.
+
+A skill consists of:
+
+- **`SKILL.md`** -- Metadata (name, description, trigger conditions) and instructions the agent follows
+- **`scripts/`** -- Executable code for deterministic operations
+- **`references/`** -- Documentation the agent reads on demand
+
+The `description` field in `SKILL.md` is what determines when the skill activates — write it carefully.
+
+### Iterating
+
+After creation, test the skill on real tasks and refine through conversation:
+
 ```
-~/zylos/.claude/skills/my-skill/
-├── SKILL.md          # Metadata + instructions
-├── scripts/          # Executable code
-├── references/       # Reference documentation
-└── assets/           # Output templates and files
-```
-
-### 2. Write the SKILL.md
-
-The frontmatter controls when the skill triggers:
-
-```yaml
----
-name: my-skill
-description: >-
-  Does X when Y happens. Use when Claude needs to Z.
----
+The deploy skill should also check that tests pass before deploying
 ```
 
-The body contains the instructions Claude follows when the skill activates. Write for an AI agent, not a human -- include procedural knowledge Claude wouldn't have by default.
-
-### 3. Add Resources
-
-- **Scripts** (`scripts/`): For deterministic operations that shouldn't be rewritten each time
-- **References** (`references/`): Documentation Claude reads on demand
-- **Assets** (`assets/`): Templates and files used in output
-
-### 4. Test and Iterate
-
-Use the skill on real tasks, notice what works and what doesn't, and refine.
+Zylos will update the skill files accordingly.
 
 ## Creating a Component
 
-Components are more complex than skills. They're standalone Node.js packages that run as PM2 services.
+Components are standalone Node.js packages that run as PM2 services. We provide an official template to get started:
 
-### Component Structure
+**[zylos-ai/zylos-component-template](https://github.com/zylos-ai/zylos-component-template)**
 
-```
-my-component/
-├── src/
-│   └── bot.js                 # Main entry point
-├── scripts/                   # C4 outbound interface
-├── hooks/
-│   ├── post-install.js        # Runs after zylos add
-│   ├── pre-upgrade.js         # Runs before zylos upgrade
-│   └── post-upgrade.js        # Runs after zylos upgrade
-├── package.json
-├── ecosystem.config.cjs       # PM2 service definition
-├── config.json                # Runtime configuration
-└── SKILL.md                   # Auto-linked skill for Claude
-```
+Point your AI coding assistant (Claude Code, Cursor, etc.) at this template repo and describe what you want to build. The template contains the complete structure, conventions, and integration patterns — your AI can read it and implement your component from there.
 
-### Key Requirements
+### What the Template Provides
 
-1. **PM2 service definition** (`ecosystem.config.cjs`): Defines how the service runs
-2. **C4 integration**: Use `c4-receive.js` to queue incoming messages for Claude
-3. **Lifecycle hooks**: Handle install, upgrade, and uninstall cleanly
-4. **SKILL.md**: Tell Claude how to interact with the component
-
-### C4 Integration Pattern
-
-Incoming messages flow through C4:
-
-```javascript
-// Queue a message for Claude
-import { execFileSync } from 'child_process';
-
-const c4Receive = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
-
-execFileSync('node', [c4Receive, channel, endpoint, priority], {
-  input: messageContent,
-  encoding: 'utf-8'
-});
-```
-
-Outgoing messages are routed by `c4-send.js`:
-
-```javascript
-// In your send script (scripts/send.js)
-// C4 calls this with: node scripts/send.js <endpoint> <message>
-```
+- **C4 integration** -- Message receiving and sending scripts
+- **PM2 service definition** -- `ecosystem.config.cjs`
+- **Lifecycle hooks** -- `post-install.js`, `pre-upgrade.js`, `post-upgrade.js`
+- **Admin CLI** -- Access control and configuration management
+- **SKILL.md** -- Agent instructions for using the component
 
 ### Publishing
 
@@ -117,45 +68,18 @@ Components are distributed as GitHub repositories. Users install with:
 zylos add org/my-component
 ```
 
-## Admin CLI
+## Sharing Your Component
 
-Most components include an admin CLI (`src/admin.js`) for managing access control and configuration. The admin CLI lives in the skill directory:
-
-```bash
-~/zylos/.claude/skills/<component-name>/src/admin.js
-```
-
-To run it:
-
-```bash
-node ~/zylos/.claude/skills/telegram/src/admin.js help
-node ~/zylos/.claude/skills/lark/src/admin.js show
-node ~/zylos/.claude/skills/hxa-connect/src/admin.js set-dm-policy allowlist
-```
-
-Common commands (varies by component):
-- `show` -- Display full configuration
-- `set-dm-policy <policy>` -- Set DM access policy (`open`, `allowlist`, `owner`)
-- `add-dm-allow <id>` -- Add a user to the DM allowlist
-- `set-group-policy <policy>` -- Set group/thread access policy
-- `help` -- List available commands
+Built something useful? Submit it to the [Zylos Registry](https://github.com/zylos-ai/zylos-registry) so other users can install it with `zylos add`. Community components are listed alongside official ones in `zylos search`.
 
 ## Best Practices
 
-### For Skills
-- Keep `SKILL.md` under 500 lines -- split into reference files
-- Write the `description` carefully -- it's the trigger mechanism
-- Put fragile operations in scripts for reliability
-- Only include information Claude doesn't already know
+### Skills
+- Keep `SKILL.md` under 500 lines -- split long content into reference files
+- Write the `description` carefully -- it determines when the skill triggers
+- Put fragile operations in scripts rather than inline instructions
 
-### For Components
-- Store secrets in `~/zylos/.env`, not in component config
+### Components
 - Use ESM (`import`/`export`), not CommonJS
 - Implement lifecycle hooks for clean upgrades
-- Declare `http_routes` in SKILL.md frontmatter if you need Caddy routes
-- Follow conventional commits for versioning
-
-### General
-- Test with `zylos doctor` after installation
-- Check PM2 logs after any change
 - Keep configurations minimal -- sensible defaults over extensive options

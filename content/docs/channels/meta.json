@@ -1,5 +1,5 @@
 {
   "title": "Channels",
   "defaultOpen": true,
-  "pages": ["index", "telegram", "lark", "web-console"]
+  "pages": ["index", "web-console", "telegram", "lark", "hxa-connect"]
 }

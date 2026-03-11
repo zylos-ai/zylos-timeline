@@ -9,10 +9,11 @@ The Communication Bridge (C4) is the central message hub. Every message between 
 
 ```
 Telegram    ──┐
-Lark        ───┼──► C4 Bridge ◄──► Claude
-Web Console ──┘       │
-HXA-Connect ─┘       │
-                   SQLite DB
+Lark        ──┤
+Slack       ───┼──► C4 Bridge ◄──► Zylos Agent
+WhatsApp    ──┤       │
+Web Console ──┤    SQLite DB
+  ...       ──┘
 ```
 
 C4 provides:

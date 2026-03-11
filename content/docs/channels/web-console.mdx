@@ -27,14 +27,19 @@ http://localhost:3456
 
 ## Authentication
 
-The Web Console uses a simple password-based authentication. Set the password in your environment:
+The Web Console uses password-based authentication. A password is automatically generated and displayed when Zylos finishes installation.
+
+To retrieve your password later:
+- **From the shell:** run `zylos shell`, then ask "what's my web console password?"
+- **From another channel:** ask Zylos through Telegram, Lark, or any connected IM
+
+To change the password manually, edit `~/zylos/.env`:
 
 ```bash
-# In ~/zylos/.env
-WEB_CONSOLE_PASSWORD=your-secure-password
+WEB_CONSOLE_PASSWORD=your-new-password
 ```
 
-After changing the password, restart the service:
+Then restart the service:
 
 ```bash
 pm2 restart web-console

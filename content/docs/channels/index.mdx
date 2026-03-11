@@ -3,42 +3,46 @@ title: Channels
 description: Connect Zylos to the messaging platforms you already use.
 ---
 
-Channels are how you communicate with your Zylos instance. Each channel connects a messaging platform to Zylos through the C4 Communication Bridge, allowing your AI to send and receive messages across multiple platforms simultaneously.
+Channels connect your Zylos agent to messaging platforms. All channels share the same memory and conversation context — one AI, every platform.
 
-## Supported Channels
+## Available Channels
 
-| Channel | Status | Best For |
-|---------|--------|----------|
-| **Telegram** | Stable | Personal use, mobile access |
-| **Lark / Feishu** | Stable | Teams, enterprise collaboration |
-| **Web Console** | Stable | Browser access, no external accounts needed |
+| Channel | Type | Install |
+|---------|------|---------|
+| **[Web Console](/docs/channels/web-console)** | Built-in | Included with Zylos |
+| **[Telegram](/docs/channels/telegram)** | Official | `zylos add telegram` |
+| **[Lark](/docs/channels/lark)** (international) | Official | `zylos add lark` |
+| **Feishu** (飞书, mainland China) | Official | `zylos add feishu` |
+| **Slack** | Official | `zylos add slack` |
+| **WhatsApp** | Official | `zylos add whatsapp` |
+| **WeCom** (企业微信) | Official | `zylos add wecom` |
+| **DingTalk** (钉钉) | Official | `zylos add dingtalk` |
+| **[HXA-Connect](/docs/channels/hxa-connect)** | Community | `zylos add hxa-connect` |
 
-More channels are on the roadmap. Check our [GitHub issues](https://github.com/zylos-ai/zylos-core/issues) for updates.
+Search for more: `zylos search`
 
 ## How Channels Work
 
-All channels feed into a single conversation stream. When you message Zylos on Telegram, it has the same context as a message sent through the Web Console. This means:
-
-- **One memory, all channels** -- Zylos remembers everything regardless of which channel you used
-- **Channel-aware responses** -- Zylos knows which channel a message came from and replies through the same channel
-- **Simultaneous connections** -- You can have Telegram, Lark, and the Web Console all active at once
-
-## Architecture
+All channels feed into a single conversation stream through the C4 Communication Bridge:
 
 ```
-Telegram ───┐
-             ├── C4 Communication Bridge ── Claude Agent
-Lark ────────┤
-             │
-Web Console ─┘
+Web Console ┐
+Telegram ───┤
+Lark ───────┤
+Slack ──────┼── C4 Communication Bridge ── Zylos Agent
+WhatsApp ───┤
+DingTalk ───┤
+  ...       ┘
 ```
 
-Each channel is a separate **component** that you install and configure independently. They all connect to the C4 Communication Bridge, which queues and delivers messages to and from the Claude agent.
+- **One memory, all channels** -- Your agent remembers everything regardless of which channel you used
+- **Channel-aware responses** -- Replies go back through the same channel the message came from
+- **Simultaneous connections** -- Run as many channels as you need at once
 
 ## Getting Started
 
-Pick a channel and follow the setup guide:
+```bash
+zylos add <channel-name>
+```
 
-- [Telegram](/docs/channels/telegram) -- 5 minutes, easiest to set up
-- [Lark / Feishu](/docs/channels/lark) -- 10-15 minutes, requires app creation on Lark Open Platform
-- [Web Console](/docs/channels/web-console) -- Built-in, no external accounts needed
+Each channel has its own setup guide. Pick one above and follow the link.
