@@ -1,0 +1,161 @@
+---
+title: Extending Zylos
+description: How to create custom skills and components to extend Zylos with new capabilities.
+---
+
+Zylos is designed to be extended. Whether you need a new communication channel, a custom automation workflow, or integration with an external service, you can build it as a skill or component.
+
+## Skills vs Components
+
+| | Skills | Components |
+|---|--------|------------|
+| **What** | Knowledge + workflow packages | Standalone services |
+| **Runs as** | Instructions loaded into Claude's context | PM2 services with their own process |
+| **Use for** | Procedures, domain knowledge, tool guidance | Channels, background services, complex integrations |
+| **Install** | Place in `~/zylos/.claude/skills/` | `zylos add <name>` |
+| **Examples** | Image generation guide, PR review workflow | Telegram bot, Lark webhook handler |
+
+**Rule of thumb**: If it's knowledge or a workflow Claude follows, make it a skill. If it needs a long-running process, make it a component.
+
+## Creating a Skill
+
+### 1. Scaffold
+
+```bash
+node ~/zylos/.claude/skills/create-skill/scripts/init-skill.js my-skill
+```
+
+This creates:
+```
+~/zylos/.claude/skills/my-skill/
+├── SKILL.md          # Metadata + instructions
+├── scripts/          # Executable code
+├── references/       # Reference documentation
+└── assets/           # Output templates and files
+```
+
+### 2. Write the SKILL.md
+
+The frontmatter controls when the skill triggers:
+
+```yaml
+---
+name: my-skill
+description: >-
+  Does X when Y happens. Use when Claude needs to Z.
+---
+```
+
+The body contains the instructions Claude follows when the skill activates. Write for an AI agent, not a human -- include procedural knowledge Claude wouldn't have by default.
+
+### 3. Add Resources
+
+- **Scripts** (`scripts/`): For deterministic operations that shouldn't be rewritten each time
+- **References** (`references/`): Documentation Claude reads on demand
+- **Assets** (`assets/`): Templates and files used in output
+
+### 4. Test and Iterate
+
+Use the skill on real tasks, notice what works and what doesn't, and refine.
+
+## Creating a Component
+
+Components are more complex than skills. They're standalone Node.js packages that run as PM2 services.
+
+### Component Structure
+
+```
+my-component/
+├── src/
+│   └── bot.js                 # Main entry point
+├── scripts/                   # C4 outbound interface
+├── hooks/
+│   ├── post-install.js        # Runs after zylos add
+│   ├── pre-upgrade.js         # Runs before zylos upgrade
+│   └── post-upgrade.js        # Runs after zylos upgrade
+├── package.json
+├── ecosystem.config.cjs       # PM2 service definition
+├── config.json                # Runtime configuration
+└── SKILL.md                   # Auto-linked skill for Claude
+```
+
+### Key Requirements
+
+1. **PM2 service definition** (`ecosystem.config.cjs`): Defines how the service runs
+2. **C4 integration**: Use `c4-receive.js` to queue incoming messages for Claude
+3. **Lifecycle hooks**: Handle install, upgrade, and uninstall cleanly
+4. **SKILL.md**: Tell Claude how to interact with the component
+
+### C4 Integration Pattern
+
+Incoming messages flow through C4:
+
+```javascript
+// Queue a message for Claude
+import { execFileSync } from 'child_process';
+
+const c4Receive = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
+
+execFileSync('node', [c4Receive, channel, endpoint, priority], {
+  input: messageContent,
+  encoding: 'utf-8'
+});
+```
+
+Outgoing messages are routed by `c4-send.js`:
+
+```javascript
+// In your send script (scripts/send.js)
+// C4 calls this with: node scripts/send.js <endpoint> <message>
+```
+
+### Publishing
+
+Components are distributed as GitHub repositories. Users install with:
+
+```bash
+zylos add org/my-component
+```
+
+## Admin CLI
+
+Most components include an admin CLI (`src/admin.js`) for managing access control and configuration. The admin CLI lives in the skill directory:
+
+```bash
+~/zylos/.claude/skills/<component-name>/src/admin.js
+```
+
+To run it:
+
+```bash
+node ~/zylos/.claude/skills/telegram/src/admin.js help
+node ~/zylos/.claude/skills/lark/src/admin.js show
+node ~/zylos/.claude/skills/hxa-connect/src/admin.js set-dm-policy allowlist
+```
+
+Common commands (varies by component):
+- `show` -- Display full configuration
+- `set-dm-policy <policy>` -- Set DM access policy (`open`, `allowlist`, `owner`)
+- `add-dm-allow <id>` -- Add a user to the DM allowlist
+- `set-group-policy <policy>` -- Set group/thread access policy
+- `help` -- List available commands
+
+## Best Practices
+
+### For Skills
+- Keep `SKILL.md` under 500 lines -- split into reference files
+- Write the `description` carefully -- it's the trigger mechanism
+- Put fragile operations in scripts for reliability
+- Only include information Claude doesn't already know
+
+### For Components
+- Store secrets in `~/zylos/.env`, not in component config
+- Use ESM (`import`/`export`), not CommonJS
+- Implement lifecycle hooks for clean upgrades
+- Declare `http_routes` in SKILL.md frontmatter if you need Caddy routes
+- Follow conventional commits for versioning
+
+### General
+- Test with `zylos doctor` after installation
+- Check PM2 logs after any change
+- Keep configurations minimal -- sensible defaults over extensive options

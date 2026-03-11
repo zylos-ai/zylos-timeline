@@ -1,0 +1,110 @@
+---
+title: Memory System
+description: How Zylos maintains persistent memory across sessions using a tiered, file-based architecture.
+---
+
+Zylos uses a tiered, file-based memory system that gives the AI persistent knowledge across sessions. Inspired by cognitive science, different types of information are stored at different levels -- from always-present identity to on-demand reference material.
+
+## Why File-Based Memory?
+
+Traditional AI assistants forget everything when a session ends. Zylos solves this with plain markdown files that Claude reads at session start and updates during operation. Files are simple, auditable, and version-controlled with daily git commits.
+
+## Memory Tiers
+
+```
+~/zylos/memory/
+├── identity.md              # Who I am (always loaded)
+├── state.md                 # What I'm working on (always loaded)
+├── references.md            # Where to find things (always loaded)
+├── users/
+│   └── <id>/profile.md      # Per-user preferences (on demand)
+├── reference/
+│   ├── decisions.md         # Key decisions with rationale
+│   ├── projects.md          # Active/planned projects
+│   ├── preferences.md       # Shared team preferences
+│   └── ideas.md             # Uncommitted plans
+├── sessions/
+│   ├── current.md           # Today's session log
+│   └── YYYY-MM-DD.md        # Past session logs
+└── archive/                 # Cold storage
+```
+
+### Always-Loaded Tiers
+
+These files are injected into every session via hooks. They're kept intentionally lean to minimize context usage.
+
+| File | Purpose | Budget |
+|------|---------|--------|
+| `identity.md` | Bot personality, principles, digital assets | ~50 lines |
+| `state.md` | Current focus, in-progress work, pending tasks | < 4KB |
+| `references.md` | Pointers to config files, key paths, active IDs | ~40 lines |
+
+### On-Demand Tiers
+
+Loaded when Claude needs them -- a file read is cheaper than a wrong assumption.
+
+| File | Purpose | Trigger |
+|------|---------|---------|
+| `users/<id>/profile.md` | User-specific preferences and context | Interacting with a user |
+| `reference/decisions.md` | Committed choices that close alternatives | Making a decision |
+| `reference/projects.md` | Scoped work efforts with status | Starting/resuming work |
+| `reference/preferences.md` | Standing team-wide instructions | Following a convention |
+| `reference/ideas.md` | Uncommitted proposals and explorations | Exploring ideas |
+| `sessions/current.md` | Today's event log | Recalling recent events |
+| `archive/` | Historical data moved from active files | Searching for old info |
+
+## How Memory Updates Work
+
+### During Normal Operation
+
+When Claude learns something important during a conversation, it writes directly to the appropriate memory file. For example:
+
+- A user says "always use bun instead of npm" → write to `reference/preferences.md`
+- A decision is made to use ESM-only → write to `reference/decisions.md`
+- A new project starts → write to `reference/projects.md`
+
+### Memory Sync
+
+Memory Sync is an automated process that reviews recent conversations and extracts structured information. It runs as a background task, triggered when unsummarized conversations exceed a threshold.
+
+The sync flow:
+
+1. **Rotate** session log if the day has changed
+2. **Fetch** unsummarized conversations from the C4 database
+3. **Read** all memory files for current context
+4. **Extract and classify** updates from conversations into the correct files
+5. **Write** memory updates
+6. **Checkpoint** the sync boundary in C4 so conversations aren't processed twice
+
+### Classification Rules
+
+Each piece of information goes to a specific file:
+
+| Information Type | Destination | Example |
+|-----------------|-------------|---------|
+| Committed choice that closes alternatives | `reference/decisions.md` | "We'll use ESM-only for all code" |
+| Scoped work effort with status | `reference/projects.md` | "Docker support -- started, in PR review" |
+| Standing team-wide instruction | `reference/preferences.md` | "PR reviews should focus on issues, not praise" |
+| Uncommitted proposal | `reference/ideas.md` | "Maybe add Notion as a channel" |
+| User-specific preference | `users/<id>/profile.md` | "This user prefers Chinese responses" |
+| Active work and tasks | `state.md` | "Currently working on docs Phase 2" |
+| Today's events | `sessions/current.md` | "Reviewed PR #294, found upgrade bug" |
+
+## Multi-User Support
+
+Zylos serves teams. Each user gets their own profile at `memory/users/<id>/profile.md`, storing their individual preferences, communication style, and context. Bot-wide settings stay in the core memory files.
+
+## Consolidation
+
+Memory files are periodically reviewed to prevent unbounded growth:
+
+- **Core files** have size budgets -- `state.md` must stay under 4KB
+- **Session logs** older than 30 days are moved to `archive/`
+- **Reference files** have no size cap but entries are reviewed by freshness
+- **User profiles** over ~1KB are summarized
+
+Content is never deleted -- it's moved to `archive/` and remains recoverable from git history.
+
+## Daily Backup
+
+The activity monitor runs a daily local git commit of the `memory/` directory at 3:00 AM. This provides a safety net for all memory changes without requiring any external services.

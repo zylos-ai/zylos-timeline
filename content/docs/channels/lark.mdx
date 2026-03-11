@@ -133,13 +133,29 @@ Go back to the Lark developer console:
 
 ## Access Control
 
-Similar to Telegram, you can configure who can interact with the bot:
+Similar to Telegram, you can configure who can interact with the bot through Zylos or the admin CLI.
+
+**Through Zylos:**
+
+```
+Set the Lark DM policy to allowlist
+Add <lark_user_id> to the Lark allowlist
+```
+
+**Through the admin CLI:**
 
 ```bash
-# Manage via admin CLI
-node ~/zylos/components/lark/src/admin.js config set dmPolicy allowlist
-node ~/zylos/components/lark/src/admin.js whitelist add <lark_user_id>
+# Set DM policy
+zylos-lark set-dm-policy allowlist
+
+# Allow a specific user
+zylos-lark add-dm-allow <lark_user_id>
+
+# Group policy
+zylos-lark set-group-policy allowlist
 ```
+
+> See [Extending Zylos](/docs/extending) for how to locate and run component admin CLIs.
 
 ## Lark vs Feishu
 
@@ -173,5 +189,8 @@ The component works with both platforms. The only differences are:
 | `LARK_APP_SECRET` | `~/zylos/.env` | App Secret from developer console |
 | `verification_token` | `config.json` | Webhook verification token |
 | `encrypt_key` | `config.json` | Optional encryption key |
+| `webhook_port` | `config.json` | Internal webhook listener port (default: `3457`) |
 | Config file | `~/zylos/components/lark/config.json` | Full runtime configuration |
 | PM2 service | `zylos-lark` | Service name for pm2 commands |
+
+The Lark component runs a local webhook listener on port `3457`. Caddy reverse-proxies the `/lark/webhook` path to this internal port, so you don't need to expose it directly.

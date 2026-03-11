@@ -1,0 +1,134 @@
+---
+title: Architecture Overview
+description: How Zylos is structured -- numbered core systems, components, and the data flow between them.
+---
+
+Zylos is built around a set of numbered **core systems** (C1–C6) that together create a persistent, autonomous AI companion. Each system handles a distinct responsibility, and they communicate through well-defined interfaces.
+
+## The Core Systems
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Claude Code (C1)                  │
+│              The AI engine at the center             │
+├──────────┬──────────┬──────────┬──────────┬─────────┤
+│ Activity │  Memory  │  Comm    │Scheduler │  HTTP   │
+│ Monitor  │  System  │  Bridge  │          │ Service │
+│   (C2)   │   (C3)   │   (C4)   │   (C5)  │  (C6)  │
+└──────────┴──────────┴──────────┴──────────┴─────────┘
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+          Telegram      Lark     Web Console
+          Channel      Channel     Channel
+```
+
+### C1 -- Claude Code
+
+The AI engine. Claude Code runs in a persistent tmux session and serves as the brain of the system. It processes incoming messages, makes decisions, reads and writes memory, executes skills, and manages all other systems. Everything flows through C1.
+
+### C2 -- Activity Monitor
+
+A PM2 service that watches Claude's health. If Claude stops responding (no heartbeat within the configured interval), C2 automatically restarts it. This ensures the system stays available even after crashes or context overflows.
+
+### C3 -- Memory System
+
+A tiered, file-based memory system that gives Claude persistent knowledge across sessions. Memory ranges from always-loaded identity files to on-demand reference documents and archived history. See [Memory System](/docs/architecture/memory) for details.
+
+### C4 -- Communication Bridge
+
+The central message router. All external communication -- Telegram DMs, Lark group chats, web console sessions -- flows through C4. It queues incoming messages, delivers them to Claude via a dispatcher, and routes outgoing replies back to the correct channel. See [Communication Bridge](/docs/architecture/communication-bridge) for details.
+
+### C5 -- Scheduler
+
+A task scheduling system that lets Zylos act autonomously. Rather than only responding when prompted, the scheduler can wake Claude up at specific times or intervals to perform deferred work, periodic checks, or recurring tasks. See [Scheduler](/docs/architecture/scheduler) for details.
+
+### C6 -- HTTP Service
+
+A Caddy-based web server that handles HTTPS, reverse proxying, file sharing, and webhook endpoints. It provides the public-facing infrastructure that channels like Lark need for their webhooks. See [HTTP Service](/docs/operations/http-service) for details.
+
+## Components
+
+Components are modular add-ons that extend Zylos. Each component is a self-contained package with its own source code, configuration, and PM2 service. Components fall into two categories:
+
+- **Channel components** connect Zylos to a communication platform (Telegram, Lark, Web Console, HXA-Connect)
+- **Capability components** add new abilities (browser automation, image generation)
+
+All components are managed through the `zylos` CLI. See [Components](/docs/components) for the full list.
+
+## Message Flow
+
+Here's how a typical message travels through the system:
+
+1. **User sends a message** on Telegram, Lark, or the web console
+2. **Channel component** receives the message via its protocol (long polling, webhook, or WebSocket)
+3. **C4 Communication Bridge** queues the message in its SQLite database
+4. **C4 Dispatcher** delivers the message to Claude (C1) as a conversation turn
+5. **Claude processes** the message -- reading memory, executing skills, calling tools
+6. **Claude sends a reply** via C4's send script, which routes it back to the originating channel
+7. **Channel component** delivers the reply to the user
+
+## Data Flow
+
+```
+User ──► Channel ──► C4 Queue ──► Dispatcher ──► Claude (C1)
+                                                     │
+                                                     ├── reads/writes C3 Memory
+                                                     ├── schedules via C5
+                                                     ├── replies via C4 Send
+                                                     │
+Claude (C1) ──► C4 Send ──► Channel ──► User
+```
+
+## Service Management
+
+All core systems and components run as PM2 services. You can check their status at any time:
+
+```bash
+# View all services
+zylos status
+
+# Or directly via PM2
+pm2 status
+```
+
+Each service has its own logs accessible through PM2:
+
+```bash
+pm2 logs <service-name> --lines 50
+```
+
+## File System Layout
+
+```
+~/zylos/
+├── .env                    # All secrets and configuration
+├── .zylos/                 # Core framework files
+│   └── components.json     # Component registry
+├── .claude/
+│   └── skills/             # Source code and skill definitions
+│       ├── telegram/       #   Source, PM2 config, SKILL.md
+│       ├── lark/
+│       └── ...
+├── components/             # Runtime data per component
+│   ├── telegram/           #   config.json, logs, media
+│   ├── lark/
+│   └── ...
+├── memory/                 # C3 Memory System
+├── comm-bridge/            # C4 database and attachments
+├── scheduler/              # C5 task database
+├── pm2/                    # PM2 ecosystem configuration
+└── logs/                   # System logs
+```
+
+Note the separation: `.claude/skills/` holds source code and service definitions (managed by the CLI during install/upgrade), while `components/` holds runtime data like configuration, logs, and user-generated content. This separation allows clean upgrades without overwriting your settings.
+
+## What Makes This Different
+
+Traditional AI assistants are stateless request-response systems. Zylos adds:
+
+- **Persistence** -- Memory survives across sessions and restarts
+- **Autonomy** -- The scheduler enables self-directed action
+- **Multi-channel** -- One brain, many interfaces
+- **Self-monitoring** -- The activity monitor ensures uptime
+- **Modularity** -- Add or remove capabilities without touching the core

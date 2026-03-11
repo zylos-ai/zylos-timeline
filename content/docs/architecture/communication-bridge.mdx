@@ -1,0 +1,135 @@
+---
+title: Communication Bridge
+description: The C4 message router that connects all channels to Claude through a unified queue.
+---
+
+The Communication Bridge (C4) is the central message hub. Every message between users and Claude -- whether from Telegram, Lark, the web console, or bot-to-bot channels -- flows through C4.
+
+## Architecture
+
+```
+Telegram    ──┐
+Lark        ───┼──► C4 Bridge ◄──► Claude
+Web Console ──┘       │
+HXA-Connect ─┘       │
+                   SQLite DB
+```
+
+C4 provides:
+- **Message queuing** -- incoming messages are stored in a SQLite database before delivery
+- **Priority routing** -- urgent messages (like heartbeats) are delivered before regular messages
+- **Outgoing routing** -- Claude's replies are sent back to the correct channel and endpoint
+- **Conversation history** -- all messages are logged for memory sync and debugging
+- **Checkpoint system** -- tracks which conversations have been processed by memory sync
+
+## Core Scripts
+
+| Script | Direction | Purpose |
+|--------|-----------|---------|
+| `c4-receive.js` | External → Queue | Channels call this to queue incoming messages |
+| `c4-dispatcher.js` | Queue → Claude | PM2 daemon that polls the queue and delivers to Claude |
+| `c4-send.js` | Claude → External | Routes outgoing messages back to the correct channel |
+| `c4-control.js` | System | Control plane for heartbeats, maintenance, and system tasks |
+
+## Message Flow: Incoming
+
+1. A user sends a message on Telegram
+2. The Telegram component receives it via long polling
+3. It calls `c4-receive.js` to queue the message with channel, endpoint, and priority
+4. The `c4-dispatcher` daemon picks up the message when Claude is idle
+5. The message is delivered to Claude's tmux session as a conversation turn
+
+## Message Flow: Outgoing
+
+1. Claude decides to reply
+2. It runs `c4-send.js` with the channel name and endpoint from the "reply via" path
+3. `c4-send.js` routes the message to the correct channel component
+4. The channel component delivers it to the user on their platform
+
+Each incoming message includes a "reply via" path that tells Claude exactly how to respond:
+
+```
+[TG DM] user said: hello
+---- reply via: node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "123456789"
+```
+
+## Database
+
+C4 uses a SQLite database at `~/zylos/comm-bridge/c4.db` with three tables:
+
+### conversations
+
+All messages (incoming and outgoing) with metadata:
+- Channel and endpoint
+- Priority level
+- Status (pending, delivered, done)
+- Timestamps and retry tracking
+
+### checkpoints
+
+Recovery points that mark sync boundaries. When memory sync processes conversations up to ID 500, it creates a checkpoint so those conversations aren't reprocessed.
+
+### control_queue
+
+System control messages with priority, ack deadlines, and status lifecycle. Used for heartbeats, health checks, scheduled tasks, and maintenance operations.
+
+## Control Queue
+
+The control queue is separate from regular messages and handles system-level operations:
+
+| Message Type | Source | Purpose |
+|-------------|--------|---------|
+| Heartbeat | Activity Monitor | Verify Claude is responsive |
+| Health check | Activity Monitor | Periodic system health verification |
+| Scheduled task | Scheduler (C5) | Deliver tasks when they're due |
+| Context check | Context Monitor | Trigger session handoff when context is high |
+
+Control messages have ack deadlines -- if Claude doesn't acknowledge within the deadline, the message transitions to `timeout` status.
+
+## Health-Aware Intake
+
+C4 checks Claude's health status before accepting new messages:
+
+| Health | Behavior |
+|--------|----------|
+| `ok` | Messages accepted normally |
+| `recovering` | Messages rejected, channel recorded for later notification |
+| `down` | Messages rejected, manual intervention required |
+
+When health returns to `ok`, recovery notifications are sent to all channels that had messages rejected during the outage.
+
+**Fail-open**: If the health status file is missing or malformed, health is assumed `ok` -- message intake is never blocked by a read failure.
+
+## Session Init Hook
+
+At session start, C4 automatically:
+1. Injects recent conversation context so Claude knows what happened recently
+2. Checks the unsummarized conversation count
+3. Triggers memory sync if the count exceeds the configured threshold
+
+## Querying Conversations
+
+Use the `c4-db.js` CLI to query conversation history:
+
+```bash
+DB=~/zylos/.claude/skills/comm-bridge/scripts/c4-db.js
+
+# Recent conversations
+node $DB recent --limit 20
+
+# Conversations by channel
+node $DB recent --channel telegram
+
+# Checkpoint status
+node $DB checkpoints
+```
+
+## Service Management
+
+The dispatcher runs as a PM2 service:
+
+```bash
+pm2 status c4-dispatcher
+pm2 logs c4-dispatcher
+pm2 restart c4-dispatcher
+```

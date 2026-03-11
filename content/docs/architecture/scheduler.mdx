@@ -1,0 +1,144 @@
+---
+title: Scheduler
+description: The C5 task scheduling system that enables Zylos to act autonomously on a schedule.
+---
+
+The Scheduler (C5) enables Zylos to work autonomously by dispatching tasks at specific times or intervals. Instead of only responding when prompted, Zylos can schedule follow-ups, periodic checks, and deferred work -- effectively "waking itself up" at the right moment.
+
+## How It Works
+
+```
+Scheduler (PM2 service)
+    │
+    ├── Checks for due tasks every second
+    ├── Verifies Claude is alive and healthy
+    └── Dispatches via C4 control queue
+            │
+            └── C4 delivers to Claude when idle
+```
+
+1. The scheduler runs as a PM2 service, checking for due tasks continuously
+2. When a task is due, it checks that Claude is alive (via the activity monitor status file)
+3. It dispatches the task through the C4 control queue
+4. C4 handles delivery timing -- waiting for Claude to be idle if needed
+5. Claude processes the task and marks it as done
+
+## Task Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| **One-time** | Runs once at a specific time | "Remind me to check the deployment at 3 PM" |
+| **Cron** | Runs on a cron schedule | "Send a daily briefing at 9 AM" |
+| **Interval** | Runs every N seconds/minutes | "Check server status every 30 minutes" |
+
+## CLI Reference
+
+All commands use the scheduler CLI:
+
+```bash
+CLI=~/zylos/.claude/skills/scheduler/scripts/cli.js
+```
+
+### Adding Tasks
+
+```bash
+# One-time task at a specific time
+node $CLI add "Check deployment status" --at "2026-03-15 14:00"
+
+# Recurring task with cron schedule (daily at 9 AM)
+node $CLI add "Send morning briefing" --cron "0 9 * * *"
+
+# Interval task (every 30 minutes)
+node $CLI add "Check server health" --every 1800
+
+# Task with priority
+node $CLI add "Urgent check" --at "now + 5min" --priority 1
+```
+
+### Querying Tasks
+
+```bash
+# List all active tasks
+node $CLI list
+
+# Show next task due
+node $CLI next
+
+# Show currently running tasks
+node $CLI running
+
+# Show task history
+node $CLI history
+```
+
+### Managing Task Lifecycle
+
+```bash
+# Mark a task as done
+node $CLI done <task-id>
+
+# Pause a recurring task
+node $CLI pause <task-id>
+
+# Resume a paused task
+node $CLI resume <task-id>
+
+# Remove a task entirely
+node $CLI remove <task-id>
+
+# Update a task
+node $CLI update <task-id> --prompt "New task description"
+```
+
+## Timezone
+
+The scheduler resolves timezone in this order:
+
+1. `TZ` field in `~/zylos/.env`
+2. `process.env.TZ`
+3. Falls back to `UTC`
+
+Times are parsed and displayed in the configured timezone. The database stores everything in UTC internally.
+
+## Task Lifecycle
+
+```
+pending ──► running ──► done
+  │                      │
+  ├── pause ──► paused   │
+  │              │       │
+  │              resume  │
+  │              │       │
+  └──────────────┘       │
+                         │
+  failed ◄───────────────┘
+```
+
+- **pending**: Task is scheduled but not yet due
+- **running**: Task has been dispatched to Claude
+- **done**: Task completed successfully
+- **paused**: Task is temporarily suspended
+- **failed**: Task dispatch or execution failed
+
+For recurring tasks (cron/interval), completing a task automatically schedules the next occurrence.
+
+## Built-in Scheduled Tasks
+
+The activity monitor handles several built-in scheduled operations outside the C5 scheduler:
+
+| Task | Schedule | Purpose |
+|------|----------|---------|
+| Heartbeat | Every 30 minutes | Verify Claude is responsive |
+| Health check | Every 6 hours | Check PM2, disk, memory |
+| Daily upgrade | 5:00 AM local | Upgrade Claude Code |
+| Memory commit | 3:00 AM local | Git commit memory files |
+
+These run directly in the activity monitor for reliability -- they don't depend on Claude being alive to be scheduled.
+
+## Service Management
+
+```bash
+pm2 status scheduler
+pm2 logs scheduler
+pm2 restart scheduler
+```

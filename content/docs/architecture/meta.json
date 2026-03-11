@@ -1,0 +1,4 @@
+{
+  "title": "Architecture",
+  "pages": ["index", "memory", "communication-bridge", "scheduler", "skills"]
+}

@@ -1,0 +1,196 @@
+---
+title: Troubleshooting
+description: Common issues and how to diagnose and fix them.
+---
+
+This page covers common issues you might encounter when running Zylos, along with diagnostic steps and solutions.
+
+## Quick Diagnostics
+
+Start here when something isn't working:
+
+```bash
+# Check all services
+zylos status
+
+# Or via PM2 directly
+pm2 status
+
+# Check system health
+zylos doctor
+```
+
+## Service Issues
+
+### A PM2 service keeps restarting
+
+**Symptoms**: Service shows high restart count in `pm2 status`
+
+**Diagnose**:
+```bash
+pm2 logs <service-name> --lines 50
+```
+
+**Common causes**:
+- Missing source files (see [upgrade issues](#component-upgrade-broke-something) below)
+- Invalid configuration in `config.json`
+- Missing environment variables in `~/zylos/.env`
+
+**Fix**: Check logs for the specific error, fix the underlying cause, then:
+```bash
+pm2 restart <service-name>
+```
+
+### Claude is not responding
+
+**Symptoms**: Messages sent but no replies
+
+**Check**:
+```bash
+# Is Claude running?
+pm2 status activity-monitor
+cat ~/zylos/activity-monitor/claude-status.json
+
+# Check health
+cat ~/zylos/activity-monitor/claude-status.json | node -e "
+  const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+  console.log('State:', d.state, '| Health:', d.health, '| Idle:', d.idle_seconds + 's');
+"
+```
+
+**Possible causes**:
+- `health: "down"` -- Activity monitor exhausted restart attempts. Check `pm2 logs activity-monitor` and manually restart Claude
+- `state: "busy"` -- Claude is processing a long task. Wait or check context usage
+- `state: "stopped"` -- The guardian should auto-restart within 5 seconds
+
+### All services are down
+
+```bash
+# Start all Zylos services
+zylos start
+
+# Or manually
+pm2 resurrect
+```
+
+If PM2 itself is not running:
+```bash
+pm2 start ~/zylos/pm2/ecosystem.config.cjs
+```
+
+## Channel Issues
+
+### Telegram bot not responding
+
+```bash
+# Check service
+pm2 status zylos-telegram
+pm2 logs zylos-telegram --lines 20
+
+# Check access control
+zylos-telegram show
+```
+
+**Common causes**:
+- Bot token invalid or expired -- check `TELEGRAM_BOT_TOKEN` in `.env`
+- DM policy set to `allowlist` but user not added
+- Network issues (Telegram API blocked in some regions -- configure proxy)
+
+### Lark webhook not working
+
+```bash
+pm2 logs zylos-lark --lines 20
+```
+
+**Common causes**:
+- Domain HTTPS not configured (Lark requires HTTPS)
+- Verification token mismatch between Lark console and config
+- Application not published/approved in Lark developer console
+- Caddy not running -- check `pm2 status caddy`
+
+### Web console not accessible
+
+```bash
+pm2 status web-console
+pm2 logs web-console --lines 20
+```
+
+**Common causes**:
+- Firewall blocking the port (default: 3456 for localhost, or proxied via Caddy)
+- Caddy route not configured -- check `~/zylos/http/Caddyfile`
+
+## Component Issues
+
+### Component upgrade broke something
+
+This is a known issue (see [zylos-core #294](https://github.com/zylos-ai/zylos-core/issues/294)).
+
+**Recovery steps**:
+1. Check for a backup: `ls ~/zylos/.claude/skills/<name>/.backup/`
+2. Copy missing files from the most recent backup
+3. Restart the service: `pm2 restart zylos-<name>`
+
+**Prevention**: After upgrading, verify the component is working:
+```bash
+pm2 status zylos-<name>
+pm2 logs zylos-<name> --lines 10
+```
+
+### Component won't install
+
+```bash
+zylos add <name> --check  # Preview without installing
+```
+
+**Common causes**:
+- Network issues reaching GitHub
+- Node.js version too old (requires 20+)
+- Missing dependencies
+
+## Memory Issues
+
+### Memory sync not running
+
+Check if unsummarized conversations are piling up:
+```bash
+node ~/zylos/.claude/skills/comm-bridge/scripts/c4-db.js checkpoints
+```
+
+**Common causes**:
+- Memory sync threshold not reached (normal -- wait for more conversations)
+- Background task failed -- check Claude's logs
+
+### Context usage too high
+
+The activity monitor triggers automatic session handoff at 70% context usage. If this isn't working:
+
+```bash
+# Check context monitor state
+cat ~/zylos/activity-monitor/statusline.json
+```
+
+## Network Issues
+
+### Caddy can't bind ports 80/443
+
+```bash
+sudo setcap cap_net_bind_service=+ep ~/zylos/bin/caddy
+```
+
+### HTTPS certificate errors
+
+- Ensure your domain's DNS A record points to your server's IP
+- Check Caddy logs: `pm2 logs caddy`
+- Verify port 80 is accessible (Let's Encrypt uses HTTP-01 challenge)
+
+## Getting Help
+
+If you can't resolve an issue:
+
+1. Check logs: `pm2 logs <service> --lines 100`
+2. Run diagnostics: `zylos doctor`
+3. Check the [GitHub issues](https://github.com/zylos-ai/zylos-core/issues) for known problems
+4. File a new issue with:
+   - Zylos version (`zylos --version`)
+   - Service logs
+   - Steps to reproduce

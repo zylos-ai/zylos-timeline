@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/in
 
 The installer will:
 
-1. Download the Zylos core framework
+1. Install the `zylos` CLI as a global npm package (`npm install -g zylos`)
 2. Install and configure PM2 (process manager)
 3. Create the directory structure under `~/zylos/`
 4. Set up the Claude Code CLI
@@ -31,9 +31,19 @@ zylos init
 
 You'll be prompted for:
 
-- **Anthropic API key** -- Paste your API key from the Anthropic Console. This is stored locally in `~/zylos/.env` and never leaves your machine.
-- **Domain name** (optional) -- If you want to access the web console over HTTPS, enter your domain. Otherwise, skip this and use localhost.
+- **Authentication** -- Either an Anthropic API key or a Claude Max setup token. Both are stored locally in `~/zylos/.env` and never leave your machine. You can also provide these via environment variables (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`).
+- **Domain name** (optional) -- If you want to access the web console over HTTPS, enter your domain. Caddy will automatically provision SSL certificates. Otherwise, skip this and use localhost.
 - **Timezone** -- Your preferred timezone (e.g., `Asia/Shanghai`, `America/New_York`).
+
+The wizard also installs and configures Caddy (the HTTP server), sets up PM2 services, and generates a web console password.
+
+**Non-interactive mode** is available for automated deployments:
+
+```bash
+zylos init --yes --api-key sk-ant-... --domain example.com --timezone UTC
+```
+
+Run `zylos init --help` for all available options.
 
 ## Verify the Installation
 
@@ -59,16 +69,25 @@ After installation, your Zylos home looks like this:
 
 ```
 ~/zylos/
-  .claude/          # Claude Code configuration and skills
-  .env              # API keys and settings (never commit this)
-  memory/           # Persistent memory files
-    identity.md     # Bot personality and principles
-    state.md        # Current active work
-    references.md   # Pointers to key resources
-    users/          # Per-user profiles
-    reference/      # Decisions, projects, preferences
-    sessions/       # Session logs
-  workspace/        # Working area for repos and experiments
+  .env                # API keys and settings (never commit this)
+  .zylos/             # Core framework files and component registry
+  .claude/            # Claude Code configuration and skills
+    skills/           # Skill source code (managed by zylos CLI)
+  components/         # Runtime data for installed components
+  memory/             # Persistent memory files
+    identity.md       # Bot personality and principles
+    state.md          # Current active work
+    references.md     # Pointers to key resources
+    users/            # Per-user profiles
+    reference/        # Decisions, projects, preferences
+    sessions/         # Session logs
+  activity-monitor/   # C2 status files and logs
+  comm-bridge/        # C4 message database and attachments
+  scheduler/          # C5 task database
+  http/               # Caddy config and public files
+  pm2/                # PM2 ecosystem configuration
+  workspace/          # Working area for repos and experiments
+  logs/               # System logs
 ```
 
 ## What's Next

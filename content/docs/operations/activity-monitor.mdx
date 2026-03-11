@@ -1,0 +1,125 @@
+---
+title: Activity Monitor
+description: The C2 guardian service that keeps Zylos alive and self-healing.
+---
+
+The Activity Monitor (C2) is a PM2 guardian service that ensures Zylos stays running. It monitors Claude's health, automatically restarts it after crashes, detects unresponsive states via heartbeats, and manages several scheduled maintenance tasks.
+
+## What It Does
+
+| Function | Description |
+|----------|-------------|
+| **Activity tracking** | Monitors Claude's busy/idle state every second |
+| **Auto-restart** | Restarts Claude if it stops or crashes |
+| **Heartbeat probes** | Verifies Claude is actually responsive, not just process-alive |
+| **Health checks** | Periodic PM2, disk, and memory checks (every 6 hours) |
+| **Daily upgrade** | Enqueues Claude Code upgrade at 5:00 AM local time |
+| **Memory backup** | Triggers daily git commit of memory files at 3:00 AM |
+| **Context monitoring** | Detects high context usage and triggers session handoff |
+
+## How Activity Detection Works
+
+The monitor checks Claude's state every second using two methods:
+
+1. **Primary**: Conversation file modification time -- the most reliable indicator
+2. **Fallback**: tmux window activity -- used when the conversation file isn't available
+
+States:
+- **busy**: Claude is actively processing (conversation file recently modified)
+- **idle**: No activity for 3+ seconds
+- **stopped**: Claude process is not running
+- **offline**: tmux session doesn't exist
+
+## Auto-Restart (Guardian Mode)
+
+If Claude stops running for 5+ consecutive seconds, the guardian automatically:
+
+1. Checks for maintenance scripts (upgrades, restarts) and waits if found
+2. Starts a new Claude session in tmux
+3. Sends a recovery prompt via C4 so Claude can catch up on missed messages
+
+## Heartbeat Liveness Detection
+
+Process-alive doesn't mean responsive. The heartbeat engine verifies Claude can actually process messages:
+
+```
+ok ──[probe fails]──► verify ──[fails again]──► recovering ──► down
+▲                                                    │
+└────────────────[ack received]──────────────────────┘
+```
+
+### How It Works
+
+1. Every 30 minutes, the monitor sends a heartbeat probe via the C4 control queue
+2. The probe has an ack deadline -- Claude must respond before it expires
+3. If Claude acks in time, health stays `ok`
+4. If the probe times out, a verify probe is sent
+5. If verify also fails, the monitor kills the tmux session and restarts Claude
+6. After restart, if the next probe succeeds, health returns to `ok`
+7. If max restart attempts fail (default: 3), health becomes `down` for manual intervention
+
+### Health States
+
+| State | Meaning |
+|-------|---------|
+| `ok` | System healthy, messages accepted normally |
+| `recovering` | Restart in progress, messages held |
+| `down` | Max restarts exhausted, manual fix needed |
+
+When health returns to `ok`, recovery notifications are sent to all channels that had messages rejected during the outage.
+
+## Context Monitoring
+
+Claude Code's statusLine feature reports context usage after every turn. The activity monitor uses this data to prevent context overflow:
+
+- **Threshold**: 70% context usage triggers a new-session handoff
+- **Cooldown**: 10 minutes between triggers
+- **Delivery**: High-priority C4 control message (delivered even during active work)
+- **Action**: Claude performs a graceful session handoff -- saving state and starting fresh
+
+## Status File
+
+The monitor writes its state to `~/zylos/activity-monitor/claude-status.json`:
+
+```json
+{
+  "state": "idle",
+  "thinking": false,
+  "last_activity": 1738675200,
+  "active_tools": 0,
+  "last_check": 1738675205,
+  "last_check_human": "2025-02-04 12:00:05",
+  "idle_seconds": 5,
+  "inactive_seconds": 12,
+  "source": "conv_file",
+  "health": "ok"
+}
+```
+
+Key fields:
+- `state` -- Current state: `busy`, `idle`, `stopped`, or `offline`
+- `thinking` -- Whether Claude is currently thinking (waiting for model response)
+- `active_tools` -- Number of tool calls currently in flight
+- `source` -- How activity was detected: `conv_file` (primary) or `tmux` (fallback)
+- `health` -- Overall health: `ok`, `recovering`, `rate_limited`, or `down`
+- `inactive_seconds` -- Seconds since last detected activity
+
+Other systems read this file to make decisions:
+- The **scheduler** checks it before dispatching tasks
+- **C4** checks health before accepting new messages
+- The **scheduler** waits for idle state before delivering low-priority tasks
+
+## Service Management
+
+```bash
+# Check status
+pm2 status activity-monitor
+
+# View logs
+pm2 logs activity-monitor
+
+# Restart (rarely needed)
+pm2 restart activity-monitor
+```
+
+Activity log: `~/zylos/activity-monitor/activity.log` (auto-truncates to 500 lines daily)

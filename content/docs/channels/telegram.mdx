@@ -28,19 +28,13 @@ The Telegram channel lets you chat with Zylos through a Telegram bot. It uses lo
 
 ## Step 2: Install the Telegram Component
 
-In the Claude Code CLI on your server, tell Zylos:
-
-```
-Add the Telegram component
-```
-
-Zylos will run `zylos add telegram` and guide you through the setup. When prompted, paste your Bot Token.
-
-Alternatively, install manually:
-
 ```bash
 zylos add telegram
 ```
+
+The installer will prompt you for your Bot Token. Paste the token from BotFather when asked.
+
+If you already have another channel connected, you can also tell Zylos directly in chat: "Add the Telegram component" and it will run the same command for you.
 
 The installer will:
 1. Download the component from the Zylos GitHub repository
@@ -49,15 +43,39 @@ The installer will:
 
 ## Step 3: Configure Access Control
 
-By default, the bot only responds to the **owner** (the first person who messages it). You can change this:
+By default, the bot only responds to the **owner** (the first person who messages it). You can change this through Zylos or the component's admin CLI.
+
+**Through Zylos (easiest):**
+
+Just tell Zylos in any connected channel:
+
+```
+Set the Telegram DM policy to allowlist
+Add @username to the Telegram allowlist
+```
+
+**Through the admin CLI:**
+
+Each component includes an admin CLI. Available commands:
 
 ```bash
-# Allow specific users by Telegram username
-node ~/zylos/components/telegram/src/admin.js whitelist add @username
+# View current configuration
+zylos-telegram show
+
+# Set DM policy
+zylos-telegram set-dm-policy allowlist
+
+# Allow a specific user by username or chat ID
+zylos-telegram add-dm-allow @username
 
 # Open DMs to everyone (use with caution)
-node ~/zylos/components/telegram/src/admin.js config set dmPolicy open
+zylos-telegram set-dm-policy open
+
+# Group policy
+zylos-telegram set-group-policy allowlist
 ```
+
+> See [Extending Zylos](/docs/extending) for how to locate and run component admin CLIs.
 
 Access policies:
 - `owner` -- Only the owner can DM the bot (default)

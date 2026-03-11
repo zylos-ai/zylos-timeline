@@ -1,0 +1,107 @@
+---
+title: HTTP Service
+description: The Caddy-based web server that provides HTTPS, reverse proxy, and file sharing.
+---
+
+The HTTP Service (C6) is a user-space Caddy web server that provides the public-facing infrastructure for Zylos. It handles HTTPS certificates, reverse proxying for channel webhooks, and file sharing.
+
+## What It Provides
+
+- **Automatic HTTPS** with Let's Encrypt certificates
+- **Reverse proxy** for component webhooks (Lark, web console)
+- **File sharing** via a public directory
+- **Health check endpoints** for monitoring
+
+## Architecture
+
+| Component | Path |
+|-----------|------|
+| Caddy binary | `~/zylos/bin/caddy` |
+| Caddyfile | `~/zylos/http/Caddyfile` |
+| Public files | `~/zylos/http/public/` |
+| Access log | `~/zylos/http/caddy-access.log` |
+| Domain config | `~/zylos/.zylos/config.json` |
+
+Caddy runs as a PM2 service in user space -- no root permissions needed for daily operations.
+
+## Setup
+
+Caddy is configured automatically during `zylos init`:
+
+1. Downloads the Caddy binary to `~/zylos/bin/caddy`
+2. Asks for your domain name, saves to `config.json`
+3. Generates the Caddyfile with your domain
+4. Sets port binding capability with `setcap` (one-time sudo required)
+5. Starts the service via PM2
+
+To reconfigure: run `zylos init` again.
+
+## Component Routes
+
+When you install a component that needs HTTP access (like Lark webhooks or the web console), Zylos automatically adds reverse proxy routes to the Caddyfile. Routes are managed via marker blocks:
+
+```
+# === BEGIN lark ===
+handle /lark/* {
+    reverse_proxy localhost:9877
+}
+# === END lark ===
+```
+
+These blocks are automatically added by `zylos add`, updated by `zylos upgrade`, and removed by `zylos uninstall`.
+
+## File Sharing
+
+Place files in `~/zylos/http/public/` to make them accessible via your domain:
+
+```bash
+cp report.pdf ~/zylos/http/public/
+# Access at: https://your-domain.com/report.pdf
+```
+
+The public directory serves as a simple file server with directory listing enabled by default.
+
+## Port Binding
+
+On Linux, binding to ports 80 and 443 normally requires root. Caddy uses a capability flag instead:
+
+```bash
+sudo setcap cap_net_bind_service=+ep ~/zylos/bin/caddy
+```
+
+This is set automatically during `zylos init`. If the Caddy binary is replaced (e.g., after an update), re-run this command.
+
+## Troubleshooting
+
+### Check Caddy Status
+
+```bash
+pm2 logs caddy
+```
+
+### Validate Configuration
+
+```bash
+~/zylos/bin/caddy validate --config ~/zylos/http/Caddyfile --adapter caddyfile
+```
+
+### Reload After Manual Edits
+
+```bash
+pm2 reload caddy
+```
+
+### View Access Logs
+
+```bash
+tail -f ~/zylos/http/caddy-access.log
+```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| Port 80/443 already in use | Stop other web servers (nginx, apache) |
+| Certificate errors | Ensure domain DNS points to your server |
+| `setcap` needed after update | Re-run the `setcap` command above |
+| Component routes not working | Check `pm2 logs caddy` for Caddyfile errors |

@@ -1,0 +1,4 @@
+{
+  "title": "Operations",
+  "pages": ["index", "security", "activity-monitor", "http-service", "hxa-connect", "troubleshooting"]
+}

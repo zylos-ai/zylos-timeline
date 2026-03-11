@@ -35,11 +35,14 @@ After the CLI finishes downloading, Zylos handles the rest -- configuration, ser
 ### Check for updates
 
 ```bash
-# Check all components for updates
-zylos upgrade --check
+# Check a specific component for updates (downloads to temp for comparison)
+zylos upgrade <component-name> --check
 
 # Upgrade a specific component
 zylos upgrade <component-name>
+
+# Upgrade all components at once
+zylos upgrade --all
 ```
 
 The upgrade process:
@@ -51,34 +54,37 @@ The upgrade process:
 ### Upgrading Zylos Core
 
 ```bash
-zylos upgrade
+zylos upgrade --self
 ```
 
-This upgrades the core framework itself (self-upgrade).
+This upgrades the core framework itself (the `zylos` CLI and built-in components).
 
 ## Uninstalling a Component
 
 ```bash
+# Remove the component (keeps data directory by default)
 zylos uninstall <component-name>
+
+# Remove the component and its data directory
+zylos uninstall <component-name> --purge
 ```
 
-You'll be asked whether to keep or delete the component's data directory.
+By default, `zylos uninstall` removes the component's source code and PM2 service but keeps the data directory (`config.json`, logs). Use the `--purge` flag to also delete all data.
 
 ## Component Directory Structure
 
-Each component lives in `~/zylos/components/<name>/`:
+Each component has two directories -- one for source code (managed by the CLI) and one for runtime data (your configuration and logs):
 
 ```
-~/zylos/components/telegram/
-  src/              # Source code
-  config.json       # Runtime configuration
-  data/             # Persistent data
-  ecosystem.config.cjs  # PM2 service definition
+~/zylos/components/telegram/   # Runtime data
+  config.json                  # Runtime configuration
+  logs/                        # Component logs
+  media/                       # Downloaded media (if applicable)
 ```
+
+Source code and service definitions live in the skill directory, managed automatically during install and upgrade. You generally don't need to interact with source files directly.
 
 Secrets (API keys, tokens) are stored in the global `~/zylos/.env` file, not in component directories.
-
-The corresponding skill is auto-linked at `~/zylos/.claude/skills/<name>/`.
 
 ## Viewing Component Info
 

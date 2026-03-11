@@ -9,7 +9,7 @@ The Web Console is a built-in browser interface for communicating with Zylos. It
 
 ## How It Works
 
-The Web Console is a lightweight web chat interface served by Zylos's built-in HTTP server (Caddy). Messages flow through the same C4 Communication Bridge as other channels.
+The Web Console is a lightweight web chat interface that runs its own HTTP server on port `3456`. Caddy (the reverse proxy) exposes it at the `/console` path on your domain (port 80/443), so users access it via `https://your-domain.com/console`. Messages flow through the same C4 Communication Bridge as other channels.
 
 ## Accessing the Console
 
@@ -19,10 +19,10 @@ If you configured a domain during installation:
 https://your-domain.com/console
 ```
 
-For local access:
+For local access (bypassing Caddy):
 
 ```
-http://localhost:3800/console
+http://localhost:3456
 ```
 
 ## Authentication
