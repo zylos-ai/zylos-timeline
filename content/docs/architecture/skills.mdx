@@ -1,0 +1,142 @@
+---
+title: Skills
+description: How to extend Zylos with modular skill packages that provide specialized knowledge and workflows.
+---
+
+Skills are modular packages that extend Zylos with specialized capabilities. Each skill provides domain-specific knowledge, workflows, scripts, or tool integrations that transform Zylos from a general-purpose agent into a specialist for specific tasks.
+
+## What Skills Provide
+
+- **Specialized workflows** -- multi-step procedures for specific domains
+- **Tool integrations** -- instructions for working with APIs, file formats, or services
+- **Domain expertise** -- company-specific knowledge, schemas, business logic
+- **Bundled resources** -- scripts, references, and assets for complex tasks
+
+## Skill Structure
+
+Every skill lives in `~/zylos/.claude/skills/<skill-name>/` and follows this structure:
+
+```
+skill-name/
+├── SKILL.md              # Required: metadata + instructions
+├── scripts/              # Executable code (Node.js, Bash, Python)
+├── references/           # Documentation loaded on demand
+└── assets/               # Files used in output (templates, images)
+```
+
+### SKILL.md
+
+The core file that defines the skill. It has two parts:
+
+**YAML Frontmatter** (metadata):
+```yaml
+---
+name: my-skill
+description: >-
+  What the skill does and when to use it.
+  This is the primary trigger — Claude reads this
+  to decide when to activate the skill.
+---
+```
+
+**Markdown Body** (instructions):
+Only loaded after the skill triggers. Contains the procedures, examples, and references Claude needs to execute the skill.
+
+### How Discovery Works
+
+Skills use a three-level progressive disclosure system:
+
+1. **Metadata** (~100 words) -- Always in context. Claude reads skill names and descriptions to decide which skill to activate.
+2. **SKILL.md body** (< 5k words) -- Loaded when the skill triggers. Contains procedures and guidance.
+3. **Bundled resources** (unlimited) -- Loaded on demand. Scripts can be executed without reading into context.
+
+This means the cost of having many skills installed is low -- only metadata is always present. The full instructions are loaded only when needed.
+
+## Built-in Skills
+
+Zylos comes with several core skills that power its subsystems:
+
+| Skill | System | Purpose |
+|-------|--------|---------|
+| `comm-bridge` | C4 | Message routing and conversation management |
+| `zylos-memory` | C3 | Memory sync and maintenance |
+| `scheduler` | C5 | Task scheduling CLI |
+| `activity-monitor` | C2 | Health monitoring (PM2 service) |
+| `http` | C6 | Web server configuration |
+| `create-skill` | -- | Guide for creating new skills |
+
+## Component Skills
+
+When you install a component (like Telegram or Lark), it automatically links a skill at `~/zylos/.claude/skills/<name>/`. This skill tells Claude how to interact with that component -- how to send messages, manage access control, and troubleshoot issues.
+
+## Creating a New Skill
+
+### Quick Start
+
+```bash
+# Initialize a new skill
+node ~/zylos/.claude/skills/create-skill/scripts/init-skill.js my-skill
+```
+
+This creates a template skill directory with:
+- `SKILL.md` with proper frontmatter and placeholder content
+- Example `scripts/`, `references/`, and `assets/` directories
+
+### Writing the SKILL.md
+
+**Frontmatter tips:**
+- `description` is the primary trigger mechanism. Be clear about **what** the skill does and **when** to use it
+- Keep descriptions comprehensive -- Claude uses them to decide activation
+
+**Body tips:**
+- Write for another AI agent, not a human. Include procedural knowledge that Claude wouldn't have by default
+- Keep the body under 500 lines to minimize context usage
+- Move detailed reference material to `references/` files
+
+### Optional Frontmatter Fields
+
+```yaml
+allowed-tools: Read, Grep           # Tools allowed without permission prompt
+model: sonnet                       # Model override when skill is active
+context: fork                       # Run in isolated subagent
+disable-model-invocation: true      # Only user can trigger (not Claude)
+user-invocable: false               # Only Claude can trigger (hidden from menu)
+```
+
+## Design Principles
+
+### Progressive Disclosure
+
+Keep `SKILL.md` lean. Split content into reference files when approaching 500 lines:
+
+```markdown
+# My Skill
+
+## Quick Start
+[Essential procedure here]
+
+## Advanced Features
+- **Feature A**: See [references/feature-a.md](references/feature-a.md)
+- **Feature B**: See [references/feature-b.md](references/feature-b.md)
+```
+
+Claude loads reference files only when needed, keeping the context window efficient.
+
+### Scripts for Reliability
+
+Put repetitive or fragile operations in scripts:
+
+```
+scripts/
+├── process-data.js     # Deterministic data processing
+├── validate.js         # Input validation
+└── deploy.sh           # Deployment steps
+```
+
+Scripts are token-efficient (executed without reading into context) and deterministic (same input, same output).
+
+### Match Freedom to Fragility
+
+- **High freedom** (text instructions): When multiple approaches work
+- **Medium freedom** (parameterized scripts): When a preferred pattern exists
+- **Low freedom** (specific scripts): When operations are fragile or sequence-critical

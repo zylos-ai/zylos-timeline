@@ -1,0 +1,48 @@
+---
+title: Troubleshooting
+description: Common issues and how to fix them.
+---
+
+Most problems can be fixed by telling Zylos what's wrong in conversation. If Zylos itself is unreachable, run `zylos doctor` for automated repair.
+
+## Zylos Not Responding
+
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| No replies, services running | Long task or context rotation in progress | Wait a few minutes |
+| Activity monitor restarting | Agent crashed | Automatic recovery — wait |
+| Services down | PM2 lost its process list | `zylos start` |
+
+## Channel Issues
+
+### Telegram
+
+- **Token expired** -- Regenerate with BotFather and update the token
+- **User blocked by policy** -- Change the DM policy or add the user to the allowlist
+- **API blocked in your region** -- Configure an HTTPS proxy
+
+### Lark
+
+- **HTTPS not configured** -- Lark requires HTTPS; set up a domain during `zylos init`
+- **Token mismatch** -- Check that the verification token matches between the Lark developer console and Zylos
+- **App not published** -- Approve and publish the app in the Lark developer console
+
+### Web Console
+
+- **Can't connect** -- Check that the firewall allows the port, and that Caddy is running
+
+## Components
+
+- **Upgrade broke something** -- Zylos can diagnose and recover; if unreachable, `zylos doctor` will check service health
+- **Install failed** -- Usually a network issue reaching GitHub, or Node.js below version 20
+
+## HTTPS
+
+- **Certificate errors** -- Verify DNS A record points to your server IP, and port 80 is accessible for Let's Encrypt
+- **Port conflict** -- Stop other web servers using ports 80/443
+
+## Still Stuck?
+
+1. Run `zylos doctor`
+2. Check [GitHub issues](https://github.com/zylos-ai/zylos-core/issues)
+3. File a new issue with `zylos --version` output and a description of the problem

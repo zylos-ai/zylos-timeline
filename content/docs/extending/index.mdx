@@ -1,0 +1,85 @@
+---
+title: Extending Zylos
+description: Create custom skills and components to add new capabilities.
+---
+
+Zylos is designed to be extended. Whether you need a new workflow, an integration with an external service, or a new communication channel, you can build it as a **skill** or a **component**.
+
+## Skills vs Components
+
+| | Skills | Components |
+|---|--------|------------|
+| **What** | Knowledge + workflow packages | Standalone services |
+| **Runs as** | Instructions loaded into the agent's context | PM2 services with their own process |
+| **Use for** | Procedures, domain knowledge, tool guidance | Channels, background services, complex integrations |
+| **Examples** | PR review workflow, deployment checklist | Telegram bot, Lark webhook handler |
+
+**Rule of thumb**: If it's knowledge or a workflow the agent follows, make it a skill. If it needs a long-running process, make it a component.
+
+## Creating a Skill
+
+Tell Zylos:
+
+```
+Create a skill called "deploy" that handles deployment to production
+```
+
+Zylos has a built-in skill scaffolding tool. It will create the skill structure, write the initial `SKILL.md`, and set up scripts — all through conversation. You describe what the skill should do, and Zylos builds it.
+
+A skill consists of:
+
+- **`SKILL.md`** -- Metadata (name, description, trigger conditions) and instructions the agent follows
+- **`scripts/`** -- Executable code for deterministic operations
+- **`references/`** -- Documentation the agent reads on demand
+
+The `description` field in `SKILL.md` is what determines when the skill activates — write it carefully.
+
+### Iterating
+
+After creation, test the skill on real tasks and refine through conversation:
+
+```
+The deploy skill should also check that tests pass before deploying
+```
+
+Zylos will update the skill files accordingly.
+
+## Creating a Component
+
+Components are standalone Node.js packages that run as PM2 services. We provide an official template to get started:
+
+**[zylos-ai/zylos-component-template](https://github.com/zylos-ai/zylos-component-template)**
+
+Point your AI coding assistant (Claude Code, Cursor, etc.) at this template repo and describe what you want to build. The template contains the complete structure, conventions, and integration patterns — your AI can read it and implement your component from there.
+
+### What the Template Provides
+
+- **C4 integration** -- Message receiving and sending scripts
+- **PM2 service definition** -- `ecosystem.config.cjs`
+- **Lifecycle hooks** -- `post-install.js`, `pre-upgrade.js`, `post-upgrade.js`
+- **Admin CLI** -- Access control and configuration management
+- **SKILL.md** -- Agent instructions for using the component
+
+### Publishing
+
+Components are distributed as GitHub repositories. Users install with:
+
+```bash
+zylos add org/my-component
+```
+
+## Sharing Your Component
+
+Built something useful? Submit it to the [Zylos Registry](https://github.com/zylos-ai/zylos-registry) so other users can install it with `zylos add`. Community components are listed alongside official ones in `zylos search`.
+
+## Best Practices
+
+### Skills
+- Keep `SKILL.md` under 500 lines -- split long content into reference files
+- Write the `description` carefully -- it determines when the skill triggers
+- Put fragile operations in scripts rather than inline instructions
+
+### Components
+- Use ESM (`import`/`export`), not CommonJS
+- Implement lifecycle hooks for clean upgrades
+- Keep configurations minimal -- sensible defaults over extensive options

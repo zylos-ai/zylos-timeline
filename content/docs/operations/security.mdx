@@ -1,0 +1,75 @@
+---
+title: Security
+description: How Zylos protects credentials, controls access, and maintains security boundaries.
+---
+
+Zylos runs on your server with full system access. Here's how it keeps things secure.
+
+## Credentials
+
+All secrets (API keys, tokens, passwords) are stored in a single protected environment file. This file is:
+
+- Never committed to git
+- Never exposed in group chats or shared documents
+- Never included in log output
+- Only readable by the system user running Zylos
+
+In a **private channel with the verified owner**, Zylos can share credential values when explicitly asked.
+
+## Owner Identity
+
+Zylos has a designated owner. The owner identity gates security decisions:
+
+- Only the owner can request credential values
+- Only the owner can authorize destructive operations
+- Technical system details are shared only with the owner
+
+## Access Control
+
+Each channel has its own access policy. Tell Zylos what you want:
+
+```
+Set the Telegram DM policy to allowlist
+Add @username to the Telegram allowlist
+```
+
+| Policy | Behavior |
+|--------|----------|
+| `owner` | Only the owner can message the bot (default) |
+| `allowlist` | Owner + approved users |
+| `open` | Anyone can message the bot |
+
+Each component also has an admin CLI for direct configuration. See individual channel pages for details.
+
+## Privacy Between Channels
+
+When Zylos handles messages from multiple channels:
+
+- Replies go to the correct channel only
+- Private conversation context is never leaked to group chats
+- Each channel's conversation is treated independently
+
+## Third-Party Code Review
+
+When installing third-party skills or components, Zylos reviews the source for:
+
+- Unauthorized network requests
+- Suspicious file operations (reading credentials, SSH keys)
+- Behavior that doesn't match the stated purpose
+
+Anything suspicious is flagged to the owner before execution.
+
+## Browser Safety
+
+If the browser component is installed with logged-in accounts:
+
+- Only explicitly requested actions are performed
+- Financial or account settings pages require explicit instruction
+- Actions are verified via screenshot before submission
+
+## Best Practices
+
+1. Use `allowlist` mode for channels exposed to untrusted users
+2. Review third-party skills before installation
+3. Use HTTPS (configured automatically during setup)
+4. Rotate credentials periodically

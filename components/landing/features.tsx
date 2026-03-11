@@ -33,7 +33,7 @@ const features = [
 
 export function LandingFeatures() {
     return (
-        <section id="features" className="py-24 bg-black/20 relative border-t border-white/5">
+        <section id="features" className="py-24 bg-muted/50 relative border-t border-border">
             <div className="container mx-auto px-4">
 
                 <div className="mb-16">
@@ -52,7 +52,7 @@ export function LandingFeatures() {
                             viewport={{ once: true }}
                             transition={{ delay: i * 0.1 }}
                             className={cn(
-                                "group relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 p-8 hover:bg-white/10 transition-colors",
+                                "group relative overflow-hidden rounded-3xl border border-border bg-card p-8 hover:bg-accent transition-colors",
                                 feature.className
                             )}
                         >
@@ -65,7 +65,7 @@ export function LandingFeatures() {
                                     <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center mb-4 text-primary">
                                         <feature.icon className="w-5 h-5" />
                                     </div>
-                                    <h3 className="text-xl font-bold mb-2 text-white">{feature.title}</h3>
+                                    <h3 className="text-xl font-bold mb-2 text-foreground">{feature.title}</h3>
                                     <p className="text-muted-foreground leading-relaxed">{feature.description}</p>
                                 </div>
                             </div>

@@ -1,0 +1,70 @@
+---
+title: Web Console
+description: Chat with Zylos through your browser -- no external accounts needed.
+---
+
+The Web Console is a built-in browser interface for communicating with Zylos. It requires no external accounts or platform setup -- just open a URL and start chatting.
+
+**Estimated setup time:** Already included with Zylos core
+
+## How It Works
+
+The Web Console is a lightweight web chat interface that runs its own HTTP server on port `3456`. Caddy (the reverse proxy) exposes it at the `/console` path on your domain (port 80/443), so users access it via `https://your-domain.com/console`. Messages flow through the same C4 Communication Bridge as other channels.
+
+## Accessing the Console
+
+If you configured a domain during installation:
+
+```
+https://your-domain.com/console
+```
+
+For local access (bypassing Caddy):
+
+```
+http://localhost:3456
+```
+
+## Authentication
+
+The Web Console uses password-based authentication. A password is automatically generated and displayed when Zylos finishes installation.
+
+To retrieve your password later:
+- **From the shell:** run `zylos shell`, then ask "what's my web console password?"
+- **From another channel:** ask Zylos through Telegram, Lark, or any connected IM
+
+To change the password manually, edit `~/zylos/.env`:
+
+```bash
+WEB_CONSOLE_PASSWORD=your-new-password
+```
+
+Then restart the service:
+
+```bash
+pm2 restart web-console
+```
+
+## Features
+
+- **Real-time messaging** -- Send and receive messages in your browser
+- **Markdown rendering** -- Responses are rendered with full markdown support
+- **File sharing** -- Share files through the chat interface
+- **Mobile friendly** -- Works on phones and tablets
+- **No installation** -- Just a URL, works on any device with a browser
+
+## When to Use It
+
+The Web Console is ideal for:
+- **Quick access** from any device without installing an app
+- **Initial setup** before you've configured Telegram or Lark
+- **Shared access** -- give someone the URL and password for temporary access
+- **Development** -- test interactions without switching to a messaging app
+
+## Configuration Reference
+
+| Setting | Location | Description |
+|---------|----------|-------------|
+| `WEB_CONSOLE_PASSWORD` | `~/zylos/.env` | Authentication password |
+| PM2 service | `web-console` | Service name for pm2 commands |
+| Default port | `3456` | HTTP port (proxied through Caddy at `/console`) |

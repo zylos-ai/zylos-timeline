@@ -57,10 +57,10 @@ export function TerminalDemo() {
                     initial={{ opacity: 0, y: 40 }}
                     whileInView={{ opacity: 1, y: 0 }}
                     viewport={{ once: true, margin: "-100px" }}
-                    className="w-full max-w-3xl bg-black/90 rounded-xl border border-white/10 shadow-2xl overflow-hidden font-mono text-sm md:text-base relative group"
+                    className="w-full max-w-3xl bg-[hsl(220,50%,6%)] rounded-xl border border-border shadow-2xl overflow-hidden font-mono text-sm md:text-base relative group"
                 >
                     {/* Window Controls */}
-                    <div className="bg-white/5 px-4 py-3 flex items-center gap-2 border-b border-white/5">
+                    <div className="bg-white/5 px-4 py-3 flex items-center gap-2 border-b border-white/5 dark:border-white/5">
                         <div className="w-3 h-3 rounded-full bg-red-500/80" />
                         <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
                         <div className="w-3 h-3 rounded-full bg-green-500/80" />

@@ -1,0 +1,31 @@
+---
+title: HTTP Service
+description: Domain configuration, HTTPS, and file sharing.
+---
+
+Zylos includes a Caddy web server that handles HTTPS, reverse proxying for channel webhooks, and file sharing. It's configured automatically during installation.
+
+## What It Provides
+
+- **Automatic HTTPS** with Let's Encrypt certificates
+- **Reverse proxy** for component webhooks (Lark, web console)
+- **File sharing** via a public directory
+
+## Setup
+
+Caddy is configured during `zylos init`. If you provided a domain, HTTPS is enabled automatically.
+
+To reconfigure later, run `zylos init` again or tell Zylos to set up a domain for you.
+
+## File Sharing
+
+Place files in the public directory to make them accessible via your domain:
+
+```bash
+cp report.pdf ~/zylos/http/public/
+# Access at: https://your-domain.com/report.pdf
+```
+
+## Component Routes
+
+When you install a component that needs HTTP access (like Lark webhooks), Zylos automatically manages reverse proxy routes. No manual configuration needed.

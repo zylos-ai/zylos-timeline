@@ -1,0 +1,124 @@
+---
+title: Telegram
+description: Connect Zylos to Telegram for mobile and desktop messaging.
+---
+
+The Telegram channel lets you chat with Zylos through a Telegram bot. It uses long polling (no webhook needed), so it works behind firewalls and NATs without any port forwarding.
+
+**Estimated setup time:** 5 minutes
+
+## Prerequisites
+
+- A Telegram account
+- Zylos installed and running on your server
+
+## Step 1: Create a Telegram Bot
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot`
+3. Enter a display name for your bot (e.g., "Zylos")
+4. Enter a username (must end with `bot`, e.g., `my_zylos_bot`)
+5. BotFather will give you a **Bot Token** -- copy it and keep it safe
+
+> The Bot Token looks like: `110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`
+
+**Optional:** Customize your bot with BotFather:
+- `/setdescription` -- Set the bot's description
+- `/setuserpic` -- Upload an avatar
+
+## Step 2: Install the Telegram Component
+
+```bash
+zylos add telegram
+```
+
+The installer will prompt you for your Bot Token. Paste the token from BotFather when asked.
+
+If you already have another channel connected, you can also tell Zylos directly in chat: "Add the Telegram component" and it will run the same command for you.
+
+The installer will:
+1. Download the component from the Zylos GitHub repository
+2. Set up the PM2 service (`zylos-telegram`)
+3. Ask for your Bot Token and save it to `~/zylos/.env`
+
+## Step 3: Configure Access Control
+
+By default, the bot only responds to the **owner** (the first person who messages it). You can change this through Zylos or the component's admin CLI.
+
+**Through Zylos (easiest):**
+
+Just tell Zylos in any connected channel:
+
+```
+Set the Telegram DM policy to allowlist
+Add @username to the Telegram allowlist
+```
+
+**Through the admin CLI:**
+
+Each component includes an admin CLI. Available commands:
+
+```bash
+# View current configuration
+zylos-telegram show
+
+# Set DM policy
+zylos-telegram set-dm-policy allowlist
+
+# Allow a specific user by username or chat ID
+zylos-telegram add-dm-allow @username
+
+# Open DMs to everyone (use with caution)
+zylos-telegram set-dm-policy open
+
+# Group policy
+zylos-telegram set-group-policy allowlist
+```
+
+> See [Extending Zylos](/docs/extending) for how to locate and run component admin CLIs.
+
+Access policies:
+- `owner` -- Only the owner can DM the bot (default)
+- `allowlist` -- Owner + whitelisted users
+- `open` -- Anyone can DM the bot
+
+## Step 4: Start Chatting
+
+1. Open Telegram and find your bot by its username
+2. Tap **Start** or send `/start`
+3. Send a message -- Zylos will respond
+
+## Group Chats
+
+You can add Zylos to Telegram group chats:
+
+1. Add the bot to a group
+2. The bot responds when **@mentioned** by default
+3. Configure per-group behavior through the admin CLI
+
+Group modes:
+- `mention` -- Only responds when @mentioned (default)
+- `smart` -- Responds to @mentions and contextually relevant messages
+
+## Troubleshooting
+
+### Bot doesn't respond
+- Check the service is running: `pm2 status zylos-telegram`
+- Check logs: `pm2 logs zylos-telegram --lines 50`
+- Verify the Bot Token in `~/zylos/.env`
+
+### "Unauthorized" errors
+- The Bot Token may have been revoked. Generate a new one with BotFather and update `~/zylos/.env`
+
+### Behind a proxy
+- Set `HTTPS_PROXY` in `~/zylos/.env` if your server needs a proxy for outbound HTTPS connections
+
+## Configuration Reference
+
+| Setting | Location | Description |
+|---------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | `~/zylos/.env` | Bot token from BotFather |
+| `dmPolicy` | `config.json` | DM access policy: `owner`, `allowlist`, `open` |
+| `groupPolicy` | `config.json` | Group access policy |
+| Config file | `~/zylos/components/telegram/config.json` | Full runtime configuration |
+| PM2 service | `zylos-telegram` | Service name for pm2 commands |

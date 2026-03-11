@@ -1,0 +1,20 @@
+---
+title: Operations
+description: Running, monitoring, and securing your Zylos instance.
+---
+
+## Fixing Problems
+
+**Talk to Zylos first.** Describe what's wrong in any connected channel or `zylos shell` — Zylos can diagnose, restart services, and fix configuration on its own.
+
+If Zylos is unreachable, run `zylos doctor` from the command line for automated diagnostics and repair.
+
+## Reliability
+
+Zylos self-heals. The activity monitor auto-restarts the agent after crashes, rotates sessions when context gets high, and runs periodic liveness checks. No configuration needed.
+
+## In This Section
+
+- [Security](/docs/operations/security) -- Credentials, access control, and security boundaries
+- [HTTP Service](/docs/operations/http-service) -- Domain, HTTPS, and file sharing
+- [Troubleshooting](/docs/operations/troubleshooting) -- Common issues and solutions

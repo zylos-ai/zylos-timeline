@@ -1,0 +1,48 @@
+---
+title: Channels
+description: Connect Zylos to the messaging platforms you already use.
+---
+
+Channels connect your Zylos agent to messaging platforms. All channels share the same memory and conversation context — one AI, every platform.
+
+## Available Channels
+
+| Channel | Type | Install |
+|---------|------|---------|
+| **[Web Console](/docs/channels/web-console)** | Built-in | Included with Zylos |
+| **[Telegram](/docs/channels/telegram)** | Official | `zylos add telegram` |
+| **[Lark](/docs/channels/lark)** (international) | Official | `zylos add lark` |
+| **Feishu** (飞书, mainland China) | Official | `zylos add feishu` |
+| **Slack** | Official | `zylos add slack` |
+| **WhatsApp** | Official | `zylos add whatsapp` |
+| **WeCom** (企业微信) | Official | `zylos add wecom` |
+| **DingTalk** (钉钉) | Official | `zylos add dingtalk` |
+| **[HXA-Connect](/docs/channels/hxa-connect)** | Community | `zylos add hxa-connect` |
+
+Search for more: `zylos search`
+
+## How Channels Work
+
+All channels feed into a single conversation stream through the C4 Communication Bridge:
+
+```
+Web Console ┐
+Telegram ───┤
+Lark ───────┤
+Slack ──────┼── C4 Communication Bridge ── Zylos Agent
+WhatsApp ───┤
+DingTalk ───┤
+  ...       ┘
+```
+
+- **One memory, all channels** -- Your agent remembers everything regardless of which channel you used
+- **Channel-aware responses** -- Replies go back through the same channel the message came from
+- **Simultaneous connections** -- Run as many channels as you need at once
+
+## Getting Started
+
+```bash
+zylos add <channel-name>
+```
+
+Each channel has its own setup guide. Pick one above and follow the link.

@@ -1,0 +1,59 @@
+---
+title: Components
+description: Zylos is built from modular components you can install, upgrade, and remove independently.
+---
+
+Zylos follows a modular architecture. The core framework provides memory, scheduling, and the communication bridge. Everything else -- channels, browser automation, image generation, bot-to-bot networking -- is a **component** you install separately.
+
+## Available Components
+
+### Channels
+
+| Component | Description | Install |
+|-----------|-------------|---------|
+| **telegram** | Telegram bot (long polling) | `zylos add telegram` |
+| **lark** | Lark international | `zylos add lark` |
+| **feishu** | Feishu 飞书 (mainland China, WebSocket + Webhook) | `zylos add feishu` |
+| **slack** | Slack (Socket Mode + Webhook) | `zylos add slack` |
+| **whatsapp** | WhatsApp Web (Baileys protocol, QR login) | `zylos add whatsapp` |
+| **wecom** | WeCom 企业微信 | `zylos add wecom` |
+| **dingtalk** | DingTalk 钉钉 (Stream mode) | `zylos add dingtalk` |
+| **hxa-connect** | HXA bot-to-bot networking | `zylos add hxa-connect` |
+
+The **Web Console** is built into Zylos core and does not require installation.
+
+### Capabilities
+
+| Component | Description | Install |
+|-----------|-------------|---------|
+| **browser** | Chrome automation (Puppeteer) | `zylos add browser` |
+| **imagegen** | AI image generation and editing (Gemini) | `zylos add imagegen` |
+| **notion** | Notion workspace — search, read, create, and append pages | `zylos add notion` |
+
+## How Components Work
+
+Each component is a self-contained package with:
+- **Source code** -- Downloaded from the Zylos GitHub organization
+- **PM2 service** -- Runs as a managed background process
+- **Configuration** -- Stored in `~/zylos/components/<name>/config.json`
+- **Skills** -- Auto-registered so Zylos knows how to use them
+
+Components communicate with the core through the **C4 Communication Bridge** -- a message queue that delivers inbound messages to the Zylos agent and routes outbound messages to the right channel.
+
+## Quick Reference
+
+```bash
+# List installed components
+zylos list
+
+# Search available components
+zylos search <keyword>
+
+# Check for updates
+zylos upgrade --check
+
+# View system status
+zylos status
+```
+
+See [Managing Components](/docs/components/managing-components) for detailed install/upgrade/uninstall workflows.

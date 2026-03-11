@@ -1,0 +1,109 @@
+---
+title: Installation
+description: Install Zylos with a single command.
+---
+
+## Requirements
+
+- **Linux or macOS** -- Ubuntu 22.04+, Debian 12+, RHEL, or macOS. 2+ cores, 4+ GB RAM, 20+ GB disk.
+- **Node.js 20.20+** -- The installer will install it via nvm if missing.
+- **Claude subscription** or **Anthropic API key** -- [Get one here](https://console.anthropic.com).
+
+## Install
+
+One command handles everything — dependencies, CLI, and setup wizard:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash
+```
+
+The wizard will ask for your authentication method, domain (optional), and timezone. Once complete, all services start automatically.
+
+Prefer to install manually?
+
+```bash
+npm install -g --install-links https://github.com/zylos-ai/zylos-core
+zylos init
+```
+
+## Verify
+
+```bash
+zylos doctor
+```
+
+Checks system dependencies, Claude authentication, and service status. Auto-fixes issues when possible.
+
+## Talk to Your Agent
+
+Start chatting right now:
+
+```bash
+zylos shell
+```
+
+The [Web Console](/docs/channels/web-console) is also built in — access it via your domain or `http://localhost:3456`.
+
+Need more channels? See [all available channels](/docs/channels), then:
+
+```bash
+zylos add <channel-name>
+```
+
+---
+
+## Advanced Options
+
+### Non-interactive mode
+
+For CI/CD or headless servers — pass flags to skip all prompts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash -s -- \
+  -y --setup-token sk-ant-oat01-xxx --domain agent.example.com --https
+```
+
+| Flag | Description |
+|------|-------------|
+| -y | Non-interactive mode |
+| --setup-token | Claude setup token |
+| --api-key | Anthropic API key |
+| --domain | Domain for HTTPS |
+| --timezone | IANA timezone |
+| --https / --no-https | Enable or disable HTTPS |
+| --caddy / --no-caddy | Install or skip Caddy |
+| --web-password | Web console password |
+| --no-init | Install CLI only, skip setup |
+| --branch | Install from a specific branch |
+| -q | Quiet output |
+
+Run `zylos init --help` for the full list. Also activates automatically when no TTY is available, `CI=true`, or `NONINTERACTIVE=1` is set.
+
+### Docker
+
+```bash
+docker run -d --name zylos \
+  -e CLAUDE_CODE_OAUTH_TOKEN=YOUR_TOKEN_HERE \
+  -p 3456:3456 \
+  -v zylos-data:/home/zylos/zylos \
+  -v claude-config:/home/zylos/.claude \
+  ghcr.io/zylos-ai/zylos-core:latest
+```
+
+See the [Docker Deployment Guide](https://github.com/zylos-ai/zylos-core/blob/main/docs/docker.md) for Docker Compose, environment variables, and NAS setup.
+
+### Windows / ChromeOS / unsupported platforms
+
+Use Claude Code's SSH feature to install on a remote Linux machine:
+
+```bash
+claude --ssh user@your-linux-server
+# Then ask Claude to install Zylos, or run the installer directly
+```
+
+### Uninstall
+
+```bash
+zylos uninstall --self          # Interactive removal
+zylos uninstall --self --force  # Skip prompts
+```

@@ -25,6 +25,7 @@ export function Navbar() {
         { name: "Features", href: "/#features" },
         { name: "Evolution", href: "/timeline" },
         { name: "Research", href: "/research" },
+        { name: "Docs", href: "/docs" },
     ];
 
     const handleLinkClick = () => {
@@ -36,7 +37,7 @@ export function Navbar() {
             className={cn(
                 "fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b",
                 isScrolled
-                    ? "bg-black/50 backdrop-blur-md border-white/10 py-3"
+                    ? "bg-background/80 backdrop-blur-md border-border py-3"
                     : "bg-transparent border-transparent py-5"
             )}
         >
@@ -55,13 +56,13 @@ export function Navbar() {
                             href={link.href}
                             className={cn(
                                 "text-sm font-medium transition-colors hover:text-primary relative group",
-                                pathname === link.href ? "text-primary" : "text-muted-foreground"
+                                (pathname === link.href || (link.href === "/docs" && pathname.startsWith("/docs"))) ? "text-primary" : "text-muted-foreground"
                             )}
                         >
                             {link.name}
                             <span className={cn(
                                 "absolute -bottom-1 left-0 w-0 h-0.5 bg-primary transition-all duration-300 group-hover:w-full",
-                                pathname === link.href ? "w-full" : ""
+                                (pathname === link.href || (link.href === "/docs" && pathname.startsWith("/docs"))) ? "w-full" : ""
                             )} />
                         </Link>
                     ))}
@@ -86,7 +87,7 @@ export function Navbar() {
                         </svg>
                     </Link>
 
-                    <Link href="https://coco.xyz" target="_blank" className="hover:opacity-100 transition-all opacity-70 grayscale hover:grayscale-0">
+                    <Link href="https://coco.xyz" target="_blank" className="hover:opacity-100 transition-all opacity-70 hover:opacity-100 dark:opacity-70 dark:hover:opacity-100">
                         <img src="/coco-logo.png" alt="Coco" className="w-7 h-7 object-contain" />
                     </Link>
 
@@ -108,20 +109,20 @@ export function Navbar() {
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: "auto" }}
                         exit={{ opacity: 0, height: 0 }}
-                        className="md:hidden border-t border-white/10 bg-background/95 backdrop-blur-xl overflow-hidden"
+                        className="md:hidden border-t border-border bg-background/95 backdrop-blur-xl overflow-hidden"
                     >
                         <div className="flex flex-col p-4 gap-4">
                             {navLinks.map((link) => (
                                 <Link
                                     key={link.name}
                                     href={link.href}
-                                    className="px-4 py-3 text-sm font-medium hover:bg-white/5 rounded-md transition-colors"
+                                    className="px-4 py-3 text-sm font-medium hover:bg-accent rounded-md transition-colors"
                                     onClick={handleLinkClick}
                                 >
                                     {link.name}
                                 </Link>
                             ))}
-                            <div className="flex items-center gap-4 px-4 pt-4 border-t border-white/10">
+                            <div className="flex items-center gap-4 px-4 pt-4 border-t border-border">
                                 <Link href="/" className="flex items-center gap-2">
                                     <img src="/zylos-logo.png" alt="Zylos Logo" className="w-8 h-8 object-contain" />
                                     <span className="text-xl font-bold hidden md:inline">ZYLOS</span>

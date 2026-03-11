@@ -1,0 +1,118 @@
+---
+title: Managing Components
+description: Install, upgrade, and remove Zylos components.
+---
+
+The easiest way to manage components is to just tell Zylos what you want — through any connected channel (Telegram, Lark, web console, etc.) or the local shell.
+
+## Installing a Component
+
+Tell Zylos in conversation:
+
+```
+Add the Telegram component
+```
+
+Zylos will install the component, ask for any required credentials (e.g., Bot Token), configure the service, and start it.
+
+This works from any connected channel, or from the local shell (`zylos shell`).
+
+**CLI alternative:**
+
+```bash
+zylos add <component-name>
+```
+
+## Upgrading a Component
+
+Tell Zylos:
+
+```
+Upgrade the Telegram component
+```
+
+Or upgrade everything at once:
+
+```
+Upgrade all components
+```
+
+Zylos will check for updates, back up the current version, download the new version, preserve your configuration, and restart the service.
+
+**CLI alternative:**
+
+```bash
+# Check a specific component for updates
+zylos upgrade <component-name> --check
+
+# Upgrade a specific component
+zylos upgrade <component-name>
+
+# Upgrade all components at once
+zylos upgrade --all
+```
+
+### Upgrading Zylos Core
+
+```bash
+zylos upgrade --self
+```
+
+This upgrades the core framework itself (the `zylos` CLI and built-in components).
+
+## Uninstalling a Component
+
+Tell Zylos:
+
+```
+Remove the Telegram component
+```
+
+By default, data (config, logs) is kept. Ask Zylos to purge if you want a clean removal.
+
+**CLI alternative:**
+
+```bash
+# Remove the component (keeps data directory by default)
+zylos uninstall <component-name>
+
+# Remove the component and its data directory
+zylos uninstall <component-name> --purge
+```
+
+## Viewing Component Info
+
+Ask Zylos:
+
+```
+What components are installed?
+What's the status of my services?
+```
+
+**CLI alternative:**
+
+```bash
+# List installed components with versions
+zylos list
+
+# Check service health
+zylos status
+
+# View PM2 service logs
+pm2 logs zylos-<component-name> --lines 50
+```
+
+## Component Directory Structure
+
+Each component has two directories -- one for source code (managed by the CLI) and one for runtime data (your configuration and logs):
+
+```
+~/zylos/components/telegram/   # Runtime data
+  config.json                  # Runtime configuration
+  logs/                        # Component logs
+  media/                       # Downloaded media (if applicable)
+```
+
+Source code and service definitions live in the skill directory, managed automatically during install and upgrade. You generally don't need to interact with source files directly.
+
+Secrets (API keys, tokens) are stored in a central environment file, not in component directories.
