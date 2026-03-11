@@ -87,8 +87,8 @@ export function Navbar() {
                         </svg>
                     </Link>
 
-                    <Link href="https://coco.xyz" target="_blank" className="hover:opacity-100 transition-all opacity-70 hover:opacity-100 dark:opacity-70 dark:hover:opacity-100">
-                        <img src="/coco-logo.png" alt="Coco" className="w-7 h-7 object-contain" />
+                    <Link href="https://coco.xyz" target="_blank" className="transition-all opacity-70 hover:opacity-100 [&>img]:grayscale [&:hover>img]:grayscale-0 [&>img]:dark:brightness-150 [&:hover>img]:dark:brightness-100">
+                        <img src="/coco-logo.png" alt="Coco" className="w-7 h-7 object-contain transition-all" />
                     </Link>
 
                 </div>
