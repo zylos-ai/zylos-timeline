@@ -1,7 +1,7 @@
 import { Hero } from "@/components/hero";
 import { Timeline } from "@/components/timeline/timeline";
 import { getContent } from "@/lib/posts";
-import Link from "next/link";
+import { Link } from "@/lib/i18n/navigation";
 import { Metadata } from "next";
 
 export const metadata: Metadata = {

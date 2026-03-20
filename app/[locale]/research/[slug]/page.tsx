@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { Link } from "@/lib/i18n/navigation";
 import { ArrowLeft, CalendarIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { Metadata } from "next";

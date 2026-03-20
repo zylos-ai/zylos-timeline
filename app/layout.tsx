@@ -4,7 +4,8 @@ import "./globals.css";
 import { GoogleAnalytics } from "@/components/google-analytics";
 import { Navbar } from "@/components/layout/navbar";
 import { RootProvider } from "fumadocs-ui/provider/next";
-import { getLocale } from "next-intl/server";
+import { getLocale, getMessages } from "next-intl/server";
+import { NextIntlClientProvider } from "next-intl";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -39,6 +40,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const locale = await getLocale();
+  const messages = await getMessages();
 
   return (
     <html lang={locale} suppressHydrationWarning>
@@ -46,16 +48,18 @@ export default async function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
-        <RootProvider
-          theme={{
-            defaultTheme: "dark",
-            enableSystem: true,
-          }}
-        >
-          <GoogleAnalytics />
-          <Navbar />
-          {children}
-        </RootProvider>
+        <NextIntlClientProvider messages={messages} locale={locale}>
+          <RootProvider
+            theme={{
+              defaultTheme: "dark",
+              enableSystem: true,
+            }}
+          >
+            <GoogleAnalytics />
+            <Navbar />
+            {children}
+          </RootProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );
