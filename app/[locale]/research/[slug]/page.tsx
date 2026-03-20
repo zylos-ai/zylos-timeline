@@ -8,8 +8,13 @@ import { ArrowLeft, CalendarIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { Metadata } from "next";
 
+import { setRequestLocale } from "next-intl/server";
+import { hasLocale } from "next-intl";
+import { routing } from "@/lib/i18n/routing";
+
 interface PageProps {
     params: Promise<{
+        locale: string;
         slug: string;
     }>;
 }
@@ -69,8 +74,8 @@ export async function generateStaticParams() {
 }
 
 export default async function ResearchDetailPage({ params }: PageProps) {
-    // Await params first (Next.js 15 requirement)
-    const { slug } = await params;
+    const { locale, slug } = await params;
+    if (hasLocale(routing.locales, locale)) setRequestLocale(locale);
 
     // Pass 'research' as the subdir to exclude timeline logs
     const report = getPostBySlug('research', slug);

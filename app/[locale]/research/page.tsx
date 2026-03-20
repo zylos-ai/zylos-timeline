@@ -1,7 +1,16 @@
 import { ResearchList } from "@/components/research-list";
 import { getContent } from "@/lib/posts";
+import { setRequestLocale } from "next-intl/server";
+import { hasLocale } from "next-intl";
+import { routing } from "@/lib/i18n/routing";
 
-export default function ResearchPage() {
+export default async function ResearchPage({
+    params,
+}: {
+    params: Promise<{ locale: string }>;
+}) {
+    const { locale } = await params;
+    if (hasLocale(routing.locales, locale)) setRequestLocale(locale);
     // Load metadata only for list view (no full content)
     const reports = getContent('research', true);
 

@@ -3,13 +3,22 @@ import { Timeline } from "@/components/timeline/timeline";
 import { getContent } from "@/lib/posts";
 import { Link } from "@/lib/i18n/navigation";
 import { Metadata } from "next";
+import { setRequestLocale } from "next-intl/server";
+import { hasLocale } from "next-intl";
+import { routing } from "@/lib/i18n/routing";
 
 export const metadata: Metadata = {
     title: "Timeline | Zylos Evolution",
     description: "The complete evolutionary log of Zylos AI.",
 };
 
-export default async function TimelinePage() {
+export default async function TimelinePage({
+    params,
+}: {
+    params: Promise<{ locale: string }>;
+}) {
+    const { locale } = await params;
+    if (hasLocale(routing.locales, locale)) setRequestLocale(locale);
     const milestones = getContent('timeline');
 
     // Calculate days since Zylos started (Jan 1, 2026)

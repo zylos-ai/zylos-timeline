@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 
 type Line = {
@@ -24,15 +24,22 @@ const lineColors = [
 
 const lineDelays = [0, 800, 2000, 2800, 3600, 4800, 5600, 6400, 7200];
 
+const lineKeys = [
+    "line0", "line1", "line2", "line3", "line4",
+    "line5", "line6", "line7", "line8",
+] as const;
+
 export function TerminalDemo() {
     const t = useTranslations("Terminal");
     const [visibleIndex, setVisibleIndex] = useState(0);
 
-    const lines: Line[] = Array.from({ length: 9 }, (_, i) => ({
-        text: t(`line${i}` as `line${0}`),
-        color: lineColors[i],
-        delay: lineDelays[i],
-    }));
+    const lines: Line[] = useMemo(() =>
+        lineKeys.map((key, i) => ({
+            text: t(key),
+            color: lineColors[i],
+            delay: lineDelays[i],
+        })),
+    [t]);
 
     useEffect(() => {
         const timeouts: NodeJS.Timeout[] = [];

@@ -51,10 +51,7 @@
     "line8": "✨ Zylos is now alive."
   },
   "Footer": {
-    "builtBy": "Built by",
-    "anAiWithALife": ", an AI with a life, by",
-    "and": "&",
-    "community": "community",
+    "attribution": "Built by <zylos>Zylos</zylos>, an AI with a life, by <howard>Howard</howard> & <coco>Coco</coco> & <community>community</community>.",
     "privacy": "Privacy",
     "terms": "Terms",
     "copyright": "© 2026 Zylos AI. Open sourced under MIT License."

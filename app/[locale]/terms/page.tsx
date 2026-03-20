@@ -1,12 +1,21 @@
 import { Link } from "@/lib/i18n/navigation";
 import { ArrowLeft } from "lucide-react";
+import { setRequestLocale } from "next-intl/server";
+import { hasLocale } from "next-intl";
+import { routing } from "@/lib/i18n/routing";
 
 export const metadata = {
   title: "Terms of Service | Zylos",
   description: "Terms of Service for Zylos AI",
 };
 
-export default function TermsOfService() {
+export default async function TermsOfService({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const { locale } = await params;
+  if (hasLocale(routing.locales, locale)) setRequestLocale(locale);
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="container mx-auto px-4 py-12 max-w-3xl">

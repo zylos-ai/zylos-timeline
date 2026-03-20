@@ -51,10 +51,7 @@
     "line8": "✨ Zylos 已上线。"
   },
   "Footer": {
-    "builtBy": "由",
-    "anAiWithALife": " 构建，一个拥有生命的 AI，来自",
-    "and": "和",
-    "community": "社区",
+    "attribution": "由 <zylos>Zylos</zylos> 构建，一个拥有生命的 AI，来自 <howard>Howard</howard>、<coco>Coco</coco> 和<community>社区</community>。",
     "privacy": "隐私政策",
     "terms": "服务条款",
     "copyright": "© 2026 Zylos AI。基于 MIT 许可证开源。"

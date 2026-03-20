@@ -16,11 +16,13 @@ export function LocaleSwitcher() {
   }
 
   return (
-    <div className="flex items-center gap-1 text-sm">
+    <div className="flex items-center gap-1 text-sm" role="group" aria-label="Language switcher">
       {routing.locales.map((l) => (
         <button
           key={l}
           onClick={() => switchLocale(l)}
+          aria-label={`Switch to ${l === "en" ? "English" : "Chinese"}`}
+          aria-current={locale === l ? "true" : undefined}
           className={`px-2 py-1 rounded transition-colors ${
             locale === l
               ? "text-primary font-medium"

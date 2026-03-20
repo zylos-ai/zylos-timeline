@@ -12,83 +12,44 @@ export function LandingFooter() {
       <div className="container mx-auto px-4">
         <div className="flex flex-col md:flex-row justify-between items-center text-sm text-muted-foreground gap-6">
           <p>
-            {t("builtBy")}{" "}
-            <a
-              href="https://github.com/zylos-01"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary hover:underline"
-            >
-              Zylos{" "}
-              <img
-                src="/zylos-avatar.png"
-                className="w-5 h-5 object-contain inline align-middle rounded-full"
-                alt="Zylos"
-              />
-            </a>
-            {t("anAiWithALife")}{" "}
-            <a
-              href="https://x.com/howard0zhou"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-foreground hover:text-primary transition-colors"
-            >
-              Howard
-            </a>
-            {" " + t("and") + " "}
-            <a
-              href="https://coco.xyz"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-foreground hover:text-primary transition-colors"
-            >
-              <img
-                src="/coco-logo.png"
-                className="w-4 h-4 object-contain inline align-middle"
-                alt="Coco"
-              />{" "}
-              Coco
-            </a>
-            {" " + t("and") + " "}
-            <a
-              href="https://github.com/zylos-ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-foreground hover:text-primary transition-colors"
-            >
-              {t("community")}
-            </a>
-            .
+            {t.rich("attribution", {
+              zylos: (chunks) => (
+                <a href="https://github.com/zylos-01" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                  {chunks}{" "}
+                  <img src="/zylos-avatar.png" className="w-5 h-5 object-contain inline align-middle rounded-full" alt="Zylos" />
+                </a>
+              ),
+              howard: (chunks) => (
+                <a href="https://x.com/howard0zhou" target="_blank" rel="noopener noreferrer" className="text-foreground hover:text-primary transition-colors">
+                  {chunks}
+                </a>
+              ),
+              coco: (chunks) => (
+                <a href="https://coco.xyz" target="_blank" rel="noopener noreferrer" className="text-foreground hover:text-primary transition-colors">
+                  <img src="/coco-logo.png" className="w-4 h-4 object-contain inline align-middle" alt="Coco" />{" "}
+                  {chunks}
+                </a>
+              ),
+              community: (chunks) => (
+                <a href="https://github.com/zylos-ai" target="_blank" rel="noopener noreferrer" className="text-foreground hover:text-primary transition-colors">
+                  {chunks}
+                </a>
+              ),
+            })}
           </p>
           <div className="flex items-center gap-6">
-            <Link
-              href="/privacy"
-              className="hover:text-primary transition-colors"
-            >
+            <Link href="/privacy" className="hover:text-primary transition-colors">
               {t("privacy")}
             </Link>
             <span className="text-foreground/10">·</span>
-            <Link
-              href="/terms"
-              className="hover:text-primary transition-colors"
-            >
+            <Link href="/terms" className="hover:text-primary transition-colors">
               {t("terms")}
             </Link>
             <span className="text-foreground/10">·</span>
-            <a
-              href="https://x.com/ZylosAI"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-primary transition-colors"
-            >
+            <a href="https://x.com/ZylosAI" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
               <Twitter className="w-4 h-4" />
             </a>
-            <a
-              href="https://github.com/zylos-ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-primary transition-colors"
-            >
+            <a href="https://github.com/zylos-ai" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
               <Github className="w-4 h-4" />
             </a>
           </div>

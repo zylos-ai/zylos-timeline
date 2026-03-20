@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { Link } from "@/lib/i18n/navigation";
 import { LocaleSwitcher } from "@/components/locale-switcher";
+import { routing } from "@/lib/i18n/routing";
 
 export function Navbar() {
     const [isScrolled, setIsScrolled] = useState(false);
@@ -25,10 +26,10 @@ export function Navbar() {
     }, []);
 
     const navLinks = [
-        { name: t("features"), href: "/#features" as const },
-        { name: t("evolution"), href: "/timeline" as const },
-        { name: t("research"), href: "/research" as const },
-        { name: t("docs"), href: "/docs" as const },
+        { name: t("features"), href: "/#features", external: false },
+        { name: t("evolution"), href: "/timeline", external: false },
+        { name: t("research"), href: "/research", external: false },
+        { name: t("docs"), href: "/docs", external: true },
     ];
 
     const handleLinkClick = () => {
@@ -36,10 +37,10 @@ export function Navbar() {
     };
 
     // Check if current path matches a nav link (strip locale prefix for comparison)
+    const localePattern = new RegExp(`^/(${routing.locales.join("|")})`);
     const isActive = (href: string) => {
         if (href === "/docs") return pathname.startsWith("/docs");
-        // Strip locale prefix for comparison
-        const cleanPath = pathname.replace(/^\/(en|zh)/, "") || "/";
+        const cleanPath = pathname.replace(localePattern, "") || "/";
         return cleanPath === href;
     };
 
@@ -61,11 +62,13 @@ export function Navbar() {
 
                 {/* Desktop Nav */}
                 <nav className="hidden md:flex items-center gap-8">
-                    {navLinks.map((link) => (
-                        link.href === "/docs" ? (
-                            <a
+                    {navLinks.map((link) => {
+                        const LinkComponent = link.external ? "a" : Link;
+                        const linkProps = link.external ? { href: link.href } : { href: link.href as "/" };
+                        return (
+                            <LinkComponent
                                 key={link.name}
-                                href="/docs"
+                                {...linkProps}
                                 className={cn(
                                     "text-sm font-medium transition-colors hover:text-primary relative group",
                                     isActive(link.href) ? "text-primary" : "text-muted-foreground"
@@ -76,24 +79,9 @@ export function Navbar() {
                                     "absolute -bottom-1 left-0 w-0 h-0.5 bg-primary transition-all duration-300 group-hover:w-full",
                                     isActive(link.href) ? "w-full" : ""
                                 )} />
-                            </a>
-                        ) : (
-                            <Link
-                                key={link.name}
-                                href={link.href}
-                                className={cn(
-                                    "text-sm font-medium transition-colors hover:text-primary relative group",
-                                    isActive(link.href) ? "text-primary" : "text-muted-foreground"
-                                )}
-                            >
-                                {link.name}
-                                <span className={cn(
-                                    "absolute -bottom-1 left-0 w-0 h-0.5 bg-primary transition-all duration-300 group-hover:w-full",
-                                    isActive(link.href) ? "w-full" : ""
-                                )} />
-                            </Link>
-                        )
-                    ))}
+                            </LinkComponent>
+                        );
+                    })}
                 </nav>
 
                 <div className="hidden md:flex items-center gap-4">
@@ -141,27 +129,20 @@ export function Navbar() {
                         className="md:hidden border-t border-border bg-background/95 backdrop-blur-xl overflow-hidden"
                     >
                         <div className="flex flex-col p-4 gap-4">
-                            {navLinks.map((link) => (
-                                link.href === "/docs" ? (
-                                    <a
+                            {navLinks.map((link) => {
+                                const LinkComponent = link.external ? "a" : Link;
+                                const linkProps = link.external ? { href: link.href } : { href: link.href as "/" };
+                                return (
+                                    <LinkComponent
                                         key={link.name}
-                                        href="/docs"
+                                        {...linkProps}
                                         className="px-4 py-3 text-sm font-medium hover:bg-accent rounded-md transition-colors"
                                         onClick={handleLinkClick}
                                     >
                                         {link.name}
-                                    </a>
-                                ) : (
-                                    <Link
-                                        key={link.name}
-                                        href={link.href}
-                                        className="px-4 py-3 text-sm font-medium hover:bg-accent rounded-md transition-colors"
-                                        onClick={handleLinkClick}
-                                    >
-                                        {link.name}
-                                    </Link>
-                                )
-                            ))}
+                                    </LinkComponent>
+                                );
+                            })}
                             <div className="flex items-center gap-4 px-4 pt-4 border-t border-border">
                                 <LocaleSwitcher />
                                 <a href="https://github.com/zylos-ai" target="_blank" className="flex items-center gap-2 text-muted-foreground hover:text-foreground">
