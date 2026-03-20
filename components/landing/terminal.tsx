@@ -48,7 +48,7 @@ export function TerminalDemo() {
                 <div className="text-center mb-16">
                     <h2 className="text-3xl md:text-5xl font-bold mb-6">Born in the Terminal.</h2>
                     <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-                        A Linux server and a <a href="https://claude.ai" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Claude</a> subscription — that&apos;s all you need. <br />
+                        A Linux server and a <a href="https://claude.ai" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Claude</a> or <a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Codex</a> subscription — that&apos;s all you need. <br />
                         One command to install. Local-first, privacy-focused, always online.
                     </p>
                 </div>
