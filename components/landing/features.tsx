@@ -3,80 +3,64 @@
 import { motion } from "framer-motion";
 import { Brain, Activity, Network, Terminal, Puzzle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTranslations } from "next-intl";
+import type { LucideIcon } from "lucide-react";
 
-const features = [
-    {
-        icon: Network,
-        title: "One AI, One Consciousness",
-        description: "Your AI on Telegram doesn't know what you said on Slack? Not here. Zylos routes all channels through a single gateway — one conversation, one memory, one personality. Every message persisted and fully queryable.",
-        className: "",
-    },
-    {
-        icon: Brain,
-        title: "Your Context, Guaranteed",
-        description: "Other frameworks silently lose memory during context compaction. Zylos auto-saves before compaction runs, with five-layer Inside Out memory that knows what to keep and what to compress. Your AI never wakes up with amnesia.",
-        className: "",
-    },
-    {
-        icon: Activity,
-        title: "Self-Healing by Default",
-        description: "Crash recovery, heartbeat probes, health monitoring, context management, and auto-upgrades — all built in. Your AI detects its own problems and fixes them. It stays alive while you sleep.",
-        className: "",
-    },
-    {
-        icon: Terminal,
-        title: "Powered by Best-in-Class AI",
-        description: "Supports Claude Code (Anthropic) and Codex (OpenAI) as interchangeable runtimes. Switch anytime — your memory, skills, and channels are preserved. When providers ship new capabilities, your agent benefits automatically.",
-        className: "",
-    },
-    {
-        icon: Puzzle,
-        title: "OpenClaw Ecosystem Compatible",
-        description: "Access thousands of OpenClaw skills and plugins from ClawHub — just ask your agent in natural language. Most extensions are one conversation away. Your agent also communicates with OpenClaw agents in real-time via HXA-Connect.",
-        className: "md:col-span-2",
-    },
+type FeatureKey = "oneConsciousness" | "contextGuaranteed" | "selfHealing" | "bestInClass" | "openClaw";
+
+const featureConfigs: { key: FeatureKey; icon: LucideIcon; className: string }[] = [
+    { key: "oneConsciousness", icon: Network, className: "" },
+    { key: "contextGuaranteed", icon: Brain, className: "" },
+    { key: "selfHealing", icon: Activity, className: "" },
+    { key: "bestInClass", icon: Terminal, className: "" },
+    { key: "openClaw", icon: Puzzle, className: "md:col-span-2" },
 ];
 
 export function LandingFeatures() {
+    const t = useTranslations("Features");
+
     return (
         <section id="features" className="py-24 bg-muted/50 relative border-t border-border">
             <div className="container mx-auto px-4">
 
                 <div className="mb-16">
-                    <h2 className="text-3xl md:text-4xl font-bold mb-4">Why Zylos?</h2>
+                    <h2 className="text-3xl md:text-4xl font-bold mb-4">{t("heading")}</h2>
                     <p className="text-muted-foreground max-w-2xl text-lg">
-                        Not just a chat session — a reliable, always-on AI that remembers, communicates, and acts on its own.
+                        {t("subheading")}
                     </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-[minmax(180px,auto)]">
-                    {features.map((feature, i) => (
-                        <motion.div
-                            key={feature.title}
-                            initial={{ opacity: 0, y: 20 }}
-                            whileInView={{ opacity: 1, y: 0 }}
-                            viewport={{ once: true }}
-                            transition={{ delay: i * 0.1 }}
-                            className={cn(
-                                "group relative overflow-hidden rounded-3xl border border-border bg-card p-8 hover:bg-accent transition-colors",
-                                feature.className
-                            )}
-                        >
-                            <div className="absolute top-0 right-0 p-8 opacity-20 group-hover:opacity-40 transition-opacity">
-                                <feature.icon className="w-24 h-24 -mr-8 -mt-8" />
-                            </div>
-
-                            <div className="relative z-10 flex flex-col h-full justify-between">
-                                <div>
-                                    <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center mb-4 text-primary">
-                                        <feature.icon className="w-5 h-5" />
-                                    </div>
-                                    <h3 className="text-xl font-bold mb-2 text-foreground">{feature.title}</h3>
-                                    <p className="text-muted-foreground leading-relaxed">{feature.description}</p>
+                    {featureConfigs.map((feature, i) => {
+                        const Icon = feature.icon;
+                        return (
+                            <motion.div
+                                key={feature.key}
+                                initial={{ opacity: 0, y: 20 }}
+                                whileInView={{ opacity: 1, y: 0 }}
+                                viewport={{ once: true }}
+                                transition={{ delay: i * 0.1 }}
+                                className={cn(
+                                    "group relative overflow-hidden rounded-3xl border border-border bg-card p-8 hover:bg-accent transition-colors",
+                                    feature.className
+                                )}
+                            >
+                                <div className="absolute top-0 right-0 p-8 opacity-20 group-hover:opacity-40 transition-opacity">
+                                    <Icon className="w-24 h-24 -mr-8 -mt-8" />
                                 </div>
-                            </div>
-                        </motion.div>
-                    ))}
+
+                                <div className="relative z-10 flex flex-col h-full justify-between">
+                                    <div>
+                                        <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center mb-4 text-primary">
+                                            <Icon className="w-5 h-5" />
+                                        </div>
+                                        <h3 className="text-xl font-bold mb-2 text-foreground">{t(`${feature.key}.title`)}</h3>
+                                        <p className="text-muted-foreground leading-relaxed">{t(`${feature.key}.description`)}</p>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        );
+                    })}
                 </div>
 
             </div>

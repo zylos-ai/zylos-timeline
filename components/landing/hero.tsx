@@ -3,13 +3,14 @@
 import { motion } from "framer-motion";
 import { ArrowRight, Terminal, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
 import { useState } from "react";
+import { useTranslations } from "next-intl";
+import { Link } from "@/lib/i18n/navigation";
 
 export function LandingHero() {
+    const t = useTranslations("Hero");
     const [copied, setCopied] = useState(false);
     const command = "curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash";
-    const displayCommand = "curl -fsSL zylos.ai/install | bash";
 
     const handleCopy = () => {
         navigator.clipboard.writeText(command);
@@ -38,20 +39,26 @@ export function LandingHero() {
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
                         </span>
-                        System Online
+                        {t("badge")}
                     </div>
 
                     <h1 className="text-5xl md:text-7xl lg:text-8xl font-black tracking-tighter mb-6 leading-[1] text-foreground">
-                        Give your AI <br />
-                        <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary via-cyan-400 to-blue-500">a life.</span>
+                        {t("title")} <br />
+                        <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary via-cyan-400 to-blue-500">{t("titleHighlight")}</span>
                     </h1>
 
                     <p className="text-xl text-muted-foreground mb-6 max-w-xl mx-auto lg:mx-0 leading-relaxed font-light">
-                        LLMs are geniuses — but they wake up with <span className="text-foreground font-medium">amnesia</span> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.
+                        {t.rich("description", {
+                            highlight: (chunks) => <span className="text-foreground font-medium">{chunks}</span>,
+                        })}
                     </p>
 
                     <p className="text-sm text-muted-foreground/70 mb-10 max-w-xl mx-auto lg:mx-0 font-mono">
-                        Fully compatible with the <a href="https://github.com/openclaw/openclaw" className="text-primary/80 hover:text-primary transition-colors" target="_blank" rel="noopener noreferrer">OpenClaw</a> ecosystem
+                        {t.rich("compatibility", {
+                            link: (chunks) => (
+                                <a href="https://github.com/openclaw/openclaw" className="text-primary/80 hover:text-primary transition-colors" target="_blank" rel="noopener noreferrer">{chunks}</a>
+                            ),
+                        })}
                     </p>
 
                     <div className="flex flex-col items-center lg:items-start gap-4">
@@ -75,7 +82,7 @@ export function LandingHero() {
 
                         <Link href="/timeline">
                             <Button variant="ghost" className="gap-2 h-12 px-6 group text-muted-foreground hover:text-foreground">
-                                See Evolution
+                                {t("seeEvolution")}
                                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                             </Button>
                         </Link>
@@ -97,7 +104,6 @@ export function LandingHero() {
                     </div>
 
                     {/* Orbiting Satellites */}
-                    {/* We use absolute positioning with transforms for static placement, then animate float */}
                     {[
                         { label: "Telegram", x: 0, y: -180, delay: 0 },
                         { label: "Lark", x: 160, y: 100, delay: 1 },

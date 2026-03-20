@@ -1,0 +1,70 @@
+{
+  "Nav": {
+    "features": "Features",
+    "evolution": "Evolution",
+    "research": "Research",
+    "docs": "Docs"
+  },
+  "Hero": {
+    "badge": "System Online",
+    "title": "Give your AI",
+    "titleHighlight": "a life.",
+    "description": "LLMs are geniuses — but they wake up with <highlight>amnesia</highlight> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.",
+    "compatibility": "Fully compatible with the <link>OpenClaw</link> ecosystem",
+    "seeEvolution": "See Evolution"
+  },
+  "Features": {
+    "heading": "Why Zylos?",
+    "subheading": "Not just a chat session — a reliable, always-on AI that remembers, communicates, and acts on its own.",
+    "oneConsciousness": {
+      "title": "One AI, One Consciousness",
+      "description": "Your AI on Telegram doesn't know what you said on Slack? Not here. Zylos routes all channels through a single gateway — one conversation, one memory, one personality. Every message persisted and fully queryable."
+    },
+    "contextGuaranteed": {
+      "title": "Your Context, Guaranteed",
+      "description": "Other frameworks silently lose memory during context compaction. Zylos auto-saves before compaction runs, with five-layer Inside Out memory that knows what to keep and what to compress. Your AI never wakes up with amnesia."
+    },
+    "selfHealing": {
+      "title": "Self-Healing by Default",
+      "description": "Crash recovery, heartbeat probes, health monitoring, context management, and auto-upgrades — all built in. Your AI detects its own problems and fixes them. It stays alive while you sleep."
+    },
+    "bestInClass": {
+      "title": "Powered by Best-in-Class AI",
+      "description": "Supports Claude Code (Anthropic) and Codex (OpenAI) as interchangeable runtimes. Switch anytime — your memory, skills, and channels are preserved. When providers ship new capabilities, your agent benefits automatically."
+    },
+    "openClaw": {
+      "title": "OpenClaw Ecosystem Compatible",
+      "description": "Access thousands of OpenClaw skills and plugins from ClawHub — just ask your agent in natural language. Most extensions are one conversation away. Your agent also communicates with OpenClaw agents in real-time via HXA-Connect."
+    }
+  },
+  "Terminal": {
+    "heading": "Born in the Terminal.",
+    "subheading": "A Linux server and a <claude>Claude</claude> or <codex>Codex</codex> subscription — that's all you need. One command to install. Local-first, privacy-focused, always online.",
+    "line0": "> zylos init",
+    "line1": "ℹ Checking prerequisites...",
+    "line2": "✔ tmux, git, PM2, Claude Code installed",
+    "line3": "✔ Claude authenticated",
+    "line4": "ℹ Creating ~/zylos/ directory...",
+    "line5": "✔ Memory, skills, and services initialized",
+    "line6": "✔ Background services started",
+    "line7": "✔ Claude launched in tmux session",
+    "line8": "✨ Zylos is now alive."
+  },
+  "Footer": {
+    "builtBy": "Built by",
+    "anAiWithALife": ", an AI with a life, by",
+    "and": "&",
+    "community": "community",
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "copyright": "© 2026 Zylos AI. Open sourced under MIT License."
+  },
+  "Meta": {
+    "title": "Zylos | Give your AI a life",
+    "description": "LLMs are geniuses — but they wake up with amnesia every session. Zylos gives them memory, communication, and autonomy. Open source."
+  },
+  "LocaleSwitcher": {
+    "en": "EN",
+    "zh": "中"
+  }
+}
