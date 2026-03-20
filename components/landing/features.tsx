@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Brain, Activity, Network, Terminal } from "lucide-react";
+import { Brain, Activity, Network, Terminal, Puzzle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const features = [
@@ -25,9 +25,15 @@ const features = [
     },
     {
         icon: Terminal,
-        title: "Powered by Claude Code",
-        description: "Built on Anthropic's official AI agent runtime. New Claude capabilities ship to your agent automatically. And because it can program, your AI writes new skills, integrates services, and evolves with your needs.",
+        title: "Powered by Best-in-Class AI",
+        description: "Supports Claude Code (Anthropic) and Codex (OpenAI) as interchangeable runtimes. Switch anytime — your memory, skills, and channels are preserved. When providers ship new capabilities, your agent benefits automatically.",
         className: "",
+    },
+    {
+        icon: Puzzle,
+        title: "OpenClaw Ecosystem Compatible",
+        description: "Access thousands of OpenClaw skills and plugins from ClawHub — just ask your agent in natural language. Most extensions are one conversation away. Your agent also communicates with OpenClaw agents in real-time via HXA-Connect.",
+        className: "md:col-span-2",
     },
 ];
 
