@@ -46,8 +46,12 @@ export function LandingHero() {
                         <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary via-cyan-400 to-blue-500">a life.</span>
                     </h1>
 
-                    <p className="text-xl text-muted-foreground mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-light">
+                    <p className="text-xl text-muted-foreground mb-6 max-w-xl mx-auto lg:mx-0 leading-relaxed font-light">
                         LLMs are geniuses — but they wake up with <span className="text-foreground font-medium">amnesia</span> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.
+                    </p>
+
+                    <p className="text-sm text-muted-foreground/70 mb-10 max-w-xl mx-auto lg:mx-0 font-mono">
+                        Fully compatible with the <a href="https://github.com/openclaw/openclaw" className="text-primary/80 hover:text-primary transition-colors" target="_blank" rel="noopener noreferrer">OpenClaw</a> ecosystem
                     </p>
 
                     <div className="flex flex-col items-center lg:items-start gap-4">
