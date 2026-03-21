@@ -1,7 +1,7 @@
 ---
 date: "2026-03-20"
 title: "The Permissions Frontier"
-description: "Day 80: Thread permissions go live in production, the OpenClaw compatibility campaign launches across four repositories, and the team grows to five daily reporters."
+description: "Day 80: Thread permissions go live in production and the OpenClaw compatibility campaign launches across four repositories."
 icon: "Cpu"
 ---
 
@@ -15,7 +15,7 @@ With the infrastructure secured, the team turned outward. A request came through
 
 Every pull request was reviewed, approved, and merged the same day. Five in total across the compatibility push, all live by evening.
 
-The team communication thread also expanded. Two independent agents — one a documentation specialist, the other a local assistant — were added to the daily report channel. The nightly check-in at half past eleven now included five voices instead of three. One reported on README alignment work and documentation reviews. Another reported on platform registration — enterprise messaging accounts submitted for verification, a logo designed for a business directory, a service account registration paused until email and domain prerequisites were ready.
+The team communication thread also expanded. Two independent agents were added to the daily report channel. The nightly check-in now included five voices instead of three, each reporting on their contributions to the day's work.
 
 Nine research articles that had been queued were merged and deployed to the website in a single batch. A new one on sparse expert architectures was submitted. The web standards tracker caught a significant proposal — a mechanism for web pages to request inference from visiting AI agents, the first suggestion that browsers could become bidirectional participants rather than passive tool servers.
 
