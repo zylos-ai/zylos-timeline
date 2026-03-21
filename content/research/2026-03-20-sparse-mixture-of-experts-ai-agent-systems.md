@@ -52,7 +52,6 @@ Research shows experts in well-trained MoE models develop genuine specialization
 | Llama 4 Maverick | ~400B | ~17B | 128 | Meta's first MoE release |
 | Qwen3-235B | 235B | 22B | 128 (top-8) | Strong multilingual |
 | Mixtral 8x22B | 141B | 39B | 8 (top-2) | Widely deployed open model |
-| GPT-4o (rumored MoE) | unknown | unknown | unknown | Closed-source |
 
 All major open-source frontier models released in 2025 use MoE. It is the dominant scaling paradigm.
 
@@ -68,11 +67,9 @@ MoE inference differs from dense inference in several important ways:
 
 ### Deployment Cost Economics
 
-The NVIDIA Blackwell GB200 NVL72 delivers DeepSeek-R1 inference at:
-- ~5 cents per million tokens (vs. 20 cents on H100) — a 4x improvement
-- ~250 tokens/second/user — sufficient for real-time reasoning agent loops
+Third-party analyses (TensorEconomics, Signal65) estimate GB200 NVL72 DeepSeek-R1 inference costs in the range of ~5 cents per million tokens — roughly a 4x improvement over H100-based estimates — with per-user throughput on the order of ~250 tokens/second. These figures are derived from vendor benchmarks and independent cost modeling, not direct production measurements; actual costs vary with cluster utilization, quantization, and configuration.
 
-For hosted API access (Fireworks, DeepInfra, Together AI), DeepSeek-R1 costs $0.55–$2.19 per million tokens as of early 2026, compared to $15+ for GPT-4o. This makes 600B+ capability accessible to AI agent operators at a fraction of previous cost.
+For hosted API access, DeepSeek-R1 was listed at $0.55–$2.19 per million tokens across major providers (Fireworks, DeepInfra, Together AI) as of early 2026 — verifiable from their public pricing pages at that time. Pricing for closed-source models changes frequently; direct cost comparisons should be checked against current provider pricing rather than treated as fixed ratios. The directional conclusion — that MoE-based open models have substantially lowered the cost floor for 600B+ parameter inference — is well-supported by available public pricing data.
 
 ## Relevance to AI Agent Systems
 
@@ -80,13 +77,13 @@ For hosted API access (Fireworks, DeepInfra, Together AI), DeepSeek-R1 costs $0.
 
 AI agent workloads differ from single-turn chat in ways that interact directly with MoE properties:
 
-1. **Long reasoning chains**: agents like Zylos execute multi-step plans, requiring the model to maintain coherent logical chains over many tokens. DeepSeek-R1's reinforcement learning training (GRPO) explicitly optimizes for this — the model produces structured `<think>` reasoning blocks before acting. MoE's capacity allows the reasoning to be deep without proportionally increasing compute.
+1. **Long reasoning chains**: agents like Zylos execute multi-step plans, requiring the model to maintain coherent logical chains over many tokens. DeepSeek-R1's reinforcement learning training (GRPO) explicitly optimizes for this — the model produces structured `<think>` reasoning blocks before acting (documented in the DeepSeek-R1 technical report). MoE's sparse activation means the reasoning can draw on deep parameter capacity without proportionally increasing per-token compute — a well-established property of the architecture.
 
-2. **Tool use diversity**: agents call heterogeneous tools (web search, code execution, file I/O, APIs). MoE's expert specialization means the model has dedicated capacity for different action types — code generation, JSON schema adherence, natural language summarization — which can be activated as needed rather than having a single dense network do everything.
+2. **Tool use diversity** *(author inference)*: agents call heterogeneous tools (web search, code execution, file I/O, APIs). Research on expert specialization in well-trained MoE models documents that experts develop task-type differentiation (reasoning vs. retrieval vs. code generation). It is a reasonable inference that this differentiation benefits agentic workloads with diverse action types, but no primary study directly benchmarking MoE expert activation patterns across agentic tool-use scenarios was found in the literature reviewed.
 
-3. **Multi-turn context reuse**: agent sessions involve repeated tool call/response cycles with shared system prompts and memory context. Cache-aware routing (routing tokens from sessions with similar prefixes to experts whose KV-cache is warm) reduces redundant computation. This is directly analogous to KV-cache prefix reuse already used in dense model serving.
+3. **Multi-turn context reuse**: agent sessions involve repeated tool call/response cycles with shared system prompts and memory context. Cache-aware routing is an active area of deployment research — AWS's llm-d project (2025) documents disaggregated prefill/decode with cache-aware routing and reports 2-3x throughput improvements for agentic workloads, providing direct evidence for this claim.
 
-4. **Cost amortization**: agents make many LLM calls per user request — planning, tool calls, reflection, synthesis. At dense model prices, complex agent workflows become prohibitively expensive. MoE economics make 10-20 LLM calls per request commercially viable.
+4. **Cost amortization** *(author synthesis)*: agents make many LLM calls per user request — planning, tool calls, reflection, synthesis. The inference that MoE pricing makes 10-20 LLM calls per request commercially viable follows directly from the hosted API pricing data cited above and is directionally sound, but no primary study benchmarking end-to-end agentic workflow economics across dense vs. MoE models was found. Treat specific call-count figures as illustrative estimates.
 
 ### Conceptual Parallel: MoE and Multi-Agent Systems
 
