@@ -1,0 +1,196 @@
+---
+title: Lark / 飞书
+description: 将 Zylos 连接到 Lark（国际版）或飞书（中国大陆）进行团队通信。
+---
+
+Lark 渠道将 Zylos 连接到 Lark（国际版）或飞书（中国大陆）。它通过 Webhook 工作——Lark 将事件发送到你的服务器，Zylos 通过 C4 通信桥处理这些事件。
+
+**预计配置时间：** 10–15 分钟
+
+## 前提条件
+
+- 具有开发者控制台访问权限的 Lark 或飞书账号
+- 已在服务器上安装并运行的 Zylos
+- 指向你服务器的 **HTTPS 域名**（Lark Webhook 必须）。如果你在 `zylos init` 时配置了域名，Caddy 会自动处理 SSL 证书。
+
+## 第一步：创建 Lark 应用
+
+1. 进入开发者控制台：
+   - **Lark（国际版）：** [open.larksuite.com](https://open.larksuite.com)
+   - **飞书：** [open.feishu.cn](https://open.feishu.cn)
+
+![Lark 开放平台](/docs/images/lark-open-platform.png)
+
+2. 点击**创建企业自建应用**
+
+![点击创建企业应用](/docs/images/lark-create-app.png)
+
+3. 填写应用名称（例如"Zylos"）和描述
+
+![应用创建表单](/docs/images/lark-create-app-form.png)
+
+4. 点击**创建**
+
+## 第二步：添加机器人能力
+
+1. 在新应用中找到**添加应用能力**
+2. 点击**机器人**卡片添加 Bot 功能
+
+![为应用添加机器人能力](/docs/images/lark-add-bot-capability.png)
+
+3. 前往**凭证与基本信息**
+4. 复制你的 **App ID** 和 **App Secret**
+
+![凭证页面上的 App ID 和 App Secret](/docs/images/lark-credentials.png)
+
+## 第三步：配置权限
+
+前往**权限管理**，添加以下权限范围。你可以在开发者控制台中通过 JSON 批量导入：
+
+必需权限：
+- `im:message` -- 发送消息
+- `im:message:send_as_bot` -- 以机器人身份发送消息
+- `im:message.p2p_msg:readonly` -- 读取私信
+- `im:message.group_at_msg:readonly` -- 读取群组 @消息
+- `im:chat.members:bot_access` -- 访问机器人所在的群组
+- `im:resource` -- 上传/下载文件和图片
+- `contact:user.base:readonly` -- 读取基本用户信息
+
+完整权限列表（可导入的 JSON 格式）请参阅[组件仓库](https://github.com/zylos-ai/zylos-lark)。
+
+![带批量导入的权限管理](/docs/images/lark-batch-import-permissions.png)
+
+## 第四步：获取 Verification Token
+
+1. 前往**事件与回调**
+2. 点击**加密策略**标签页
+3. 复制 **Verification Token**（必须）
+4. 可选择复制 **Encrypt Key**（推荐，出于安全考虑）
+
+![Verification Token 和 Encrypt Key](/docs/images/lark-verification-token.png)
+
+## 第五步：安装 Lark 组件
+
+在 `zylos shell` 或任意已连接的渠道中，告诉 Zylos：
+
+```
+Add the Lark component
+```
+
+或手动安装：
+
+```bash
+zylos add lark
+```
+
+当提示时，提供：
+- **App ID**
+- **App Secret**
+- **Verification Token**
+- **Encrypt Key**（可选）
+
+## 第六步：配置 Webhook URL
+
+安装完成后，Zylos 会告诉你 Webhook URL，格式如下：
+
+```
+https://your-domain.com/lark/webhook
+```
+
+返回 Lark 开发者控制台：
+1. 前往**事件与回调**
+2. 选择**将事件发送到开发者服务器**
+3. 粘贴 Webhook URL
+4. 订阅以下事件：
+   - `im.message.receive_v1` -- 接收消息
+   - `im.chat.member.bot.added_v1` -- 机器人被添加到群组
+5. 点击**保存**
+
+![事件订阅配置](/docs/images/lark-events.png)
+
+## 第七步：发布应用
+
+1. 前往**版本管理与发布**
+2. 点击**创建版本**
+3. 填写版本号和发布说明
+4. 点击**保存**，然后点击**发布**
+5. 等待管理员审批（如果你的组织需要）
+
+![创建并发布版本](/docs/images/lark-publish-version.png)
+
+## 第八步：开始聊天
+
+1. 打开 Lark/飞书客户端
+2. 按名称搜索你的机器人
+3. 发送私信——Zylos 将会回复
+
+### 添加到群组
+
+1. 打开群聊
+2. 前往**群设置** > **机器人** > **添加机器人**
+3. 搜索你的应用名称并添加
+4. @提及机器人即可在群组中与它互动
+
+## 访问控制
+
+与 Telegram 类似，你可以通过 Zylos 或管理 CLI 配置机器人的交互权限。
+
+**通过 Zylos：**
+
+```
+Set the Lark DM policy to allowlist
+Add <lark_user_id> to the Lark allowlist
+```
+
+**通过管理 CLI：**
+
+```bash
+# 设置私信策略
+zylos-lark set-dm-policy allowlist
+
+# 允许特定用户
+zylos-lark add-dm-allow <lark_user_id>
+
+# 群组策略
+zylos-lark set-group-policy allowlist
+```
+
+> 关于如何查找和运行组件管理 CLI，请参阅[扩展 Zylos](/docs/extending)。
+
+## Lark 与飞书的区别
+
+该组件同时支持两个平台，唯一的区别在于：
+- **开发者控制台地址** -- `open.larksuite.com` 对应 `open.feishu.cn`
+- **API 端点** -- 由组件自动处理
+- **权限名称** -- 两个平台完全相同
+
+## 故障排查
+
+### Webhook 验证失败
+- 确保你的域名具有有效的 HTTPS（Lark 要求）
+- 检查 Webhook URL 是否可从公网访问
+- 验证 Lark 控制台与你的配置中的 Verification Token 是否一致
+
+### 机器人在群组中不响应
+- 确认机器人已被添加到群组
+- 检查你是否 @提及了机器人
+- 确认在事件与回调中订阅了 `im.message.receive_v1`
+
+### 消息未到达
+- 检查服务：`pm2 status zylos-lark`
+- 查看日志：`pm2 logs zylos-lark --lines 50`
+- 确认应用已发布并通过审批
+
+## 配置参考
+
+| 配置项 | 位置 | 说明 |
+|---------|----------|-------------|
+| `LARK_APP_ID` | `~/zylos/.env` | 开发者控制台中的 App ID |
+| `LARK_APP_SECRET` | `~/zylos/.env` | 开发者控制台中的 App Secret |
+| `verification_token` | `config.json` | Webhook 验证 Token |
+| `encrypt_key` | `config.json` | 可选加密密钥 |
+| `webhook_port` | `config.json` | 内部 Webhook 监听端口（默认：`3457`） |
+| 配置文件 | `~/zylos/components/lark/config.json` | 完整运行时配置 |
+| PM2 服务 | `zylos-lark` | PM2 命令中使用的服务名称 |
+
+Lark 组件在端口 `3457` 上运行本地 Webhook 监听器。Caddy 将 `/lark/webhook` 路径反向代理到这个内部端口，无需直接暴露。

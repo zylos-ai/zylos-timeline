@@ -1,0 +1,85 @@
+---
+title: 扩展 Zylos
+description: 创建自定义技能和组件，为 Zylos 添加新能力。
+---
+
+Zylos 被设计为可扩展的。无论你需要新的工作流、与外部服务的集成，还是新的通信渠道，都可以将其构建为**技能**或**组件**。
+
+## 技能 vs 组件
+
+| | 技能 | 组件 |
+|---|--------|------------|
+| **是什么** | 知识和工作流包 | 独立运行的服务 |
+| **运行方式** | 加载到 Agent 上下文中的指令 | 拥有独立进程的 PM2 服务 |
+| **适用于** | 流程、领域知识、工具使用指引 | 渠道、后台服务、复杂集成 |
+| **示例** | PR 审查流程、部署检查清单 | Telegram Bot、Lark Webhook 处理器 |
+
+**经验法则**：如果是 Agent 需要遵循的知识或工作流，做成技能；如果需要长期运行的进程，做成组件。
+
+## 创建技能
+
+告诉 Zylos：
+
+```
+Create a skill called "deploy" that handles deployment to production
+```
+
+Zylos 内置技能脚手架工具，会创建技能结构、编写初始 `SKILL.md`，并配置脚本——全程通过对话完成。你描述技能应该做什么，Zylos 来构建它。
+
+技能由以下部分组成：
+
+- **`SKILL.md`** -- 元数据（名称、描述、触发条件）以及 Agent 遵循的指令
+- **`scripts/`** -- 用于确定性操作的可执行代码
+- **`references/`** -- Agent 按需读取的文档
+
+`SKILL.md` 中的 `description` 字段决定技能何时激活——请仔细编写。
+
+### 迭代优化
+
+创建后，用真实任务测试技能，并通过对话持续改进：
+
+```
+The deploy skill should also check that tests pass before deploying
+```
+
+Zylos 会相应地更新技能文件。
+
+## 创建组件
+
+组件是作为 PM2 服务运行的独立 Node.js 包。我们提供了官方模板供你快速上手：
+
+**[zylos-ai/zylos-component-template](https://github.com/zylos-ai/zylos-component-template)**
+
+将你的 AI 编程助手（Claude Code、Cursor 等）指向这个模板仓库，描述你想构建什么。模板包含完整的结构、规范和集成模式——AI 可以读取它并从中实现你的组件。
+
+### 模板提供的内容
+
+- **C4 集成** -- 消息接收和发送脚本
+- **PM2 服务定义** -- `ecosystem.config.cjs`
+- **生命周期钩子** -- `post-install.js`、`pre-upgrade.js`、`post-upgrade.js`
+- **管理 CLI** -- 访问控制和配置管理
+- **SKILL.md** -- Agent 使用该组件的指令
+
+### 发布
+
+组件以 GitHub 仓库的形式分发，用户通过以下命令安装：
+
+```bash
+zylos add org/my-component
+```
+
+## 分享你的组件
+
+构建了有用的东西？将其提交到 [Zylos Registry](https://github.com/zylos-ai/zylos-registry)，让其他用户也能通过 `zylos add` 安装。社区组件与官方组件一起出现在 `zylos search` 结果中。
+
+## 最佳实践
+
+### 技能
+- 保持 `SKILL.md` 在 500 行以内——将长篇内容拆分到参考文件
+- 仔细编写 `description`——它决定技能何时触发
+- 将易出错的操作放入脚本，而非内联指令
+
+### 组件
+- 使用 ESM（`import`/`export`），而非 CommonJS
+- 实现生命周期钩子以支持平滑升级
+- 保持配置精简——合理的默认值优于繁杂的选项

@@ -1,0 +1,136 @@
+---
+title: 通信桥
+description: C4 消息路由器，通过统一队列将所有渠道与 Claude 连接起来。
+---
+
+通信桥（C4）是核心消息枢纽。用户与 Claude 之间的每一条消息——无论来自 Telegram、Lark、Web 控制台还是 Bot 间通信渠道——都流经 C4。
+
+## 架构
+
+```
+Telegram    ──┐
+Lark        ──┤
+Slack       ───┼──► C4 Bridge ◄──► Zylos Agent
+WhatsApp    ──┤       │
+Web Console ──┤    SQLite DB
+  ...       ──┘
+```
+
+C4 提供：
+- **消息队列** -- 传入消息在投递前存入 SQLite 数据库
+- **优先级路由** -- 紧急消息（如心跳）优先于普通消息投递
+- **出向路由** -- Claude 的回复被路由到正确的渠道和端点
+- **对话历史** -- 所有消息均被记录，供记忆同步和调试使用
+- **检查点系统** -- 追踪哪些对话已被记忆同步处理
+
+## 核心脚本
+
+| 脚本 | 方向 | 用途 |
+|--------|-----------|---------|
+| `c4-receive.js` | 外部 → 队列 | 渠道调用此脚本将传入消息加入队列 |
+| `c4-dispatcher.js` | 队列 → Claude | PM2 守护进程，轮询队列并投递给 Claude |
+| `c4-send.js` | Claude → 外部 | 将出向消息路由回正确的渠道 |
+| `c4-control.js` | 系统 | 控制面，处理心跳、维护和系统任务 |
+
+## 消息流转：入向
+
+1. 用户在 Telegram 发送消息
+2. Telegram 组件通过长轮询接收消息
+3. 调用 `c4-receive.js` 将消息连同渠道、端点和优先级一起排队
+4. `c4-dispatcher` 守护进程在 Claude 空闲时取出消息
+5. 消息作为对话轮次投递到 Claude 的 tmux 会话
+
+## 消息流转：出向
+
+1. Claude 决定回复
+2. 使用"reply via"路径中的渠道名称和端点运行 `c4-send.js`
+3. `c4-send.js` 将消息路由到对应的渠道组件
+4. 渠道组件在用户所在平台上投递消息
+
+每条传入消息都包含一个"reply via"路径，告知 Claude 如何精确响应：
+
+```
+[TG DM] user said: hello
+---- reply via: node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "123456789"
+```
+
+## 数据库
+
+C4 使用位于 `~/zylos/comm-bridge/c4.db` 的 SQLite 数据库，包含三张表：
+
+### conversations
+
+所有消息（入向和出向）及其元数据：
+- 渠道和端点
+- 优先级
+- 状态（pending、delivered、done）
+- 时间戳和重试记录
+
+### checkpoints
+
+标记同步边界的恢复点。当记忆同步处理完 ID 500 之前的对话时，会创建检查点，避免这些对话被重复处理。
+
+### control_queue
+
+系统控制消息，包含优先级、确认截止时间和状态生命周期。用于心跳、健康检查、定时任务和维护操作。
+
+## 控制队列
+
+控制队列独立于普通消息，处理系统级操作：
+
+| 消息类型 | 来源 | 用途 |
+|-------------|--------|---------|
+| 心跳 | 活动监控器 | 验证 Claude 是否响应 |
+| 健康检查 | 活动监控器 | 定期系统健康验证 |
+| 定时任务 | 调度器（C5） | 在任务到期时投递 |
+| 上下文检查 | 上下文监控器 | 在上下文较高时触发会话切换 |
+
+控制消息有确认截止时间——如果 Claude 未在截止时间内确认，消息将转为 `timeout` 状态。
+
+## 健康感知接入
+
+C4 在接受新消息前检查 Claude 的健康状态：
+
+| 健康状态 | 行为 |
+|--------|----------|
+| `ok` | 正常接受消息 |
+| `recovering` | 拒绝消息，记录渠道以便后续通知 |
+| `down` | 拒绝消息，需要人工干预 |
+
+当健康状态恢复为 `ok` 时，会向所有在故障期间被拒消息的渠道发送恢复通知。
+
+**故障开放原则**：如果健康状态文件缺失或格式错误，健康状态默认为 `ok`——读取失败不会阻塞消息接入。
+
+## 会话初始化钩子
+
+在会话启动时，C4 自动执行：
+1. 注入近期对话上下文，让 Claude 了解最近发生的事情
+2. 检查未汇总的对话数量
+3. 如果数量超过配置的阈值，触发记忆同步
+
+## 查询对话
+
+使用 `c4-db.js` CLI 查询对话历史：
+
+```bash
+DB=~/zylos/.claude/skills/comm-bridge/scripts/c4-db.js
+
+# 最近的对话
+node $DB recent --limit 20
+
+# 按渠道筛选对话
+node $DB recent --channel telegram
+
+# 检查点状态
+node $DB checkpoints
+```
+
+## 服务管理
+
+调度器作为 PM2 服务运行：
+
+```bash
+pm2 status c4-dispatcher
+pm2 logs c4-dispatcher
+pm2 restart c4-dispatcher
+```

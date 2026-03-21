@@ -1,0 +1,118 @@
+---
+title: 管理组件
+description: 安装、升级和卸载 Zylos 组件。
+---
+
+管理组件最简单的方式是直接告诉 Zylos 你想要做什么——通过任意已连接的渠道（Telegram、Lark、Web 控制台等）或本地 Shell 均可。
+
+## 安装组件
+
+在对话中告诉 Zylos：
+
+```
+Add the Telegram component
+```
+
+Zylos 会安装组件、询问所需凭证（如 Bot Token）、配置服务并启动。
+
+可以从任意已连接的渠道，或通过本地 Shell（`zylos shell`）操作。
+
+**CLI 方式：**
+
+```bash
+zylos add <component-name>
+```
+
+## 升级组件
+
+告诉 Zylos：
+
+```
+Upgrade the Telegram component
+```
+
+或一次性升级所有组件：
+
+```
+Upgrade all components
+```
+
+Zylos 会检查更新、备份当前版本、下载新版本、保留你的配置并重启服务。
+
+**CLI 方式：**
+
+```bash
+# 检查特定组件的更新
+zylos upgrade <component-name> --check
+
+# 升级特定组件
+zylos upgrade <component-name>
+
+# 一次性升级所有组件
+zylos upgrade --all
+```
+
+### 升级 Zylos 核心
+
+```bash
+zylos upgrade --self
+```
+
+这会升级核心框架本身（`zylos` CLI 和内置组件）。
+
+## 卸载组件
+
+告诉 Zylos：
+
+```
+Remove the Telegram component
+```
+
+默认情况下，数据（配置、日志）会被保留。如需彻底清除，可告诉 Zylos 进行完整移除。
+
+**CLI 方式：**
+
+```bash
+# 移除组件（默认保留数据目录）
+zylos uninstall <component-name>
+
+# 移除组件及其数据目录
+zylos uninstall <component-name> --purge
+```
+
+## 查看组件信息
+
+问 Zylos：
+
+```
+What components are installed?
+What's the status of my services?
+```
+
+**CLI 方式：**
+
+```bash
+# 列出已安装的组件及版本
+zylos list
+
+# 检查服务健康状态
+zylos status
+
+# 查看 PM2 服务日志
+pm2 logs zylos-<component-name> --lines 50
+```
+
+## 组件目录结构
+
+每个组件有两个目录——一个存放源代码（由 CLI 管理），一个存放运行时数据（你的配置和日志）：
+
+```
+~/zylos/components/telegram/   # 运行时数据
+  config.json                  # 运行时配置
+  logs/                        # 组件日志
+  media/                       # 下载的媒体文件（如适用）
+```
+
+源代码和服务定义存放在技能目录中，在安装和升级过程中由 CLI 自动管理。通常不需要直接操作源文件。
+
+密钥（API Key、Token）存储在统一的环境文件中，不在组件目录内。

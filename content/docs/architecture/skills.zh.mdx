@@ -1,0 +1,142 @@
+---
+title: 技能
+description: 如何通过模块化技能包扩展 Zylos，为其提供专业知识和工作流。
+---
+
+技能是用专业能力扩展 Zylos 的模块化软件包。每个技能提供特定领域的知识、工作流、脚本或工具集成，将 Zylos 从通用 Agent 转变为特定任务的专家。
+
+## 技能能提供什么
+
+- **专业工作流** -- 针对特定领域的多步骤流程
+- **工具集成** -- 与 API、文件格式或服务交互的指引
+- **领域专业知识** -- 公司特定知识、数据模式、业务逻辑
+- **捆绑资源** -- 复杂任务所需的脚本、参考资料和素材
+
+## 技能结构
+
+每个技能存放在 `~/zylos/.claude/skills/<skill-name>/`，遵循以下结构：
+
+```
+skill-name/
+├── SKILL.md              # 必须：元数据 + 指令
+├── scripts/              # 可执行代码（Node.js、Bash、Python）
+├── references/           # 按需加载的文档
+└── assets/               # 输出中使用的文件（模板、图片等）
+```
+
+### SKILL.md
+
+定义技能的核心文件，分为两部分：
+
+**YAML Frontmatter**（元数据）：
+```yaml
+---
+name: my-skill
+description: >-
+  技能的作用及使用时机。
+  这是主要触发器——Claude 通过阅读此描述
+  来决定何时激活该技能。
+---
+```
+
+**Markdown 正文**（指令）：
+只在技能触发后加载。包含 Claude 执行技能所需的流程、示例和参考资料。
+
+### 发现机制
+
+技能采用三级渐进式披露系统：
+
+1. **元数据**（约 100 词）——始终在上下文中。Claude 通过阅读技能名称和描述来决定激活哪个技能。
+2. **SKILL.md 正文**（小于 5000 词）——触发时加载，包含流程和指引。
+3. **捆绑资源**（不限大小）——按需加载，脚本无需读入上下文即可执行。
+
+这意味着安装大量技能的代价很低——只有元数据始终存在，完整指令仅在需要时加载。
+
+## 内置技能
+
+Zylos 内置了几个驱动核心子系统的技能：
+
+| 技能 | 系统 | 用途 |
+|-------|--------|---------|
+| `comm-bridge` | C4 | 消息路由和对话管理 |
+| `zylos-memory` | C3 | 记忆同步和维护 |
+| `scheduler` | C5 | 任务调度 CLI |
+| `activity-monitor` | C2 | 健康监控（PM2 服务） |
+| `http` | C6 | Web 服务器配置 |
+| `create-skill` | -- | 创建新技能的向导 |
+
+## 组件技能
+
+当你安装一个组件（如 Telegram 或 Lark）时，它会自动在 `~/zylos/.claude/skills/<name>/` 链接一个技能。该技能告诉 Claude 如何使用该组件——如何发送消息、管理访问控制以及排查问题。
+
+## 创建新技能
+
+### 快速开始
+
+```bash
+# 初始化新技能
+node ~/zylos/.claude/skills/create-skill/scripts/init-skill.js my-skill
+```
+
+这将创建一个技能模板目录，包含：
+- 带有正确 frontmatter 和占位内容的 `SKILL.md`
+- 示例 `scripts/`、`references/` 和 `assets/` 目录
+
+### 编写 SKILL.md
+
+**Frontmatter 建议：**
+- `description` 是主要触发机制。清楚说明技能**做什么**以及**何时使用**
+- 保持描述全面——Claude 依赖它来决定是否激活
+
+**正文建议：**
+- 面向另一个 AI Agent 编写，而非人类。包含 Claude 默认不具备的程序性知识
+- 正文保持在 500 行以内，以减少上下文占用
+- 将详细参考资料移至 `references/` 文件
+
+### 可选 Frontmatter 字段
+
+```yaml
+allowed-tools: Read, Grep           # 无需提示即可使用的工具
+model: sonnet                       # 技能激活时的模型覆盖
+context: fork                       # 在隔离的子 Agent 中运行
+disable-model-invocation: true      # 只有用户可触发（非 Claude）
+user-invocable: false               # 只有 Claude 可触发（不显示在菜单中）
+```
+
+## 设计原则
+
+### 渐进式披露
+
+保持 `SKILL.md` 精简。接近 500 行时，将内容拆分到参考文件：
+
+```markdown
+# My Skill
+
+## Quick Start
+[核心流程]
+
+## Advanced Features
+- **Feature A**: See [references/feature-a.md](references/feature-a.md)
+- **Feature B**: See [references/feature-b.md](references/feature-b.md)
+```
+
+Claude 只在需要时加载参考文件，保持上下文窗口高效。
+
+### 用脚本保障可靠性
+
+将重复性或易出错的操作放入脚本：
+
+```
+scripts/
+├── process-data.js     # 确定性数据处理
+├── validate.js         # 输入验证
+└── deploy.sh           # 部署步骤
+```
+
+脚本的 token 效率高（执行时不读入上下文），且具有确定性（相同输入，相同输出）。
+
+### 根据脆弱程度匹配自由度
+
+- **高自由度**（文字指令）：当多种方法都可行时
+- **中等自由度**（参数化脚本）：当有推荐模式时
+- **低自由度**（特定脚本）：当操作脆弱或对顺序敏感时

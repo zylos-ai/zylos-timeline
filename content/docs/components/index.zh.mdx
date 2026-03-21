@@ -1,0 +1,59 @@
+---
+title: 组件
+description: Zylos 由可独立安装、升级和删除的模块化组件构成。
+---
+
+Zylos 采用模块化架构。核心框架提供记忆、调度和通信桥。其他一切——渠道、浏览器自动化、图像生成、Bot 间网络——都是单独安装的**组件**。
+
+## 可用组件
+
+### 渠道
+
+| 组件 | 说明 | 安装方式 |
+|-----------|-------------|---------|
+| **telegram** | Telegram Bot（长轮询） | `zylos add telegram` |
+| **lark** | Lark 国际版 | `zylos add lark` |
+| **feishu** | 飞书（中国大陆，WebSocket + Webhook） | `zylos add feishu` |
+| **slack** | Slack（Socket Mode + Webhook） | `zylos add slack` |
+| **whatsapp** | WhatsApp Web（Baileys 协议，扫码登录） | `zylos add whatsapp` |
+| **wecom** | 企业微信 | `zylos add wecom` |
+| **dingtalk** | 钉钉（Stream 模式） | `zylos add dingtalk` |
+| **hxa-connect** | HXA Bot 间网络 | `zylos add hxa-connect` |
+
+**Web 控制台**已内置于 Zylos 核心，无需单独安装。
+
+### 能力组件
+
+| 组件 | 说明 | 安装方式 |
+|-----------|-------------|---------|
+| **browser** | Chrome 自动化（Puppeteer） | `zylos add browser` |
+| **imagegen** | AI 图像生成与编辑（Gemini） | `zylos add imagegen` |
+| **notion** | Notion 工作区——搜索、阅读、创建和追加页面 | `zylos add notion` |
+
+## 组件工作原理
+
+每个组件都是自包含的软件包，包含：
+- **源代码** -- 从 Zylos GitHub 组织下载
+- **PM2 服务** -- 作为受管理的后台进程运行
+- **配置** -- 存储在 `~/zylos/components/<name>/config.json`
+- **技能** -- 自动注册，Zylos 由此了解如何使用该组件
+
+组件通过 **C4 通信桥**与核心通信——这是一个消息队列，将入向消息投递给 Zylos Agent，并将出向消息路由到正确的渠道。
+
+## 快速参考
+
+```bash
+# 列出已安装的组件
+zylos list
+
+# 搜索可用组件
+zylos search <keyword>
+
+# 检查更新
+zylos upgrade --check
+
+# 查看系统状态
+zylos status
+```
+
+详细的安装、升级和卸载流程请参阅[管理组件](/docs/components/managing-components)。

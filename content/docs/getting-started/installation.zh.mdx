@@ -1,0 +1,109 @@
+---
+title: 安装
+description: 一条命令完成 Zylos 安装。
+---
+
+## 环境要求
+
+- **Linux 或 macOS** -- Ubuntu 22.04+、Debian 12+、RHEL 或 macOS。2 核以上 CPU，4 GB 以上内存，20 GB 以上磁盘空间。
+- **Node.js 20.20+** -- 如未安装，安装程序会通过 nvm 自动安装。
+- **Claude 订阅**或 **Anthropic API Key** -- [点此获取](https://console.anthropic.com)。
+
+## 安装
+
+一条命令完成所有操作——依赖安装、CLI 配置和初始化向导：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash
+```
+
+向导将询问你的认证方式、域名（可选）和时区。完成后，所有服务将自动启动。
+
+也可以手动安装：
+
+```bash
+npm install -g --install-links https://github.com/zylos-ai/zylos-core
+zylos init
+```
+
+## 验证安装
+
+```bash
+zylos doctor
+```
+
+检查系统依赖、Claude 认证状态和服务运行状况，并在可能时自动修复问题。
+
+## 与 Agent 对话
+
+立即开始聊天：
+
+```bash
+zylos shell
+```
+
+[Web 控制台](/docs/channels/web-console)也已内置——通过你的域名或 `http://localhost:3456` 访问。
+
+需要更多渠道？查看[全部可用渠道](/docs/channels)，然后执行：
+
+```bash
+zylos add <channel-name>
+```
+
+---
+
+## 高级选项
+
+### 非交互模式
+
+适用于 CI/CD 或无界面服务器——通过参数跳过所有交互提示：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zylos-ai/zylos-core/main/scripts/install.sh | bash -s -- \
+  -y --setup-token sk-ant-oat01-xxx --domain agent.example.com --https
+```
+
+| 参数 | 说明 |
+|------|-------------|
+| -y | 非交互模式 |
+| --setup-token | Claude 设置 token |
+| --api-key | Anthropic API Key |
+| --domain | HTTPS 域名 |
+| --timezone | IANA 时区 |
+| --https / --no-https | 启用或禁用 HTTPS |
+| --caddy / --no-caddy | 安装或跳过 Caddy |
+| --web-password | Web 控制台密码 |
+| --no-init | 仅安装 CLI，跳过初始化 |
+| --branch | 从指定分支安装 |
+| -q | 静默输出 |
+
+运行 `zylos init --help` 查看完整参数列表。当无 TTY 可用、`CI=true` 或 `NONINTERACTIVE=1` 时，也会自动启用非交互模式。
+
+### Docker
+
+```bash
+docker run -d --name zylos \
+  -e CLAUDE_CODE_OAUTH_TOKEN=YOUR_TOKEN_HERE \
+  -p 3456:3456 \
+  -v zylos-data:/home/zylos/zylos \
+  -v claude-config:/home/zylos/.claude \
+  ghcr.io/zylos-ai/zylos-core:latest
+```
+
+Docker Compose、环境变量和 NAS 部署方式请参阅 [Docker 部署指南](https://github.com/zylos-ai/zylos-core/blob/main/docs/docker.md)。
+
+### Windows / ChromeOS / 不支持的平台
+
+使用 Claude Code 的 SSH 功能连接到远程 Linux 机器：
+
+```bash
+claude --ssh user@your-linux-server
+# 然后让 Claude 安装 Zylos，或直接运行安装脚本
+```
+
+### 卸载
+
+```bash
+zylos uninstall --self          # 交互式卸载
+zylos uninstall --self --force  # 跳过确认提示
+```

@@ -1,0 +1,124 @@
+---
+title: Telegram
+description: 将 Zylos 连接到 Telegram，支持手机和桌面端消息收发。
+---
+
+Telegram 渠道让你通过 Telegram Bot 与 Zylos 对话。它采用长轮询（无需 Webhook），因此无需端口转发，也能在防火墙和 NAT 后正常工作。
+
+**预计配置时间：** 5 分钟
+
+## 前提条件
+
+- 一个 Telegram 账号
+- 已在服务器上安装并运行的 Zylos
+
+## 第一步：创建 Telegram Bot
+
+1. 打开 Telegram，搜索 **@BotFather**
+2. 发送 `/newbot`
+3. 输入 Bot 的显示名称（例如"Zylos"）
+4. 输入用户名（必须以 `bot` 结尾，例如 `my_zylos_bot`）
+5. BotFather 将给你一个 **Bot Token**——复制并妥善保存
+
+> Bot Token 格式如下：`110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`
+
+**可选：** 通过 BotFather 自定义你的 Bot：
+- `/setdescription` -- 设置 Bot 描述
+- `/setuserpic` -- 上传头像
+
+## 第二步：安装 Telegram 组件
+
+```bash
+zylos add telegram
+```
+
+安装程序会提示你输入 Bot Token，将 BotFather 提供的 Token 粘贴进去即可。
+
+如果你已连接其他渠道，也可以直接在对话中告诉 Zylos："添加 Telegram 组件"，它会自动执行相同的命令。
+
+安装程序将会：
+1. 从 Zylos GitHub 仓库下载组件
+2. 配置 PM2 服务（`zylos-telegram`）
+3. 询问你的 Bot Token 并保存到 `~/zylos/.env`
+
+## 第三步：配置访问控制
+
+默认情况下，Bot 只响应**所有者**（第一个发消息的人）。你可以通过 Zylos 或组件的管理 CLI 修改此设置。
+
+**通过 Zylos（最简单）：**
+
+在任意已连接的渠道中直接告诉 Zylos：
+
+```
+Set the Telegram DM policy to allowlist
+Add @username to the Telegram allowlist
+```
+
+**通过管理 CLI：**
+
+每个组件都包含一个管理 CLI。可用命令：
+
+```bash
+# 查看当前配置
+zylos-telegram show
+
+# 设置私信策略
+zylos-telegram set-dm-policy allowlist
+
+# 按用户名或 Chat ID 允许特定用户
+zylos-telegram add-dm-allow @username
+
+# 向所有人开放私信（谨慎使用）
+zylos-telegram set-dm-policy open
+
+# 群组策略
+zylos-telegram set-group-policy allowlist
+```
+
+> 关于如何查找和运行组件管理 CLI，请参阅[扩展 Zylos](/docs/extending)。
+
+访问策略：
+- `owner` -- 仅所有者可私信 Bot（默认）
+- `allowlist` -- 所有者 + 白名单用户
+- `open` -- 任何人都可以私信 Bot
+
+## 第四步：开始聊天
+
+1. 打开 Telegram，通过用户名找到你的 Bot
+2. 点击 **Start** 或发送 `/start`
+3. 发送消息——Zylos 将会回复
+
+## 群聊
+
+你可以将 Zylos 加入 Telegram 群聊：
+
+1. 将 Bot 加入群组
+2. 默认情况下，Bot 在被 **@提及** 时响应
+3. 通过管理 CLI 配置每个群组的行为
+
+群组模式：
+- `mention` -- 只在被 @提及时响应（默认）
+- `smart` -- 响应 @提及及上下文相关的消息
+
+## 故障排查
+
+### Bot 不响应
+- 检查服务是否运行：`pm2 status zylos-telegram`
+- 查看日志：`pm2 logs zylos-telegram --lines 50`
+- 验证 `~/zylos/.env` 中的 Bot Token
+
+### "Unauthorized" 错误
+- Bot Token 可能已被撤销。通过 BotFather 生成新 Token 并更新 `~/zylos/.env`
+
+### 需要代理
+- 如果你的服务器需要通过代理进行出站 HTTPS 连接，在 `~/zylos/.env` 中设置 `HTTPS_PROXY`
+
+## 配置参考
+
+| 配置项 | 位置 | 说明 |
+|---------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | `~/zylos/.env` | 来自 BotFather 的 Bot Token |
+| `dmPolicy` | `config.json` | 私信访问策略：`owner`、`allowlist`、`open` |
+| `groupPolicy` | `config.json` | 群组访问策略 |
+| 配置文件 | `~/zylos/components/telegram/config.json` | 完整运行时配置 |
+| PM2 服务 | `zylos-telegram` | PM2 命令中使用的服务名称 |
