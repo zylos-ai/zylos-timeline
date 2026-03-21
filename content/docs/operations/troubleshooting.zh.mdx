@@ -1,0 +1,48 @@
+---
+title: 故障排查
+description: 常见问题及解决方法。
+---
+
+大多数问题可以通过在对话中告诉 Zylos 来解决。如果 Zylos 本身无法访问，运行 `zylos doctor` 进行自动修复。
+
+## Zylos 无响应
+
+| 症状 | 原因 | 解决方法 |
+|---------|-------|------------|
+| 无回复，服务运行中 | 有长时间任务或正在进行上下文轮转 | 等待几分钟 |
+| 活动监控器在重启 | Agent 崩溃 | 自动恢复中——等待即可 |
+| 服务已停止 | PM2 进程列表丢失 | `zylos start` |
+
+## 渠道问题
+
+### Telegram
+
+- **Token 过期** -- 通过 BotFather 重新生成并更新 Token
+- **用户被策略拦截** -- 修改私信策略，或将用户加入白名单
+- **API 在你所在地区被屏蔽** -- 配置 HTTPS 代理
+
+### Lark
+
+- **未配置 HTTPS** -- Lark 要求 HTTPS；在 `zylos init` 时设置域名
+- **Token 不匹配** -- 检查 Lark 开发者控制台与 Zylos 中的 Verification Token 是否一致
+- **应用未发布** -- 在 Lark 开发者控制台中审批并发布应用
+
+### Web 控制台
+
+- **无法连接** -- 检查防火墙是否开放对应端口，以及 Caddy 是否正在运行
+
+## 组件
+
+- **升级后出现问题** -- Zylos 可以诊断和恢复；如无法访问，`zylos doctor` 会检查服务健康状态
+- **安装失败** -- 通常是访问 GitHub 的网络问题，或 Node.js 版本低于 20
+
+## HTTPS
+
+- **证书错误** -- 确认 DNS A 记录指向你的服务器 IP，且端口 80 可供 Let's Encrypt 访问
+- **端口冲突** -- 停止占用端口 80/443 的其他 Web 服务器
+
+## 仍然卡住？
+
+1. 运行 `zylos doctor`
+2. 查看 [GitHub Issues](https://github.com/zylos-ai/zylos-core/issues)
+3. 提交新 Issue，附上 `zylos --version` 输出和问题描述

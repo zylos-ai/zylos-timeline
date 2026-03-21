@@ -1,0 +1,89 @@
+---
+title: 配置
+description: Zylos 的配置体系——环境变量、配置文件与密钥管理。
+---
+
+Zylos 使用分层配置体系。密钥存储在 `~/zylos/.env`，运行时设置存储在各组件的 `config.json` 文件中，行为指令存储在 `CLAUDE.md` 中。
+
+## 环境文件
+
+主配置文件为 `~/zylos/.env`，存储 API Key、Token 和全局设置。
+
+```bash
+# 核心设置
+TZ=Asia/Shanghai
+ANTHROPIC_API_KEY=sk-ant-...
+
+# 域名和代理（可选）
+DOMAIN=your-domain.com
+HTTPS_PROXY=http://proxy:port
+
+# 渠道凭证
+TELEGRAM_BOT_TOKEN=110201543:AAH...
+LARK_APP_ID=cli_a9f...
+LARK_APP_SECRET=...
+```
+
+> 切勿将 `.env` 提交到版本控制。默认情况下已在 `.gitignore` 中忽略。
+
+## 配置文件
+
+每个组件在其目录下都有一个 `config.json`：
+
+```
+~/zylos/components/telegram/config.json
+~/zylos/components/lark/config.json
+```
+
+这些文件包含非敏感的运行时配置，如访问策略、群组设置和功能开关，可安全地查看和修改。
+
+## 修改配置
+
+### 通过 Zylos
+
+最简单的方式是直接告诉 Zylos：
+
+```
+Change the Telegram DM policy to allowlist
+```
+
+Zylos 知道每个设置的存储位置，会帮你完成修改。
+
+### 手动修改
+
+1. 编辑对应文件（`~/zylos/.env` 或组件的 `config.json`）
+2. 重启受影响的服务：
+
+```bash
+# 重启指定组件
+pm2 restart zylos-telegram
+
+# 重启所有服务
+pm2 restart all
+```
+
+## 关键配置项
+
+### 全局设置（位于 `~/zylos/.env`）
+
+| 变量 | 说明 |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | 你的 Anthropic API Key |
+| `TZ` | 时区（例如 `Asia/Shanghai`、`America/New_York`） |
+| `DOMAIN` | 你的服务器域名（用于 HTTPS） |
+| `HTTPS_PROXY` | 出站连接的 HTTP 代理 |
+
+### 各组件配置
+
+每个组件在其 SKILL.md 文件中记录了自己的配置项。常见模式：
+
+- **凭证** -- 存储在 `~/zylos/.env` 中，带有组件前缀（例如 `TELEGRAM_BOT_TOKEN`）
+- **访问控制** -- 存储在 `config.json` 的 `dmPolicy`、`groupPolicy`、`allowFrom` 字段中
+- **功能开关** -- 存储在 `config.json` 的组件特定键中
+
+## 安全说明
+
+- API Key 和 Token 只存储在 `.env` 文件中
+- `.env` 文件具有受限权限（`600`）
+- Zylos 不会在群聊或日志中暴露密钥
+- 组件配置（`config.json`）不包含敏感值

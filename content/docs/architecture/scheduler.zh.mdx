@@ -1,0 +1,144 @@
+---
+title: 调度器
+description: C5 任务调度系统，让 Zylos 能够按计划自主行动。
+---
+
+调度器（C5）通过在特定时间或间隔分发任务，让 Zylos 能够自主工作。不再只是被动响应，Zylos 可以安排后续跟进、定期检查和延迟工作——在恰当的时刻"唤醒自己"。
+
+## 工作原理
+
+```
+Scheduler (PM2 service)
+    │
+    ├── 每秒检查到期任务
+    ├── 验证 Claude 是否存活且健康
+    └── 通过 C4 控制队列分发
+            │
+            └── C4 在 Claude 空闲时投递
+```
+
+1. 调度器作为 PM2 服务运行，持续检查到期任务
+2. 任务到期时，通过活动监控器状态文件验证 Claude 是否存活
+3. 通过 C4 控制队列分发任务
+4. C4 处理投递时机——如有需要，等待 Claude 空闲
+5. Claude 处理任务并标记为完成
+
+## 任务类型
+
+| 类型 | 说明 | 示例 |
+|------|-------------|---------|
+| **单次** | 在指定时间执行一次 | "下午 3 点提醒我检查部署情况" |
+| **Cron** | 按 cron 计划运行 | "每天早上 9 点发送日报" |
+| **间隔** | 每隔 N 秒/分钟运行 | "每 30 分钟检查一次服务器状态" |
+
+## CLI 参考
+
+所有命令通过调度器 CLI 执行：
+
+```bash
+CLI=~/zylos/.claude/skills/scheduler/scripts/cli.js
+```
+
+### 添加任务
+
+```bash
+# 在指定时间执行一次性任务
+node $CLI add "Check deployment status" --at "2026-03-15 14:00"
+
+# 使用 cron 表达式的定期任务（每天早上 9 点）
+node $CLI add "Send morning briefing" --cron "0 9 * * *"
+
+# 间隔任务（每 30 分钟）
+node $CLI add "Check server health" --every 1800
+
+# 带优先级的任务
+node $CLI add "Urgent check" --at "now + 5min" --priority 1
+```
+
+### 查询任务
+
+```bash
+# 列出所有活跃任务
+node $CLI list
+
+# 显示下一个到期任务
+node $CLI next
+
+# 显示当前正在运行的任务
+node $CLI running
+
+# 显示任务历史
+node $CLI history
+```
+
+### 管理任务生命周期
+
+```bash
+# 将任务标记为已完成
+node $CLI done <task-id>
+
+# 暂停定期任务
+node $CLI pause <task-id>
+
+# 恢复已暂停的任务
+node $CLI resume <task-id>
+
+# 彻底删除任务
+node $CLI remove <task-id>
+
+# 更新任务
+node $CLI update <task-id> --prompt "新的任务描述"
+```
+
+## 时区
+
+调度器按以下优先顺序解析时区：
+
+1. `~/zylos/.env` 中的 `TZ` 字段
+2. `process.env.TZ`
+3. 回退到 `UTC`
+
+时间按配置的时区解析和显示，数据库内部以 UTC 存储。
+
+## 任务生命周期
+
+```
+pending ──► running ──► done
+  │                      │
+  ├── pause ──► paused   │
+  │              │       │
+  │              resume  │
+  │              │       │
+  └──────────────┘       │
+                         │
+  failed ◄───────────────┘
+```
+
+- **pending**：任务已调度但尚未到期
+- **running**：任务已分发给 Claude
+- **done**：任务成功完成
+- **paused**：任务已临时暂停
+- **failed**：任务分发或执行失败
+
+对于定期任务（cron/间隔），完成一次任务后会自动调度下一次。
+
+## 内置定时任务
+
+活动监控器在 C5 调度器之外独立处理几项内置定时操作：
+
+| 任务 | 计划 | 用途 |
+|------|----------|---------|
+| 心跳 | 每 30 分钟 | 验证 Claude 是否响应 |
+| 健康检查 | 每 6 小时 | 检查 PM2、磁盘、内存 |
+| 每日升级 | 本地时间早上 5:00 | 升级 Claude Code |
+| 记忆提交 | 本地时间凌晨 3:00 | Git 提交记忆文件 |
+
+这些任务直接在活动监控器中运行以保证可靠性——不依赖 Claude 存活才能调度。
+
+## 服务管理
+
+```bash
+pm2 status scheduler
+pm2 logs scheduler
+pm2 restart scheduler
+```

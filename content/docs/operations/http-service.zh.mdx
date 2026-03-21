@@ -1,0 +1,31 @@
+---
+title: HTTP 服务
+description: 域名配置、HTTPS 和文件共享。
+---
+
+Zylos 内置 Caddy Web 服务器，处理 HTTPS、渠道 Webhook 的反向代理以及文件共享。安装时自动配置。
+
+## 提供的功能
+
+- **自动 HTTPS** -- 使用 Let's Encrypt 证书
+- **反向代理** -- 用于组件 Webhook（Lark、Web 控制台）
+- **文件共享** -- 通过公共目录对外提供文件
+
+## 配置
+
+Caddy 在 `zylos init` 时配置。如果你提供了域名，HTTPS 将自动启用。
+
+如需稍后重新配置，再次运行 `zylos init`，或告诉 Zylos 为你设置域名。
+
+## 文件共享
+
+将文件放入公共目录，即可通过你的域名访问：
+
+```bash
+cp report.pdf ~/zylos/http/public/
+# 访问地址：https://your-domain.com/report.pdf
+```
+
+## 组件路由
+
+当你安装需要 HTTP 访问的组件（如 Lark Webhook）时，Zylos 会自动管理反向代理路由，无需手动配置。

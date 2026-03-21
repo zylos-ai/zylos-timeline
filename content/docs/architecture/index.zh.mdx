@@ -1,0 +1,135 @@
+---
+title: 架构概览
+description: Zylos 的结构设计——编号核心系统、组件，以及它们之间的数据流向。
+---
+
+Zylos 围绕一组编号**核心系统**（C1–C6）构建，共同打造一个持久运行的自主 AI 伴侣。每个系统负责独立职责，通过明确定义的接口相互协作。
+
+## 核心系统
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Claude Code (C1)                  │
+│              The AI engine at the center             │
+├──────────┬──────────┬──────────┬──────────┬─────────┤
+│ Activity │  Memory  │  Comm    │Scheduler │  HTTP   │
+│ Monitor  │  System  │  Bridge  │          │ Service │
+│   (C2)   │   (C3)   │   (C4)   │   (C5)  │  (C6)  │
+└──────────┴──────────┴──────────┴──────────┴─────────┘
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+          Telegram      Lark     Web Console
+           Slack      WhatsApp     DingTalk
+                    and more...
+```
+
+### C1 -- Claude Code
+
+AI 引擎。Claude Code 运行在持久化的 tmux 会话中，是整个系统的核心大脑。它处理传入消息、做出决策、读写记忆、执行技能，并管理所有其他系统。一切都流经 C1。
+
+### C2 -- 活动监控器
+
+一个 PM2 服务，负责监控 Claude 的健康状态。如果 Claude 停止响应（在配置的间隔内未发出心跳），C2 会自动重启。即使在崩溃或上下文溢出后，系统也能保持可用。
+
+### C3 -- 记忆系统
+
+一个分层的文件式记忆系统，让 Claude 在会话之间保持持久知识。记忆从始终加载的身份文件，到按需读取的参考文档和归档历史，涵盖多个层级。详见[记忆系统](/docs/architecture/memory)。
+
+### C4 -- 通信桥
+
+核心消息路由器。所有外部通信——Telegram 私信、Lark 群聊、Web 控制台会话——都流经 C4。它将传入消息排队，通过调度器传递给 Claude，并将回复路由回正确的渠道。详见[通信桥](/docs/architecture/communication-bridge)。
+
+### C5 -- 调度器
+
+任务调度系统，让 Zylos 能够自主行动。不再只是被动响应，调度器可以在特定时间或间隔唤醒 Claude，执行延迟工作、定期检查或循环任务。详见[调度器](/docs/architecture/scheduler)。
+
+### C6 -- HTTP 服务
+
+基于 Caddy 的 Web 服务器，处理 HTTPS、反向代理、文件共享和 Webhook 端点。为 Lark 等需要 Webhook 的渠道提供公开访问的基础设施。详见 [HTTP 服务](/docs/operations/http-service)。
+
+## 组件
+
+组件是扩展 Zylos 功能的模块化插件。每个组件都是自包含的软件包，拥有独立的源代码、配置和 PM2 服务。组件分为两类：
+
+- **渠道组件** 将 Zylos 连接到通信平台（Telegram、Lark、Slack、WhatsApp 等）
+- **能力组件** 添加新功能（浏览器自动化、图像生成、Notion 集成等）
+
+所有组件通过 `zylos` CLI 管理。完整列表请参阅[组件](/docs/components)。
+
+## 消息流转
+
+一条典型消息在系统中的流转过程：
+
+1. **用户在 Telegram、Lark 或 Web 控制台发送消息**
+2. **渠道组件** 通过其协议（长轮询、Webhook 或 WebSocket）接收消息
+3. **C4 通信桥**将消息排入 SQLite 数据库队列
+4. **C4 调度器** 在 Claude 空闲时将消息作为对话轮次传递给 Claude（C1）
+5. **Claude 处理**消息——读取记忆、执行技能、调用工具
+6. **Claude 通过 C4 发送脚本回复**，路由回来源渠道
+7. **渠道组件**将回复送达用户
+
+## 数据流向
+
+```
+User ──► Channel ──► C4 Queue ──► Dispatcher ──► Claude (C1)
+                                                     │
+                                                     ├── reads/writes C3 Memory
+                                                     ├── schedules via C5
+                                                     ├── replies via C4 Send
+                                                     │
+Claude (C1) ──► C4 Send ──► Channel ──► User
+```
+
+## 服务管理
+
+所有核心系统和组件都以 PM2 服务运行。可随时查看状态：
+
+```bash
+# 查看所有服务
+zylos status
+
+# 或直接通过 PM2 查看
+pm2 status
+```
+
+每个服务都有独立日志，通过 PM2 访问：
+
+```bash
+pm2 logs <service-name> --lines 50
+```
+
+## 文件系统布局
+
+```
+~/zylos/
+├── .env                    # 所有密钥和配置
+├── .zylos/                 # 核心框架文件
+│   └── components.json     # 组件注册表
+├── .claude/
+│   └── skills/             # 源代码和技能定义
+│       ├── telegram/       #   源码、PM2 配置、SKILL.md
+│       ├── lark/
+│       └── ...
+├── components/             # 每个组件的运行时数据
+│   ├── telegram/           #   config.json、日志、媒体文件
+│   ├── lark/
+│   └── ...
+├── memory/                 # C3 记忆系统
+├── comm-bridge/            # C4 数据库和附件
+├── scheduler/              # C5 任务数据库
+├── pm2/                    # PM2 ecosystem 配置
+└── logs/                   # 系统日志
+```
+
+注意两个目录的分离：`.claude/skills/` 存放源代码和服务定义（在安装/升级时由 CLI 管理），而 `components/` 存放配置、日志和用户生成内容等运行时数据。这种分离确保升级时不会覆盖你的配置。
+
+## 与传统 AI 助手的区别
+
+传统 AI 助手是无状态的请求-响应系统。Zylos 在此基础上增加了：
+
+- **持久性** -- 记忆跨会话和重启持续存在
+- **自主性** -- 调度器支持自主行动
+- **多渠道** -- 一个大脑，多个入口
+- **自我监控** -- 活动监控器保障正常运行时间
+- **模块化** -- 可自由添加或移除能力，无需修改核心

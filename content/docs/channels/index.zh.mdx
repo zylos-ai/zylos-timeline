@@ -1,0 +1,48 @@
+---
+title: 渠道
+description: 将 Zylos 连接到你已在使用的消息平台。
+---
+
+渠道将你的 Zylos Agent 连接到各个消息平台。所有渠道共享同一记忆和对话上下文——一个 AI，全平台覆盖。
+
+## 可用渠道
+
+| 渠道 | 类型 | 安装方式 |
+|---------|------|---------|
+| **[Web 控制台](/docs/channels/web-console)** | 内置 | 随 Zylos 附带 |
+| **[Telegram](/docs/channels/telegram)** | 官方 | `zylos add telegram` |
+| **[Lark](/docs/channels/lark)**（国际版） | 官方 | `zylos add lark` |
+| **飞书**（中国大陆） | 官方 | `zylos add feishu` |
+| **Slack** | 官方 | `zylos add slack` |
+| **WhatsApp** | 官方 | `zylos add whatsapp` |
+| **企业微信（WeCom）** | 官方 | `zylos add wecom` |
+| **钉钉（DingTalk）** | 官方 | `zylos add dingtalk` |
+| **[HXA-Connect](/docs/channels/hxa-connect)** | 社区 | `zylos add hxa-connect` |
+
+搜索更多渠道：`zylos search`
+
+## 渠道的工作原理
+
+所有渠道通过 C4 通信桥汇入同一对话流：
+
+```
+Web Console ┐
+Telegram ───┤
+Lark ───────┤
+Slack ──────┼── C4 Communication Bridge ── Zylos Agent
+WhatsApp ───┤
+DingTalk ───┤
+  ...       ┘
+```
+
+- **统一记忆，跨渠道共享** -- 无论你通过哪个渠道交流，Agent 都能记住一切
+- **渠道感知回复** -- 回复会通过消息来源的渠道原路返回
+- **同时接入多渠道** -- 可同时运行任意数量的渠道
+
+## 快速开始
+
+```bash
+zylos add <channel-name>
+```
+
+每个渠道都有独立的配置指南，从上方选择对应渠道查看详情。
