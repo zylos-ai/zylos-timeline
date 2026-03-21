@@ -1,7 +1,8 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 
 type Line = {
     text: string;
@@ -9,26 +10,39 @@ type Line = {
     delay: number;
 };
 
-const lines: Line[] = [
-    { text: "> zylos init", color: "text-white", delay: 0 },
-    { text: "ℹ Checking prerequisites...", color: "text-blue-400", delay: 800 },
-    { text: "✔ tmux, git, PM2, Claude Code installed", color: "text-green-400", delay: 2000 },
-    { text: "✔ Claude authenticated", color: "text-green-400", delay: 2800 },
-    { text: "ℹ Creating ~/zylos/ directory...", color: "text-blue-400", delay: 3600 },
-    { text: "✔ Memory, skills, and services initialized", color: "text-green-400", delay: 4800 },
-    { text: "✔ Background services started", color: "text-green-400", delay: 5600 },
-    { text: "✔ Claude launched in tmux session", color: "text-green-400", delay: 6400 },
-    { text: "✨ Zylos is now alive.", color: "text-primary font-bold", delay: 7200 },
+const lineColors = [
+    "text-white",
+    "text-blue-400",
+    "text-green-400",
+    "text-green-400",
+    "text-blue-400",
+    "text-green-400",
+    "text-green-400",
+    "text-green-400",
+    "text-primary font-bold",
 ];
 
+const lineDelays = [0, 800, 2000, 2800, 3600, 4800, 5600, 6400, 7200];
+
+const lineKeys = [
+    "line0", "line1", "line2", "line3", "line4",
+    "line5", "line6", "line7", "line8",
+] as const;
+
 export function TerminalDemo() {
+    const t = useTranslations("Terminal");
     const [visibleIndex, setVisibleIndex] = useState(0);
 
-    useEffect(() => {
-        // Reset when in view? For now just run once
-        let timeouts: NodeJS.Timeout[] = [];
+    const lines: Line[] = useMemo(() =>
+        lineKeys.map((key, i) => ({
+            text: t(key),
+            color: lineColors[i],
+            delay: lineDelays[i],
+        })),
+    [t]);
 
-        // Clear previous
+    useEffect(() => {
+        const timeouts: NodeJS.Timeout[] = [];
         setVisibleIndex(0);
 
         lines.forEach((line, index) => {
@@ -39,6 +53,7 @@ export function TerminalDemo() {
         });
 
         return () => timeouts.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     return (
@@ -46,10 +61,16 @@ export function TerminalDemo() {
             <div className="container mx-auto px-4 flex flex-col items-center">
 
                 <div className="text-center mb-16">
-                    <h2 className="text-3xl md:text-5xl font-bold mb-6">Born in the Terminal.</h2>
+                    <h2 className="text-3xl md:text-5xl font-bold mb-6">{t("heading")}</h2>
                     <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-                        A Linux server and a <a href="https://claude.ai" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Claude</a> or <a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Codex</a> subscription — that&apos;s all you need. <br />
-                        One command to install. Local-first, privacy-focused, always online.
+                        {t.rich("subheading", {
+                            claude: (chunks) => (
+                                <a href="https://claude.ai" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{chunks}</a>
+                            ),
+                            codex: (chunks) => (
+                                <a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{chunks}</a>
+                            ),
+                        })}
                     </p>
                 </div>
 
