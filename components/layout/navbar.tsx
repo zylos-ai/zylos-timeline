@@ -29,7 +29,7 @@ export function Navbar({ showLocaleSwitcher = true }: { showLocaleSwitcher?: boo
         { name: t("features"), href: "/#features", external: false },
         { name: t("evolution"), href: "/timeline", external: false },
         { name: t("research"), href: "/research", external: false },
-        { name: t("docs"), href: "/docs", external: true },
+        { name: t("docs"), href: "/docs", external: false },
     ];
 
     const handleLinkClick = () => {
@@ -37,10 +37,10 @@ export function Navbar({ showLocaleSwitcher = true }: { showLocaleSwitcher?: boo
     };
 
     // Check if current path matches a nav link (strip locale prefix for comparison)
-    const localePattern = new RegExp(`^/(${routing.locales.join("|")})`);
+    const localePattern = new RegExp(`^/(${routing.locales.join("|")})(/|$)`);
     const isActive = (href: string) => {
-        if (href === "/docs") return pathname.startsWith("/docs");
-        const cleanPath = pathname.replace(localePattern, "") || "/";
+        const cleanPath = pathname.replace(localePattern, "/") || "/";
+        if (href === "/docs") return cleanPath.startsWith("/docs");
         return cleanPath === href;
     };
 
