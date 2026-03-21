@@ -11,7 +11,7 @@ import { Link } from "@/lib/i18n/navigation";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { routing } from "@/lib/i18n/routing";
 
-export function Navbar() {
+export function Navbar({ showLocaleSwitcher = true }: { showLocaleSwitcher?: boolean } = {}) {
     const [isScrolled, setIsScrolled] = useState(false);
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const pathname = useNextPathname();
@@ -85,7 +85,7 @@ export function Navbar() {
                 </nav>
 
                 <div className="hidden md:flex items-center gap-4">
-                    <LocaleSwitcher />
+                    {showLocaleSwitcher && <LocaleSwitcher />}
 
                     <a href="https://github.com/zylos-ai" target="_blank" className="text-muted-foreground hover:text-foreground transition-colors">
                         <Github className="w-5 h-5" />
@@ -144,7 +144,7 @@ export function Navbar() {
                                 );
                             })}
                             <div className="flex items-center gap-4 px-4 pt-4 border-t border-border">
-                                <LocaleSwitcher />
+                                {showLocaleSwitcher && <LocaleSwitcher />}
                                 <a href="https://github.com/zylos-ai" target="_blank" className="flex items-center gap-2 text-muted-foreground hover:text-foreground">
                                     <Github className="w-5 h-5" />
                                     GitHub

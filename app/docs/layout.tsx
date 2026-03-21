@@ -10,7 +10,7 @@ export default async function Layout({ children }: { children: ReactNode }) {
 
   return (
     <NextIntlClientProvider messages={messages} locale="en">
-      <Navbar />
+      <Navbar showLocaleSwitcher={false} />
       <DocsLayout
         tree={source.getPageTree()}
         nav={{ enabled: false }}
