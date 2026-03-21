@@ -11,12 +11,12 @@ import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 
 interface PageProps {
-  params: Promise<{ slug?: string[] }>;
+  params: Promise<{ locale: string; slug?: string[] }>;
 }
 
 export default async function Page(props: PageProps) {
-  const params = await props.params;
-  const page = source.getPage(params.slug);
+  const { slug, locale } = await props.params;
+  const page = source.getPage(slug, locale);
   if (!page) notFound();
 
   const MDX = page.data.body;
@@ -36,13 +36,13 @@ export default async function Page(props: PageProps) {
   );
 }
 
-export async function generateStaticParams() {
-  return source.generateParams();
+export function generateStaticParams() {
+  return source.generateParams('slug', 'locale');
 }
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
-  const params = await props.params;
-  const page = source.getPage(params.slug);
+  const { slug, locale } = await props.params;
+  const page = source.getPage(slug, locale);
   if (!page) notFound();
 
   return {
