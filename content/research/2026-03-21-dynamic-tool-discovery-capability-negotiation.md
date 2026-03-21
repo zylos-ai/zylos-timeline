@@ -13,7 +13,7 @@ The emerging response is a shift from static, compile-time tool registration to 
 
 This article maps the full stack: the wire protocols that carry tool advertisements, the schema standards that make capabilities machine-readable, the negotiation mechanisms that match requester to provider, and the security models that keep dynamic invocation from becoming an attack surface. It draws on 2025–2026 implementations spanning MCP, A2A, ANP, WebMCP, AGNTCY, Spring AI, and academic research including MCP-Zero.
 
-The central finding: dynamic tool discovery is not a single protocol problem but a layered systems problem, and the industry is converging on a three-tier stack — a registry (or DHT) for advertisement, a semantic matching layer for selection, and a per-invocation trust layer for enforcement.
+The central finding: dynamic tool discovery is not a single protocol problem but a layered systems problem. From surveying these implementations, a reasonable synthesis is that the field is moving toward a three-tier structure — a registry (or DHT) for advertisement, a semantic matching layer for selection, and a per-invocation trust layer for enforcement — though no single standard yet encompasses all three tiers, and calling this an industry consensus would be premature.
 
 ---
 
@@ -97,9 +97,9 @@ The Gossip-Enhanced Agentic Coordination Layer (GEACL) paper (arXiv:2512.03285) 
 
 ### 2.4 Browser-Native Discovery (WebMCP)
 
-WebMCP, shipped in Chrome 146 (February 2026) as an early preview, introduces a qualitatively different discovery model: websites declare their own capabilities as structured tools, and the browser mediates access by AI agents [10].
+WebMCP introduces a qualitatively different discovery model: websites declare their own capabilities as structured tools, and the browser mediates access by AI agents. Per third-party news coverage [10], an early preview shipped in Chrome 146 (February 2026); the authoritative source for the exact API shape, version, and behavior is the W3C Web Machine Learning Community Group's specification and Chrome's official release notes, which should be consulted directly for implementation details.
 
-The `navigator.modelContext` API (exposed on the Navigator interface in secure contexts only) allows web pages to register tools with the browser. An AI agent interacting with the browser can then discover and invoke those tools without needing to parse the DOM or simulate user interactions.
+The reported API — `navigator.modelContext` (exposed on the Navigator interface in secure contexts only) — allows web pages to register tools with the browser. An AI agent interacting with the browser can then discover and invoke those tools without needing to parse the DOM or simulate user interactions.
 
 ```javascript
 // Website registration side
@@ -116,7 +116,7 @@ navigator.modelContext.registerTool({
 const tools = await navigator.modelContext.getAvailableTools();
 ```
 
-This approach achieves 89% token efficiency improvement over screenshot-based browser automation methods [10]. The browser becomes a capability broker: tools are scoped to the current page, the user's session, and browser-enforced permissions.
+News coverage claims an 89% token efficiency improvement over screenshot-based browser automation methods [10]; this figure originates from the news report rather than a primary benchmark publication, so it should be treated as indicative rather than verified. The browser becomes a capability broker: tools are scoped to the current page, the user's session, and browser-enforced permissions.
 
 WebMCP is a W3C Community Group standard, developed by engineers from Google and Microsoft under the Web Machine Learning Community Group.
 
@@ -345,7 +345,7 @@ Spring AI extends this with dynamic tool refresh: the client re-fetches `tools/l
 
 WebMCP ships `navigator.modelContext` as a browser primitive. Websites register tools; the browser maintains a per-tab tool registry. AI agents access the registry through the browser extension or a WebMCP-aware agent runtime.
 
-Key security properties enforced by the browser [10]:
+The following security properties are described in news coverage [10] as browser-enforced; for confirmed implementation details, the W3C specification and Chrome documentation are the authoritative sources:
 - Tools are scoped to the current page's origin
 - Tool invocations require user permission on first use per origin
 - Tools cannot access cross-origin data unless CORS allows it
@@ -385,9 +385,9 @@ The MAGENTIC MARKETPLACE paper (Microsoft Research) formalizes this as an "agent
 
 ### 8.2 Federated Registries
 
-No single organization will own the global agent tool registry. The pattern that is emerging is federation: a common schema and API, multiple authoritative registries (one per organization or domain), and cross-registry discovery.
+It seems unlikely that any single organization will own a global agent tool registry — the incentives and organizational boundaries involved make centralization impractical at scale. From current activity, a reasonable inference is that federation is the direction: a common schema and API, multiple authoritative registries (one per organization or domain), and cross-registry discovery.
 
-MCP Registry's federated model, AGNTCY ADS's IPFS-backed distribution, and ANP's DID-based identity all point toward this structure. The IETF draft (draft-mp-agntcy-ads-00) suggests this will eventually be an internet standard.
+MCP Registry's federated model, AGNTCY ADS's IPFS-backed distribution, and ANP's DID-based identity are each consistent with this structure, though they represent independent efforts rather than a coordinated standard. The IETF draft (draft-mp-agntcy-ads-00) is an early signal of standardization intent, but it is a draft rather than an adopted standard.
 
 ### 8.3 Capability Auctions and Economic Routing
 
@@ -492,7 +492,7 @@ Agent-OM (VLDB 2026) demonstrates LLM agents being used for ontology matching it
 
 [9] CMDZero. "Introducing the Agent Communication & Discovery Protocol (ACDP)." https://www.cmdzero.io/blog-posts/introducing-the-agent-communication-discovery-protocol-acdp-a-proposal-for-ai-agents-to-discover-and-collaborate-with-each-other
 
-[10] WinBuzzer. "Google Chrome Ships WebMCP, Turning Websites Into AI Agent Tools." February 2026. https://winbuzzer.com/2026/02/13/google-chrome-webmcp-early-preview-ai-agents-xcxwbn/
+[10] WinBuzzer (news reprint). "Google Chrome Ships WebMCP, Turning Websites Into AI Agent Tools." February 2026. https://winbuzzer.com/2026/02/13/google-chrome-webmcp-early-preview-ai-agents-xcxwbn/ — Note: secondary source. For authoritative API and version details, see W3C Web Machine Learning Community Group and Chrome release notes.
 
 [11] Model Context Protocol. "Tools — MCP Concepts." https://modelcontextprotocol.info/docs/concepts/tools/
 
