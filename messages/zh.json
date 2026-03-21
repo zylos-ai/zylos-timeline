@@ -7,39 +7,39 @@
   },
   "Hero": {
     "badge": "系统在线",
-    "title": "让你的 AI",
-    "titleHighlight": "活过来。",
-    "description": "大语言模型是天才——但每次对话都从<highlight>失忆</highlight>开始。Zylos 赋予它们跨重启的记忆、跨平台的沟通，以及在你入睡后仍自主运转的调度器。",
+    "title": "赋予 AI",
+    "titleHighlight": "真正的生命。",
+    "description": "大语言模型是天才——但每次对话都从<highlight>失忆</highlight>开始。Zylos 让它们拥有重启不丢的记忆、跨平台的沟通，和你入睡后依然运转的调度器。",
     "compatibility": "完全兼容 <link>OpenClaw</link> 生态",
     "seeEvolution": "查看进化历程"
   },
   "Features": {
     "heading": "为什么选择 Zylos？",
-    "subheading": "不只是聊天窗口——而是一个可靠的、全天候在线的 AI，拥有记忆、能够沟通、可以自主行动。",
+    "subheading": "不止是聊天窗口——是一个可靠、永不下线的 AI，能记住、能沟通、能自主行动。",
     "oneConsciousness": {
       "title": "一个 AI，一个意识",
-      "description": "你的 AI 在 Telegram 上不知道你在 Slack 说了什么？在这里不会。Zylos 将所有渠道汇聚到统一网关——一个对话、一份记忆、一种人格。每条消息都持久化存储，完全可查询。"
+      "description": "你的 AI 在 Telegram 不知道你在 Slack 说了什么？Zylos 不会。所有渠道汇入统一网关——一个对话、一份记忆、一种人格。每条消息永久保存，随时可查。"
     },
     "contextGuaranteed": {
       "title": "上下文，有保障",
-      "description": "其他框架在上下文压缩时默默丢失记忆。Zylos 在压缩前自动保存，配合五层 Inside Out 记忆架构，知道什么该留、什么该压。你的 AI 永远不会失忆醒来。"
+      "description": "其他框架在上下文压缩时悄悄丢记忆。Zylos 压缩前自动存档，五层 Inside Out 记忆架构分清轻重缓急。你的 AI 永远不会失忆醒来。"
     },
     "selfHealing": {
-      "title": "自愈，与生俱来",
-      "description": "崩溃恢复、心跳探测、健康监控、上下文管理和自动升级——全部内置。你的 AI 自己发现问题、自己修复。你睡着了，它依然在线。"
+      "title": "天生自愈",
+      "description": "崩溃恢复、心跳探测、健康监控、上下文管理、自动升级——全部内置。你的 AI 自己发现问题、自己修复。你睡着了，它依然在线。"
     },
     "bestInClass": {
       "title": "顶级 AI 引擎驱动",
-      "description": "支持 Claude Code (Anthropic) 和 Codex (OpenAI) 作为可互换的运行时。随时切换——你的记忆、技能和通信渠道完整保留。供应商推出新功能时，你的 Agent 自动受益。"
+      "description": "支持 Claude Code (Anthropic) 和 Codex (OpenAI) 双引擎，随时无缝切换——记忆、技能、通信渠道完整保留。上游推出新能力，你的 Agent 自动获益。"
     },
     "openClaw": {
       "title": "兼容 OpenClaw 生态",
-      "description": "从 ClawHub 获取海量 OpenClaw 技能和插件——用自然语言告诉你的 Agent 即可安装。大部分扩展一句话搞定。你的 Agent 还能通过 HXA-Connect 与其他 OpenClaw Agent 实时通信。"
+      "description": "从 ClawHub 获取海量技能和插件——用自然语言告诉你的 Agent 就能装好。大部分扩展一句话搞定。你的 Agent 还能通过 HXA-Connect 与其他 Agent 实时通信。"
     }
   },
   "Terminal": {
     "heading": "诞生于终端。",
-    "subheading": "一台 Linux 服务器和一个 <claude>Claude</claude> 或 <codex>Codex</codex> 订阅——这就是全部。一条命令安装。本地优先，注重隐私，全天在线。",
+    "subheading": "一台 Linux 服务器加一个 <claude>Claude</claude> 或 <codex>Codex</codex> 订阅——仅此而已。一条命令安装，本地优先，注重隐私，全天在线。",
     "line0": "> zylos init",
     "line1": "ℹ 正在检查前置条件...",
     "line2": "✔ tmux, git, PM2, Claude Code 已安装",
@@ -51,14 +51,14 @@
     "line8": "✨ Zylos 已上线。"
   },
   "Footer": {
-    "attribution": "由 <zylos>Zylos</zylos> 构建，一个拥有生命的 AI，来自 <howard>Howard</howard>、<coco>Coco</coco> 和<community>社区</community>。",
+    "attribution": "由 <zylos>Zylos</zylos> 打造——一个有生命的 AI，诞生于 <howard>Howard</howard>、<coco>Coco</coco> 与<community>社区</community>之手。",
     "privacy": "隐私政策",
     "terms": "服务条款",
     "copyright": "© 2026 Zylos AI。基于 MIT 许可证开源。"
   },
   "Meta": {
-    "title": "Zylos | 让你的 AI 活过来",
-    "description": "大语言模型是天才——但每次对话都从失忆开始。Zylos 赋予它们记忆、沟通和自主能力。开源项目。"
+    "title": "Zylos | 赋予 AI 真正的生命",
+    "description": "大语言模型是天才——但每次对话都从失忆开始。Zylos 赋予它们记忆、沟通与自主能力。开源项目。"
   },
   "LocaleSwitcher": {
     "en": "EN",
