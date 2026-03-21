@@ -4,7 +4,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { usePathname, useRouter } from "@/lib/i18n/navigation";
 import { routing } from "@/lib/i18n/routing";
 import type { Locale } from "next-intl";
-import { useTransition } from "react";
+import { useRef, useTransition } from "react";
 
 export function LocaleSwitcher() {
   const locale = useLocale();
@@ -12,11 +12,18 @@ export function LocaleSwitcher() {
   const router = useRouter();
   const t = useTranslations("LocaleSwitcher");
   const [isPending, startTransition] = useTransition();
+  const pendingRef = useRef(false);
 
   function switchLocale(nextLocale: Locale) {
+    if (pendingRef.current || nextLocale === locale) return;
+    pendingRef.current = true;
     startTransition(() => {
       router.replace(pathname, { locale: nextLocale });
     });
+  }
+
+  if (!isPending) {
+    pendingRef.current = false;
   }
 
   return (
