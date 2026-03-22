@@ -14,7 +14,7 @@ tags:
 
 ## Executive Summary
 
-As AI agents transition from analytical tools to operational actors — writing code, reviewing pull requests, deploying services, and communicating on behalf of users — accountability infrastructure has become the single most critical gap in enterprise deployments. Gartner reported a 1,445% surge in multi-agent system inquiries between Q1 2024 and Q2 2025. Yet the 2025 AI Agent Index found that only one major deployed agent (ChatGPT Agent) uses cryptographic request signing, and the vast majority of multi-agent systems lack standardized audit logging, identity verification, or delegation chain tracing.
+As AI agents transition from analytical tools to operational actors — writing code, reviewing pull requests, deploying services, and communicating on behalf of users — accountability infrastructure has become the single most critical gap in enterprise deployments. Gartner reported a 1,445% surge in multi-agent system inquiries between Q1 2024 and Q2 2025. Yet among the agents surveyed by the 2025 MIT AI Agent Index, only one (ChatGPT Agent) was found to use cryptographic request signing — suggesting that even prominent deployments largely lack standardized audit logging, identity verification, or delegation chain tracing.
 
 This article examines the technical and governance architecture required to answer the core accountability question in any AI system: **who did what, when, why, and on whose authority?** We cover audit trail architectures (structured logging vs. event sourcing), attribution in multi-agent collaboration, non-repudiation through cryptographic signing and decentralized identifiers, delegation chain accountability, regulatory requirements from the EU AI Act and NIST AI RMF, practical patterns adapted from systems like AWS CloudTrail and Kubernetes audit, and the open challenges that remain unsolved.
 
@@ -113,16 +113,17 @@ The OpenTelemetry GenAI SIG has defined semantic conventions specifically for AI
 Key GenAI semantic conventions for agent tracing:
 
 ```
-gen_ai.system          = "anthropic"
-gen_ai.operation.name  = "chat"
-gen_ai.request.model   = "claude-sonnet-4-6"
-gen_ai.agent.id        = "research-agent-001"
-gen_ai.tool.name       = "github.create_pr"
-gen_ai.tool.call.id    = "call_abc123"
-gen_ai.session.id      = "sess_88fca3bd"
-gen_ai.token.usage.input_tokens  = 1240
-gen_ai.token.usage.output_tokens = 387
+gen_ai.provider.name       = "anthropic"
+gen_ai.operation.name      = "chat"
+gen_ai.request.model       = "claude-sonnet-4-6"
+gen_ai.tool.name           = "github.create_pr"
+gen_ai.tool.call.id        = "call_abc123"
+gen_ai.conversation.id     = "sess_88fca3bd"
+gen_ai.usage.input_tokens  = 1240
+gen_ai.usage.output_tokens = 387
 ```
+
+Note: the current GenAI semantic conventions do not yet define an `agent.id` attribute. Agent identity must be carried via resource attributes or custom span attributes until the spec evolves to cover multi-agent scenarios explicitly.
 
 When you embed OpenTelemetry instrumentation in agentic workflows, you get distributed traces that span tool invocations, reasoning steps, and inter-agent messages — all within a single cohesive trace. Datadog natively supports OTel GenAI Semantic Conventions (v1.37+), and the conventions are being adopted by LangChain, Microsoft Azure AI Foundry, and VictoriaMetrics.
 
@@ -227,11 +228,11 @@ A signed action record:
 
 Unlike human authentication (which happens once at login), agent verification occurs at every action boundary — combining identity credentials, delegated authority, and cryptographic proofs.
 
-The 2025 AI Agent Index survey found that only one major deployed agent uses cryptographic request signing, indicating that the industry has not yet adopted this as a baseline. This is the most significant accountability gap in current deployments.
+Among agents surveyed by the 2025 MIT AI Agent Index, only one was found to use cryptographic request signing — a data point that, while limited to the Index's sample, suggests the broader industry has not yet adopted signing as a baseline practice.
 
 ### Decentralized Identifiers (DIDs) for AI Agents
 
-Decentralized Identifiers provide a foundation for agent identity that does not depend on a central authority. A DID is a self-issued identifier whose public key material verifies ownership. Research published in late 2024 (arxiv:2511.02841) proposes equipping each AI agent with a ledger-anchored DID and a set of Verifiable Credentials (VCs):
+Decentralized Identifiers provide a foundation for agent identity that does not depend on a central authority. A DID is a self-issued identifier whose public key material verifies ownership. Research published in October 2025 (arxiv:2511.02841, v1 submitted 2025-10-01) proposes equipping each AI agent with a ledger-anchored DID and a set of Verifiable Credentials (VCs):
 
 - The **DID** is the agent's stable identity across deployments and sessions
 - **VCs** encode claims about the agent: its operator (who runs it), its capabilities (what it is authorized to do), its model version (what AI system it uses), and its compliance attestations
