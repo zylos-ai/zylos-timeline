@@ -170,10 +170,10 @@ For the AI agent ecosystem, this is a key transition. Early agents proved they c
 - Anthropic. "Claude Code security." https://code.claude.com/docs/en/security
 - Anthropic. "Agent SDK permissions." https://platform.claude.com/docs/en/agent-sdk/permissions
 - OpenAI. "Introducing Operator." https://openai.com/index/introducing-operator/
-- OpenAI Help Center. "ChatGPT agent." https://help.openai.com/en/articles/11752874-chatgpt-agen
+- OpenAI Help Center. "ChatGPT agent." https://help.openai.com/en/articles/11752874-chatgpt-agent
 - OpenAI. "ChatGPT agent system card." https://cdn.openai.com/pdf/839e66fc-602c-48bf-81d3-b21eacc3459d/chatgpt_agent_system_card.pdf
 - OpenAI. "Designing agents to resist prompt injection." https://openai.com/index/designing-agents-to-resist-prompt-injection/
-- Microsoft Support. "Copilot Web Actions." https://support.microsoft.com/en-us/topic/copilot-web-actions-c121175d-41bc-46bf-ac22-bc2c5eb2f8eb
+- Microsoft Support. "Copilot Actions in Edge." https://support.microsoft.com/en-us/topic/copilot-actions-in-edge-5ed5e17e-42df-40a3-984a-20420eba86e2
 - Microsoft Learn. "Microsoft 365 agents admin guide." https://learn.microsoft.com/en-us/copilot/microsoft-365/agent-essentials/m365-agents-admin-guide
 - GitHub Docs. "Review deployments." https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments
 - GitHub Docs. "Manage environments." https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
