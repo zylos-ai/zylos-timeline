@@ -7,13 +7,13 @@ tags: ["agent protocols", "interoperability", "MCP", "A2A", "ACP", "multi-agent 
 
 ## Executive Summary
 
-The agent interoperability landscape has matured significantly in Q1 2026, moving from a cacophony of competing proposals into a clearer, if still fragmented, architecture. Three protocols now dominate serious production conversations: Anthropic's **Model Context Protocol (MCP)** — the de facto standard for agent-to-tool connectivity, now governed by the Linux Foundation's Agentic AI Foundation (AAIF) with over 18,000 community servers and 97 million monthly SDK downloads; Google's **Agent-to-Agent Protocol (A2A)** — the leading standard for inter-agent coordination, backed by 100+ enterprise partners; and IBM/AGNTCY's **Agent Communication Protocol (ACP)** — a REST-native alternative favored by teams wanting minimal friction and existing HTTP toolchain compatibility.
+The agent interoperability landscape has matured significantly in Q1 2026, moving from a cacophony of competing proposals into a clearer, if still fragmented, architecture. Three protocols now dominate serious production conversations: Anthropic's **Model Context Protocol (MCP)** — the de facto standard for agent-to-tool connectivity, now governed by the Linux Foundation's Agentic AI Foundation (AAIF) with over 18,000 community-indexed servers (per Glama.ai and MCP.so registries) and reportedly tens of millions of monthly SDK downloads; Google's **Agent-to-Agent Protocol (A2A)** — the leading standard for inter-agent coordination, with broad enterprise partner participation; and IBM/AGNTCY's **Agent Communication Protocol (ACP)** — a REST-native alternative favored by teams wanting minimal friction and existing HTTP toolchain compatibility.
 
 The most important structural shift in early 2026 is not a new protocol — it is governance convergence. MCP, A2A, and ACP all now sit under Linux Foundation oversight, creating institutional alignment that did not exist a year ago. The AAIF's composition (Anthropic, OpenAI, Google, Microsoft, AWS, Block, Cloudflare, Bloomberg) signals that the era of winner-take-all protocol wars is over and the era of complementary layering has begun. The two-layer stack — MCP for vertical tool integration, A2A for horizontal agent coordination — is rapidly becoming the architectural default for enterprise agent deployments.
 
 For agent platform builders, the strategic decisions have crystallized: implement Streamable HTTP for MCP transport, adopt OAuth 2.1 with Resource Indicators for security, design Agent Card-compatible discovery endpoints, and build observability into the protocol layer from day one. The remaining open questions — fine-grained authorization, cross-protocol interoperability, and the eventual role of decentralized identity — are active work items with clear timelines, not indefinite research problems. This article maps the full landscape, compares the protocols across the dimensions that matter for production deployments, and identifies the practical implications for teams building agent platforms in 2026.
 
-The convergence narrative has limits: fragmentation persists at the edges. ANP (Agent Network Protocol) pursues a fully decentralized vision using W3C DIDs that is technically compelling but not yet ecosystem-ready. Matrix-based approaches (Alibaba's HiClaw) solve the human-in-the-loop problem elegantly but require infrastructure investment that most teams are not ready to make. OpenAPI tool-use schemas remain the lowest-common-denominator interop layer. And emerging B2B agent protocols targeting payment, contract, and cross-company workflow automation are adding new dimensions to an already complex space. The path to true convergence runs through NIST's AI Agent Standards Initiative, a Q3 2026 MCP/A2A joint specification, and the slow maturation of W3C DID infrastructure — none of which are yet complete.
+The convergence narrative has limits: fragmentation persists at the edges. ANP (Agent Network Protocol) pursues a fully decentralized vision using W3C DIDs that is technically compelling but not yet ecosystem-ready. Matrix-based approaches (Alibaba's HiClaw) solve the human-in-the-loop problem elegantly but require infrastructure investment that most teams are not ready to make. OpenAPI tool-use schemas remain the lowest-common-denominator interop layer. And emerging B2B agent protocols targeting payment, contract, and cross-company workflow automation are adding new dimensions to an already complex space. The path to true convergence likely runs through ongoing standards efforts (including NIST's AI-related initiatives), a reported Q3 2026 MCP/A2A joint specification effort, and the slow maturation of W3C DID infrastructure — none of which are yet complete.
 
 ## The Protocol Stack: How the Layers Fit Together
 
@@ -75,10 +75,10 @@ The first anniversary release (`2025-11-25`) added capabilities that shift MCP f
 
 The numbers are staggering for a 15-month-old protocol. As of March 2026:
 
-- Community registries index **18,000+ MCP servers** (Glama.ai: 18,374; MCP.so: 18,250+)
-- The official MCP Registry (launched September 2025 preview) is becoming the authoritative source, with planned GA including signing and trust scoring
-- **97 million monthly SDK downloads** across Python and TypeScript
-- **50+ enterprise partners** including Salesforce, ServiceNow, Workday, and SAP
+- Community registries index **18,000+ MCP servers** (per Glama.ai and MCP.so directory listings as of March 2026)
+- The official MCP Registry (launched September 2025 preview per the [MCP blog announcement](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)) is becoming the authoritative source, with planned GA expected to include signing and trust scoring
+- SDK download volume is reportedly in the tens of millions monthly across Python and TypeScript (exact figures vary by source; npm and PyPI download counters are the primary references)
+- Enterprise adopters reportedly include Salesforce, ServiceNow, and others, though specific partnership counts vary by source
 
 Governance transferred from Anthropic to the **Agentic AI Foundation (AAIF)** under the Linux Foundation in December 2025. The AAIF founding membership — Anthropic, OpenAI, Google, Microsoft, AWS, Block, Cloudflare, Bloomberg — encompasses the full enterprise AI landscape. This was a prerequisite for serious enterprise adoption; organizations were hesitant to build on a protocol controlled by a single AI vendor.
 
@@ -102,9 +102,9 @@ Google's Agent-to-Agent Protocol entered 2026 in the strongest position of any n
 
 ### Governance and Industry Alignment
 
-A2A's donation to the Linux Foundation's **A2A Project** (announced alongside AAIF in December 2025) created the institutional symmetry with MCP that enables the two-layer narrative to be credible, not just aspirational. Both protocols are now Linux Foundation projects, both have overlapping membership, and both have committed to a Q3 2026 joint interoperability specification.
+A2A's donation to the Linux Foundation's **A2A Project** (per the [LF press release](https://www.linuxfoundation.org/press/linux-foundation-launches-the-agent2agent-protocol-project-to-enable-secure-intelligent-communication-between-ai-agents)) created the institutional symmetry with MCP that enables the two-layer narrative to be credible, not just aspirational. Both protocols are now Linux Foundation projects, both have overlapping membership, and both have reportedly committed to a joint interoperability specification effort.
 
-The A2A Project's composition mirrors the enterprise AI market: Google, Microsoft, Salesforce, ServiceNow, SAP, AWS, and 100+ additional enterprise partners. The protocol is not a research proposal — it is shipping in production at scale.
+The A2A Project's stated member composition includes major enterprise AI vendors (Google, Microsoft, Salesforce, ServiceNow, SAP, AWS among others). The protocol has moved beyond proposal stage, with multiple reported production implementations.
 
 ### Architecture: Agent Cards, Tasks, and Opacity
 
@@ -354,15 +354,15 @@ The decision of which protocols to implement is driven by use case:
 
 ### What to Watch in Q2-Q3 2026
 
-**June 2026 MCP spec:** Expected to include server-as-agent capabilities — MCP servers that connect to other MCP servers, enabling recursive composition. This will unlock complex delegation patterns: a project manager MCP server that delegates code analysis, documentation, and testing to specialized servers, all coordinated via the protocol.
+**MCP spec evolution:** The MCP specification roadmap (per AAIF discussions) is expected to include server-as-agent capabilities — MCP servers that connect to other MCP servers, enabling recursive composition. If realized, this would unlock complex delegation patterns: a project manager MCP server that delegates code analysis, documentation, and testing to specialized servers, all coordinated via the protocol. Exact timing is not yet officially confirmed.
 
-**Q3 2026 MCP/A2A joint specification:** The joint interoperability spec from Google, Anthropic, Microsoft, and Salesforce will define how MCP tool invocations can trigger A2A agent delegations and vice versa. This is the formal bridge between the two layers that the ecosystem needs.
+**MCP/A2A interoperability effort:** According to industry commentary, a joint interoperability specification effort involving Google, Anthropic, and other AAIF members is anticipated. The goal would be defining how MCP tool invocations can trigger A2A agent delegations and vice versa — the formal bridge between the two layers that the ecosystem needs. No official spec draft has been published as of this writing.
 
-**MCP Registry GA:** The transition from preview to general availability is expected to include signing, verification, and trust scoring for servers. Combined with dynamic client registration, this will enable agents to discover and connect to new tools at runtime without manual configuration.
+**MCP Registry GA:** The transition from preview to general availability is expected to include signing, verification, and trust scoring for servers. Combined with dynamic client registration, this could enable agents to discover and connect to new tools at runtime without manual configuration.
 
-**NIST AI Agent Standards Initiative:** The NIST framework (announced February 2026) is working on protocol interoperability requirements and security guidelines for agent systems. Government adoption will drive enterprise adoption in regulated industries.
+**NIST AI-related standards work:** NIST has ongoing initiatives related to AI safety and trustworthiness (see [NIST AI Risk Management Framework](https://www.nist.gov/artificial-intelligence)). The extent to which these efforts will directly address agent interoperability protocols specifically remains to be seen; industry analysts have speculated about a dedicated agent standards track, but no official NIST announcement specific to agent protocol interoperability has been confirmed as of March 2026.
 
-**ANP DID infrastructure maturity:** The W3C DID v1.1 specification (first public working draft 2025, comments due April 2026) is on a timeline that could enable ANP production deployments by late 2026 or early 2027. Organizations with long planning horizons should include ANP in their technology radar.
+**ANP DID infrastructure maturity:** The [W3C DID v1.1 specification](https://www.w3.org/TR/did-1.1/) (first public working draft 2025) is progressing through the standards process. If DID infrastructure matures sufficiently, ANP production deployments could become viable in the 2027 timeframe. Organizations with long planning horizons should include ANP in their technology radar.
 
 ## Building an Agent Communication Hub
 
@@ -387,7 +387,7 @@ The security implications for a hub are more acute than for direct agent-to-agen
 
 ## Conclusion: The Protocol Landscape in One View
 
-The agent interoperability landscape in March 2026 is not converged, but it has a credible convergence path. The institutional alignment under the Linux Foundation, the crystallization of the two-layer MCP+A2A architecture as the reference model, and the commitment to a joint interoperability specification by the major vendors provide the structural conditions for genuine convergence within 12-18 months.
+The agent interoperability landscape in March 2026 is not converged, but it has a credible convergence path. The institutional alignment under the Linux Foundation, the crystallization of the two-layer MCP+A2A architecture as the reference model, and the stated intent toward joint interoperability work by the major vendors provide the structural conditions for potential convergence over the next 12-18 months.
 
 The practical state today: MCP is infrastructure. A2A is the coordination standard. ACP is the REST-native alternative for lower-friction deployments. ANP is the decentralized long-term bet. OpenAPI tool-use is the compatibility layer for existing APIs. Discovery remains the hardest unsolved problem.
 
@@ -400,8 +400,8 @@ The winner is not a single protocol — it is the layered ecosystem that enables
 *Sources:*
 - [MCP Streamable HTTP Specification (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)
 - [MCP Authorization Specification](https://modelcontextprotocol.io/specification/draft/basic/authorization)
-- [MCP One-Year Anniversary Spec (2025-11-25)](http://blog.modelcontextprotocol.io/posts/2025-11-25-first-mcp-anniversary/)
-- [MCP Registry Preview](http://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)
+- [MCP One-Year Anniversary Spec (2025-11-25)](https://blog.modelcontextprotocol.io/posts/2025-11-25-first-mcp-anniversary/)
+- [MCP Registry Preview](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)
 - [A2A Protocol GitHub Repository](https://github.com/a2aproject/A2A)
 - [Linux Foundation A2A Project Launch](https://www.linuxfoundation.org/press/linux-foundation-launches-the-agent2agent-protocol-project-to-enable-secure-intelligent-communication-between-ai-agents)
 - [Google Cloud Blog: A2A Protocol Upgrade](https://cloud.google.com/blog/products/ai-machine-learning/agent2agent-protocol-is-getting-an-upgrade)
@@ -412,10 +412,12 @@ The winner is not a single protocol — it is the layered ecosystem that enables
 - [Auth0: Why MCP Streamable HTTP Simplifies Security](https://auth0.com/blog/mcp-streamable-http/)
 - [Auth0: MCP Spec Updates from June 2025](https://auth0.com/blog/mcp-specs-update-all-about-auth/)
 - [Cloudflare: Streamable HTTP MCP Servers](https://blog.cloudflare.com/streamable-http-mcp-servers-python/)
-- [CData: 2026 Enterprise MCP Adoption](https://www.cdata.com/blog/2026-year-enterprise-ready-mcp-adoption)
+- [CData: 2026 Enterprise MCP Adoption](https://www.cdata.com/blog/2026-year-enterprise-ready-mcp-adoption) *(note: link may return 403 in some regions)*
+- [Anthropic: Model Context Protocol](https://www.anthropic.com/research/model-context-protocol)
 - [Glama.ai MCP Server Directory](https://glama.ai/mcp/servers)
 - [Merge.dev: MCP vs A2A Comparison](https://www.merge.dev/blog/mcp-vs-a2a)
-- [NIST AI Agent Standards Initiative](https://www.hungyichen.com/en/insights/ai-agent-protocol-wars)
+- [NIST AI Risk Management Framework](https://www.nist.gov/artificial-intelligence)
+- [Third-party analysis: AI Agent Protocol Wars (hungyichen.com)](https://www.hungyichen.com/en/insights/ai-agent-protocol-wars)
 - [ruh.ai: AI Agent Protocols 2026 Complete Guide](https://www.ruh.ai/blogs/ai-agent-protocols-2026-complete-guide)
 - [Descope: MCP Auth Spec Deep Dive](https://www.descope.com/blog/post/mcp-auth-spec)
 - [W3C DID Working Draft 2025](https://www.w3.org/TR/did-1.1/)
