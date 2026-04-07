@@ -43,7 +43,7 @@ Anthropic's tool-use interface was designed with agentic workflows as the primar
 
 The **Tool Search Tool** pattern, pioneered by Anthropic's internal tooling and later formalized in Spring AI's MCP integration (December 2025), addresses a persistent scaling problem: loading hundreds of tool definitions into context is expensive and degrades reasoning quality. The pattern works by giving the model only a single "search for tools" capability initially; the model queries for relevant tool definitions on demand, and only those are expanded into context. In production benchmarks, this achieved **34–64% reduction in total token consumption** depending on the model and search strategy.
 
-Anthropic's **Claude Agent SDK** (shipped alongside Claude 4.6 in early 2026) provides production primitives for multi-agent coordination, with tool calling tightly integrated into the execution model.
+Anthropic's **Claude Agent SDK** (released September 2025) provides production primitives for multi-agent coordination, with tool calling tightly integrated into the execution model.
 
 On benchmarks, **Claude Opus 4.1 ranks 2nd on BFCL V4 at 70.36%**, and **Claude Sonnet 4 ranks 3rd at 70.29%** — both outperforming GPT-5 (59.22%, 7th place) on function-calling accuracy. Anthropic's relative advantage on structured tool invocation reflects its agent-centric training emphasis.
 
