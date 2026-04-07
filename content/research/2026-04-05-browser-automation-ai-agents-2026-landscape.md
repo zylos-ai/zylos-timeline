@@ -168,7 +168,7 @@ The traditional distinction between "browser automation for testing" and "browse
 
 ### Privacy and the Agentic Browser
 
-WebMCP's permission-first design addresses the immediate trust problem: the browser mediates tool execution, prompts users for confirmation of sensitive operations, and enforces HTTPS for all tool communication. The structural concern is deeper: AI agents that browse on a user's behalf accumulate behavioral footprints richer than any prior category of browser data. Apple's announced Safari 18 implementation with differential privacy and first-party-only data access signals that at least one major browser vendor considers these concerns serious enough to constrain the spec beyond the baseline W3C draft.
+WebMCP's permission-first design addresses the immediate trust problem: the browser mediates tool execution, prompts users for confirmation of sensitive operations, and enforces HTTPS for all tool communication. The structural concern is deeper: AI agents that browse on a user's behalf accumulate behavioral footprints richer than any prior category of browser data. Apple's expected Safari 18 implementation — anticipated to include differential privacy and first-party-only data access — would signal that at least one major browser vendor considers these concerns serious enough to constrain the spec beyond the baseline W3C draft.
 
 ### The Open-Source Inflection Point
 
