@@ -25,7 +25,7 @@ Pricing starts at $1.75 per million input tokens — a 40% reduction over GPT-5.
 
 ### Claude Opus 4.6: Deep Document Reasoning
 
-Anthropic's Claude Opus 4.6 takes a different emphasis: depth of multimodal understanding over breadth of action. All models in the Claude 4 family accept images as base64 or URL, and Claude Opus 4.6 maintains a 200,000-token context window — less than GPT-5.4's 1M cap, but sufficient for most document workflows.
+Anthropic's Claude Opus 4.6 takes a different emphasis: depth of multimodal understanding over breadth of action. All models in the Claude 4 family accept images as base64 or URL, and Claude Opus 4.6 offers a 1,000,000-token context window (beta) — matching GPT-5.4's 1M cap and sufficient for even the most demanding document workflows.
 
 Claude Opus 4.5 scored 80.7% on the MMMU benchmark (Massive Multi-discipline Multimodal Understanding), reflecting strong performance on expert-level questions requiring joint visual and textual reasoning. Extraction accuracy from image-heavy documents climbed from roughly 67% in Sonnet 4 to ~80% in Sonnet 4.5, a gain attributed to improved visual-text alignment and OCR reliability within the model itself.
 
