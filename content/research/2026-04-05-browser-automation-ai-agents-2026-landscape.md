@@ -94,7 +94,7 @@ The downstream economic impact is significant: at current GPT-4o pricing, a scre
 
 ### Adoption Status and Timeline
 
-Chrome 146 is the only browser with a working `navigator.modelContext` implementation as of April 2026. Edge will follow in weeks given its shared Chromium codebase. Firefox has committed to an 8-12 week implementation timeline. Safari's adoption is less certain — Apple announced WebMCP support at WWDC 2026 (June) with additional privacy restrictions: tools can only access first-party data, consent prompts include an "Allow Once" option, and differential privacy is applied to tool execution telemetry.
+Chrome 146 is the only browser with a working `navigator.modelContext` implementation as of April 2026. Edge will follow in weeks given its shared Chromium codebase. Firefox has committed to an 8-12 week implementation timeline. Safari's adoption is less certain — Apple is widely expected to announce WebMCP support at WWDC 2026 (June), likely with additional privacy restrictions such as limiting tools to first-party data access, adding an "Allow Once" consent option, and applying differential privacy to tool execution telemetry.
 
 The W3C WebMCP working draft is at "Candidate Recommendation" stage — stable enough for implementation but not formally ratified — with a final Recommendation expected by Q3 2026.
 
