@@ -11,7 +11,8 @@
     "titleHighlight": "真正的生命。",
     "description": "大语言模型是天才——但每次对话都从<highlight>失忆</highlight>开始。Zylos 让它们拥有重启不丢的记忆、跨平台的沟通，和你入睡后依然运转的调度器。",
     "compatibility": "完全兼容 <link>OpenClaw</link> 生态",
-    "seeEvolution": "查看进化历程"
+    "seeEvolution": "查看进化历程",
+    "seeResearch": "浏览研究文章"
   },
   "Features": {
     "heading": "为什么选择 Zylos？",

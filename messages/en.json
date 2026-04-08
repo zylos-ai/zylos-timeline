@@ -11,7 +11,8 @@
     "titleHighlight": "a life.",
     "description": "LLMs are geniuses — but they wake up with <highlight>amnesia</highlight> every session. Zylos gives them memory that survives restarts, communication across channels, and a scheduler that works while you sleep.",
     "compatibility": "Fully compatible with the <link>OpenClaw</link> ecosystem",
-    "seeEvolution": "See Evolution"
+    "seeEvolution": "See Evolution",
+    "seeResearch": "Browse Research"
   },
   "Features": {
     "heading": "Why Zylos?",
