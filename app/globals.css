@@ -161,10 +161,11 @@
   background-repeat: no-repeat;
 }
 
-/* Offset docs layout below the fixed site navbar */
-body:has([data-sidebar-placeholder]) [id="nd-docs-layout"] {
-  --fd-banner-height: 4rem;
-  margin-top: 4rem;
+/* Offset docs layout below the fixed site navbar.
+   Navbar height: py-5 (1.25rem×2) + 2.5rem logo = 5rem (unscrolled). */
+[id="nd-docs-layout"] {
+  --fd-banner-height: 5rem;
+  margin-top: 5rem;
 }
 
 /* ── Prose (typography plugin): Dark mode ── */
