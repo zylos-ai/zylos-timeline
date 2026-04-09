@@ -163,7 +163,7 @@
 
 /* Offset docs layout below the fixed site navbar */
 body:has([data-sidebar-placeholder]) [id="nd-docs-layout"] {
-  --fd-docs-height: calc(100dvh - 4rem);
+  --fd-banner-height: 4rem;
   margin-top: 4rem;
 }
 
