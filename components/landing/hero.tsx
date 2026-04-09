@@ -80,9 +80,9 @@ export function LandingHero() {
                             </div>
                         </div>
 
-                        <Link href="/timeline">
+                        <Link href="/research">
                             <Button variant="ghost" className="gap-2 h-12 px-6 group text-muted-foreground hover:text-foreground">
-                                {t("seeEvolution")}
+                                {t("seeResearch")}
                                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                             </Button>
                         </Link>

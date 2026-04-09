@@ -27,7 +27,6 @@ export function Navbar({ showLocaleSwitcher = true }: { showLocaleSwitcher?: boo
 
     const navLinks = [
         { name: t("features"), href: "/#features", external: false },
-        { name: t("evolution"), href: "/timeline", external: false },
         { name: t("research"), href: "/research", external: false },
         { name: t("docs"), href: "/docs", external: false },
     ];
