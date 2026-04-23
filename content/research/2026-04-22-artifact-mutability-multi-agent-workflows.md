@@ -157,13 +157,13 @@ The baseline cost of not pinning is unbounded. Every documented production incid
 
 ## References
 
-- StepSecurity. "Pinning GitHub Actions for Enhanced Security: A Complete Guide." 2025.
-- OpenSSF. "Maintainers Guide: Securing CI/CD Pipelines After the tj-actions and Reviewdog Supply Chain Attacks." June 2025.
-- Cursor Engineering. "Scaling Agents." cursor.com/blog, 2026.
-- Apollo GraphQL. "Introducing Graph Artifacts." apollographql.com/blog, 2026.
-- Streamkap. "Why AI Agents Give Wrong Answers." streamkap.com, 2026.
-- MindStudio. "Stochastic Multi-Agent Consensus." mindstudio.ai/blog, 2026.
-- Google. "Agent-to-Agent (A2A) Protocol Specification." a2a-protocol.org, 2025.
-- Cogent. "When AI Agents Collide: Multi-Agent Orchestration Failure Playbook for 2026." cogentinfo.com, 2026.
-- Restate. "Durable AI Loops: Fault Tolerance Across Frameworks." restate.dev/blog, 2026.
-- Microsoft. "Agent Framework: Workflow Core Concepts." learn.microsoft.com, 2026.
+- [Pinning GitHub Actions for Enhanced Security: Everything You Should Know](https://www.stepsecurity.io/blog/pinning-github-actions-for-enhanced-security-a-complete-guide) — StepSecurity, 2025
+- [Maintainers' Guide: Securing CI/CD Pipelines After the tj-actions and reviewdog Supply Chain Attacks](https://openssf.org/blog/2025/06/11/maintainers-guide-securing-ci-cd-pipelines-after-the-tj-actions-and-reviewdog-supply-chain-attacks/) — OpenSSF, June 2025
+- [Scaling Long-Running Autonomous Coding](https://cursor.com/blog/scaling-agents) — Cursor Engineering, 2026
+- [Introducing Graph Artifacts: Versioned, Immutable Schemas for Confident Deployments](https://www.apollographql.com/blog/introducing-graph-artifacts) — Apollo GraphQL, 2026
+- [Why Your AI Agents Keep Getting the Wrong Answer](https://streamkap.com/resources-and-guides/why-ai-agents-wrong-answers) — Streamkap, 2026
+- [Stochastic Multi-Agent Consensus: How to Get Better AI Ideas at Scale](https://www.mindstudio.ai/blog/stochastic-multi-agent-consensus-ai-agents) — MindStudio, 2026
+- [Agent2Agent (A2A) Protocol Specification](https://a2a-protocol.org/latest/specification/) — Google, a2a-protocol.org, 2025
+- [When AI Agents Collide: Multi-Agent Orchestration Failure Playbook for 2026](https://cogentinfo.com/resources/when-ai-agents-collide-multi-agent-orchestration-failure-playbook-for-2026) — Cogent, 2026
+- [Durable AI Loops: Fault Tolerance across Frameworks and without Handcuffs](https://www.restate.dev/blog/durable-ai-loops-fault-tolerance-across-frameworks-and-without-handcuffs) — Restate, 2026
+- [Agent Framework: Workflow Core Concepts](https://learn.microsoft.com/en-us/agent-framework/user-guide/workflows/core-concepts/workflows) — Microsoft, learn.microsoft.com, 2026
