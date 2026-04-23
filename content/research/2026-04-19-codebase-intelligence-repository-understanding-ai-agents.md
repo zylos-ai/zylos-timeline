@@ -245,15 +245,15 @@ Despite significant progress, several challenges remain unsolved:
 
 ## References
 
-- CodeCompass: "The Navigation Paradox in Large-Context Agentic Coding" (arXiv:2602.20048, February 2026)
-- Meta Engineering: "How Meta Used AI to Map Tribal Knowledge in Large-Scale Data Pipelines" (engineering.fb.com, April 2026)
-- Augment Code: "Context Engine MCP is Now Available for Any AI Coding Agent" (augmentcode.com, February 2026)
-- Graphify: Open-source knowledge graph skill for AI coding assistants (github.com/safishamsi/graphify)
-- Cursor: "How Cursor Actually Indexes Your Codebase" (Towards Data Science, 2026)
-- JetBrains: "Shadow Tech Debt" and Junie CLI (The New Stack, March 2026)
-- Amazon Science: Keyword search via agentic tool use vs. RAG performance (February 2026)
-- Ox Security: Anti-pattern analysis of 300 AI-generated code repositories (2026)
-- FeatureBench: "Benchmarking Agentic Coding for Complex Feature Development" (arXiv:2602.10975, February 2026)
-- Anthropic: Claude Code architecture and Explore sub-agent documentation (code.claude.com, 2026)
-- Sourcegraph: SCIP Code Intelligence Protocol documentation (github.com/sourcegraph/scip)
-- LanceDB: "Building RAG on Codebases" tutorial series (lancedb.com, 2026)
+- [The Navigation Paradox in Large-Context Agentic Coding](https://arxiv.org/abs/2602.20048) — CodeCompass, arXiv, February 2026
+- [How Meta Used AI to Map Tribal Knowledge in Large-Scale Data Pipelines](https://engineering.fb.com/2026/04/06/developer-tools/how-meta-used-ai-to-map-tribal-knowledge-in-large-scale-data-pipelines/) — Meta Engineering, April 2026
+- [Context Engine MCP is Now Available for Any AI Coding Agent](https://www.augmentcode.com/blog/context-engine-mcp-now-live) — Augment Code, February 2026
+- [Graphify: Open-source knowledge graph skill for AI coding assistants](https://github.com/safishamsi/graphify) — github.com/safishamsi/graphify
+- [How Cursor Actually Indexes Your Codebase](https://towardsdatascience.com/how-cursor-actually-indexes-your-codebase/) — Towards Data Science, 2026
+- [JetBrains Names the Debt AI Agents Leave Behind](https://thenewstack.io/jetbrains-names-the-debt-ai-agents-leave-behind/) — The New Stack, March 2026
+- [Keyword Search is All You Need: Achieving RAG-Level Performance Without Vector Databases Using Agentic Tool Use](https://arxiv.org/abs/2602.23368) — Amazon Science, arXiv, February 2026
+- [The Army of Juniors: The AI Code Security Crisis](https://www.ox.security/resource-category/whitepapers-and-reports/army-of-juniors/) — Ox Security, 2026
+- [FeatureBench: Benchmarking Agentic Coding for Complex Feature Development](https://arxiv.org/abs/2602.10975) — arXiv, February 2026
+- [Claude Code Sub-agents Documentation](https://docs.anthropic.com/en/docs/claude-code/sub-agents) — Anthropic, 2026
+- [SCIP Code Intelligence Protocol](https://github.com/sourcegraph/scip) — Sourcegraph, github.com/sourcegraph/scip
+- [Building RAG on Codebases](https://www.lancedb.com/blog/building-rag-on-codebases-part-1) — LanceDB, 2026
