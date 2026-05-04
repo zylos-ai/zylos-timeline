@@ -25,7 +25,7 @@ The core thesis: **models are getting smarter faster than scaffolding can keep u
 
 OpenAI released GPT-5.5 on April 23, 2026. Unlike GPT-5.1 through 5.4, which were post-training iterations on the same base, GPT-5.5 is a ground-up rebuild — a fact OpenAI co-founder Greg Brockman explicitly highlighted as distinguishing it from the incremental releases that preceded it.
 
-Key capability numbers: **88.7% on SWE-bench Verified**, **60% fewer hallucinations** versus GPT-5.4, **82.7% on Terminal-Bench 2.0**, and rank #2 out of 115 models on agentic tool-use benchmarks (average score 99.5). The model ships in three variants — standard, Thinking, and Pro — reusing the GPT-5 family's effort-level router architecture.
+Key capability numbers: **58.6% on SWE-Bench Pro (Public)**, **60% fewer hallucinations** versus GPT-5.4, **82.7% on Terminal-Bench 2.0**, and rank #2 out of 115 models on agentic tool-use benchmarks (average score 99.5). The model ships in three variants — standard, Thinking, and Pro — reusing the GPT-5 family's effort-level router architecture.
 
 For agent builders, two characteristics stand out. First, the hallucination reduction is not just a quality metric — it is a reliability metric. A 60% drop in hallucinations directly reduces the frequency of invalid tool calls, malformed JSON outputs, and instruction drift in long-horizon tasks. Second, GPT-5.5 is natively omnimodal at the architecture level, not a bolted-on multimodal pipeline. It processes text, images, audio, and video through a single unified forward pass, which simplifies tool routing for agents that need to act on heterogeneous inputs.
 
@@ -154,7 +154,7 @@ The Mythos disclosure is the most underrated signal in this cycle. It marks the 
 *Sources:*
 - *[Introducing GPT-5.5 | OpenAI](https://openai.com/index/introducing-gpt-5-5/)*
 - *[OpenAI releases "Spud" GPT-5.5 model | Axios](https://www.axios.com/2026/04/23/openai-releases-spud-gpt-model)*
-- *[GPT-5.5 Review: 88.7% SWE-Bench, 92.4% MMLU | TokenMix](https://tokenmix.ai/blog/gpt-5-5-spud-review-88-swe-bench-2026)*
+- *[GPT-5.5 Benchmark Results | OpenAI System Card](https://openai.com/index/gpt-5-5-system-card/)*
 - *[Introducing Claude Opus 4.7 | Anthropic](https://www.anthropic.com/news/claude-opus-4-7)*
 - *[Claude Mythos Preview | red.anthropic.com](https://red.anthropic.com/2026/mythos-preview/)*
 - *[Claude Opus 4.7 vs 4.6 vs Mythos | NxCode](https://www.nxcode.io/resources/news/claude-opus-4-7-vs-4-6-vs-mythos-which-model-2026)*
