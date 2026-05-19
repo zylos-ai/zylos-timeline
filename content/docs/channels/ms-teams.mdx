@@ -1,0 +1,291 @@
+---
+title: Microsoft Teams
+description: Connect Zylos to Microsoft Teams for DM, group chat, and channel messaging.
+---
+
+The Microsoft Teams channel connects Zylos to your organization's Teams environment. It supports direct messages, group chats, and Teams channels through the Bot Framework webhook protocol.
+
+**Estimated setup time:** 15 minutes
+
+## Prerequisites
+
+- An Azure account with access to [Azure Portal](https://portal.azure.com) (Entra ID / App Registrations)
+- A Microsoft 365 tenant where the bot will be installed
+- Zylos installed and running on your server
+- A **domain name** with HTTPS pointed at your server (required for Bot Framework webhooks). If you configured a domain during `zylos init`, Caddy automatically handles SSL certificates.
+
+**You do NOT need:**
+- Azure Bot Service resource (direct webhook validation is used)
+- Bot Framework SDK knowledge or Visual Studio
+
+## Step 1: Create an Azure App Registration
+
+1. Go to [Azure Portal](https://portal.azure.com) -> **Microsoft Entra ID** -> **App registrations**
+2. Click **New registration**
+3. Enter a name (e.g., `Zylos`)
+4. Under **Supported account types**, select **Single tenant** (recommended for most organizations)
+5. Leave **Redirect URI** blank -- not needed for bot-only apps
+6. Click **Register**
+
+After registration, note down:
+- **Application (client) ID** -- your bot's unique identifier
+- **Directory (tenant) ID** -- your organization's tenant ID
+
+> **Tip:** Single tenant is recommended for enterprise use. Choose Multitenant only if the bot needs to work across multiple organizations.
+
+## Step 2: Create a Client Secret
+
+1. In your App Registration, go to **Certificates & secrets**
+2. Click **New client secret**
+3. Enter a description (e.g., `zylos-bot-secret`) and select an expiry period
+4. Click **Add**
+5. **Copy the secret value immediately** -- it is only shown once
+
+> **Important:** The secret value is displayed only once after creation. If you lose it, you must create a new secret.
+
+## Step 3: Add Graph API Permissions (Optional but Recommended)
+
+These permissions enable file attachments, chat history context, and user resolution. They are not required for basic messaging but unlock the full feature set.
+
+| Permission | Purpose |
+|------------|---------|
+| `Chat.Read.All` | Read DM and group chat history + attachments |
+| `ChannelMessage.Read.All` | Read channel message history + attachments |
+| `Files.Read.All` | Download files from OneDrive/SharePoint shared links |
+| `User.Read.All` | Resolve user mentions and search users |
+
+**Option A: Bulk import via App Manifest (recommended)**
+
+1. In your App Registration, go to the **Manifest** tab
+2. Find the `"requiredResourceAccess"` array and replace it with:
+
+```json
+"requiredResourceAccess": [
+  {
+    "resourceAppId": "00000003-0000-0000-c000-000000000000",
+    "resourceAccess": [
+      { "id": "6b7d71aa-70aa-4810-a8d9-5d9fb2830017", "type": "Role" },
+      { "id": "7b2449af-571a-4f28-b208-4b8f865d5da6", "type": "Role" },
+      { "id": "01d4f6a5-17f3-4c51-b160-bfc8e3fe57ba", "type": "Role" },
+      { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" }
+    ]
+  }
+]
+```
+
+3. Click **Save** at the top of the Manifest page
+4. Go to **API permissions** and click **Grant admin consent for [your tenant]**
+5. Verify all four permissions show a green checkmark
+
+**Option B: Add permissions one by one**
+
+1. In your App Registration, go to **API permissions**
+2. Click **Add a permission** -> **Microsoft Graph** -> **Application permissions**
+3. Search for and add each permission from the table above
+4. Click **Grant admin consent for [your tenant]**
+
+> **Note:** Admin consent requires tenant admin privileges. If you are not an admin, ask your IT department to grant consent. Basic messaging works without these permissions.
+
+## Step 4: Install the MS Teams Component
+
+In `zylos shell` or any connected channel, tell Zylos:
+
+```
+Add the MS Teams component
+```
+
+Or install manually:
+
+```bash
+zylos add ms-teams
+```
+
+When prompted, provide:
+- **App ID** (Application client ID from Step 1)
+- **App Password** (Client secret from Step 2)
+- **Tenant ID** (Directory tenant ID from Step 1)
+
+## Step 5: Create a Teams App Manifest
+
+Create a file named `manifest.json`:
+
+```json
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "<your App ID>",
+  "developer": {
+    "name": "Your Organization",
+    "websiteUrl": "https://your-domain.com",
+    "privacyUrl": "https://your-domain.com/privacy",
+    "termsOfUseUrl": "https://your-domain.com/terms"
+  },
+  "name": {
+    "short": "Zylos",
+    "full": "Zylos AI Assistant"
+  },
+  "description": {
+    "short": "AI assistant for Teams",
+    "full": "Zylos AI assistant on Microsoft Teams."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "bots": [
+    {
+      "botId": "<your App ID>",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["messageTeamMembers"],
+  "validDomains": []
+}
+```
+
+Replace `<your App ID>` (in both places) with your Application (client) ID from Step 1.
+
+## Step 6: Prepare and Install the App Package
+
+1. Create two icon files:
+   - `color.png` -- 192x192 full-color icon
+   - `outline.png` -- 32x32 transparent outline icon
+2. Place `manifest.json`, `color.png`, and `outline.png` in the same folder
+3. Select all three files and compress into a `.zip` file
+
+**Sideloading (development and testing):**
+
+1. Open Microsoft Teams
+2. Go to **Apps** -> **Manage your apps** -> **Upload a custom app**
+3. Select the `.zip` file
+4. Click **Add** to install for personal use, or **Add to a team** for channel access
+
+**Admin deployment (organization-wide rollout):**
+
+1. Go to [Teams Admin Center](https://admin.teams.microsoft.com)
+2. Navigate to **Teams apps** -> **Manage apps**
+3. Click **Upload new app** and select the `.zip` file
+4. Configure app policies to make it available to your organization
+
+> **Note:** Sideloading requires the "Upload custom apps" policy to be enabled. If you don't see the upload option, contact your Teams admin.
+
+## Step 7: Start Chatting
+
+1. In Teams, search for your bot name (e.g., "Zylos")
+2. Click to start a DM conversation
+3. Send any message -- Zylos will respond
+
+> **First message:** The first user to send a private message to the bot becomes the **Owner**. The owner always has full access regardless of policy settings.
+
+### Adding to Groups and Channels
+
+1. Open a group chat or team channel
+2. Add the bot app to the conversation
+3. @mention the bot to interact with it
+
+## Usage Tips
+
+### Smart Mode vs. Mention Mode
+Groups and channels can operate in two modes:
+- **Mention mode** (default): Bot only responds when @mentioned
+- **Smart mode**: Bot receives all messages and decides when to respond based on context
+
+### Voice Messages
+Send voice messages in Teams -- the bot will transcribe and respond to the audio content automatically (when voice transcription is enabled).
+
+### File and Image Attachments
+- **Sending files to the bot:** Share files in the chat -- the bot can read documents, images, and other attachments
+- **Receiving files from the bot:** The bot sends images inline and can share file references
+
+## Access Control
+
+Similar to other channels, you can configure who can interact with the bot through Zylos or the admin CLI.
+
+### DM Access
+
+| Mode | Behavior |
+|------|----------|
+| `owner` | Only the owner can DM (default) |
+| `allowlist` | Owner + specific users can DM |
+| `open` | Anyone in the tenant can DM |
+
+**Through Zylos:**
+
+```
+Set the Teams DM policy to allowlist
+Add <user_aad_id> to the Teams allowlist
+```
+
+**Through the admin CLI:**
+
+```bash
+zylos-ms-teams set-dm-policy allowlist
+zylos-ms-teams add-dm-allow <user_aad_id>
+zylos-ms-teams set-group-policy allowlist
+```
+
+### Group Access
+
+| Mode | Behavior |
+|------|----------|
+| `disabled` | All group messages are ignored |
+| `allowlist` | Only configured groups are active (default) |
+| `open` | Bot responds to @mentions in any group |
+
+## Features
+
+| Feature | Requires Graph API | Status |
+|---------|-------------------|--------|
+| DM messaging | No | Available |
+| Group/channel messaging | No | Available |
+| @mention detection | No | Available |
+| Image attachments (inbound) | No | Available |
+| File attachments (inbound) | Yes | Available |
+| OneDrive/SharePoint files | Yes | Available |
+| Chat history context | Yes | Available |
+| Voice transcription | No | Available |
+| Proactive messaging | No | Available |
+| Image sending (outbound) | No | Available |
+
+## Troubleshooting
+
+### Bot not responding
+- Verify App ID and App Password are correct in your config
+- Check that the messaging endpoint is reachable from the internet
+- Check the service: `pm2 status zylos-ms-teams`
+- Check logs: `pm2 logs zylos-ms-teams --lines 50`
+
+### "App not found" when searching in Teams
+- Ensure the app manifest was correctly packaged and sideloaded
+- Try fully quitting and relaunching Teams
+
+### 401 errors on file attachments
+- Ensure Graph API permissions are granted with admin consent (Step 3)
+
+### Bot not visible in group/channel
+- The bot must be added to the team or group chat first
+- Use "Add to a team" during installation
+
+## Updating the App
+
+When updating the bot (new icon, new description):
+
+1. Bump the `version` field in `manifest.json`
+2. Re-package the `.zip` file with updated files
+3. In Teams: **Apps** -> **Manage your apps** -> find your app -> **Upload new version**
+4. **Fully quit and relaunch Teams** to clear cached app metadata
+
+## Configuration Reference
+
+| Setting | Location | Description |
+|---------|----------|-------------|
+| `TEAMS_APP_ID` | `~/zylos/.env` | Application (client) ID from Azure |
+| `TEAMS_APP_PASSWORD` | `~/zylos/.env` | Client secret from Azure |
+| `TEAMS_TENANT_ID` | `~/zylos/.env` | Directory (tenant) ID from Azure |
+| Config file | `~/zylos/components/ms-teams/config.json` | Full runtime configuration |
+| PM2 service | `zylos-ms-teams` | Service name for pm2 commands |
+
+The MS Teams component runs a local webhook listener. Caddy reverse-proxies the `/ms-teams/api/messages` path to this internal port, so you don't need to expose it directly.

@@ -1,0 +1,291 @@
+---
+title: Microsoft Teams
+description: 将 Zylos 连接到 Microsoft Teams，支持私信、群聊和频道消息。
+---
+
+Microsoft Teams 渠道将 Zylos 连接到你组织的 Teams 环境。支持私信、群聊和 Teams 频道，通过 Bot Framework Webhook 协议工作。
+
+**预计配置时间：** 15 分钟
+
+## 前提条件
+
+- 拥有 [Azure 门户](https://portal.azure.com) 访问权限的 Azure 账号（Entra ID / 应用注册）
+- 安装机器人的 Microsoft 365 租户
+- 已在服务器上安装并运行的 Zylos
+- 指向你服务器的 **HTTPS 域名**（Bot Framework Webhook 必须）。如果你在 `zylos init` 时配置了域名，Caddy 会自动处理 SSL 证书。
+
+**你不需要：**
+- Azure Bot Service 资源（使用直接 Webhook 验证）
+- Bot Framework SDK 知识或 Visual Studio
+
+## 第一步：创建 Azure 应用注册
+
+1. 前往 [Azure 门户](https://portal.azure.com) -> **Microsoft Entra ID** -> **应用注册**
+2. 点击**新注册**
+3. 输入名称（例如 `Zylos`）
+4. 在**受支持的账户类型**下，选择**单租户**（适用于大多数组织）
+5. **重定向 URI** 留空——纯机器人应用不需要
+6. 点击**注册**
+
+注册后，记下：
+- **应用程序（客户端）ID** -- 机器人的唯一标识符
+- **目录（租户）ID** -- 你的组织租户 ID
+
+> **提示：** 建议企业用户选择单租户。仅在机器人需要跨多个组织工作时才选择多租户。
+
+## 第二步：创建客户端密钥
+
+1. 在应用注册中，前往**证书和密码**
+2. 点击**新客户端密码**
+3. 输入描述（例如 `zylos-bot-secret`）并选择到期时间
+4. 点击**添加**
+5. **立即复制密钥值** -- 它只显示一次
+
+> **重要：** 密钥值在创建后仅显示一次。如果丢失，你必须创建新的密钥。
+
+## 第三步：添加 Graph API 权限（可选但推荐）
+
+这些权限可启用文件附件、聊天历史上下文和用户解析功能。基本消息传递不需要这些权限，但它们可以解锁完整功能集。
+
+| 权限 | 用途 |
+|------|------|
+| `Chat.Read.All` | 读取私信和群聊历史记录 + 附件 |
+| `ChannelMessage.Read.All` | 读取频道消息历史 + 附件 |
+| `Files.Read.All` | 下载 OneDrive/SharePoint 共享链接中的文件 |
+| `User.Read.All` | 解析用户提及和搜索用户 |
+
+**方式 A：通过应用清单批量导入（推荐）**
+
+1. 在应用注册中，前往**清单**标签页
+2. 找到 `"requiredResourceAccess"` 数组，替换为：
+
+```json
+"requiredResourceAccess": [
+  {
+    "resourceAppId": "00000003-0000-0000-c000-000000000000",
+    "resourceAccess": [
+      { "id": "6b7d71aa-70aa-4810-a8d9-5d9fb2830017", "type": "Role" },
+      { "id": "7b2449af-571a-4f28-b208-4b8f865d5da6", "type": "Role" },
+      { "id": "01d4f6a5-17f3-4c51-b160-bfc8e3fe57ba", "type": "Role" },
+      { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" }
+    ]
+  }
+]
+```
+
+3. 点击清单页面顶部的**保存**
+4. 前往 **API 权限**，点击**为 [你的租户] 授予管理员同意**
+5. 验证所有四项权限显示绿色勾号
+
+**方式 B：逐一添加权限**
+
+1. 在应用注册中，前往 **API 权限**
+2. 点击**添加权限** -> **Microsoft Graph** -> **应用程序权限**
+3. 搜索并添加上表中的每项权限
+4. 点击**为 [你的租户] 授予管理员同意**
+
+> **注意：** 管理员同意需要租户管理员权限。如果你不是管理员，请联系 IT 部门授予同意。基本消息传递无需这些权限即可工作。
+
+## 第四步：安装 MS Teams 组件
+
+在 `zylos shell` 或任意已连接的渠道中，告诉 Zylos：
+
+```
+Add the MS Teams component
+```
+
+或手动安装：
+
+```bash
+zylos add ms-teams
+```
+
+当提示时，提供：
+- **App ID**（第一步中的应用程序客户端 ID）
+- **App Password**（第二步中的客户端密钥）
+- **Tenant ID**（第一步中的目录租户 ID）
+
+## 第五步：创建 Teams 应用清单
+
+创建名为 `manifest.json` 的文件：
+
+```json
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "<你的 App ID>",
+  "developer": {
+    "name": "你的组织",
+    "websiteUrl": "https://your-domain.com",
+    "privacyUrl": "https://your-domain.com/privacy",
+    "termsOfUseUrl": "https://your-domain.com/terms"
+  },
+  "name": {
+    "short": "Zylos",
+    "full": "Zylos AI 助手"
+  },
+  "description": {
+    "short": "Teams AI 助手",
+    "full": "Zylos AI 助手 -- 你在 Microsoft Teams 上的 AI 助理。"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "bots": [
+    {
+      "botId": "<你的 App ID>",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["messageTeamMembers"],
+  "validDomains": []
+}
+```
+
+将 `<你的 App ID>`（两处）替换为第一步中的应用程序（客户端）ID。
+
+## 第六步：准备并安装应用包
+
+1. 创建两个图标文件：
+   - `color.png` -- 192x192 全彩图标
+   - `outline.png` -- 32x32 透明轮廓图标
+2. 将 `manifest.json`、`color.png` 和 `outline.png` 放在同一文件夹
+3. 选中三个文件，压缩为 `.zip` 文件
+
+**旁加载（开发和测试）：**
+
+1. 打开 Microsoft Teams
+2. 前往**应用** -> **管理你的应用** -> **上传自定义应用**
+3. 选择 `.zip` 文件
+4. 点击**添加**用于个人使用，或**添加到团队**用于频道访问
+
+**管理员部署（全组织推送）：**
+
+1. 前往 [Teams 管理中心](https://admin.teams.microsoft.com)
+2. 导航到 **Teams 应用** -> **管理应用**
+3. 点击**上传新应用**并选择 `.zip` 文件
+4. 配置应用策略，使其对组织可用
+
+> **注意：** 旁加载需要启用"上传自定义应用"策略。如果看不到上传选项，请联系 Teams 管理员。
+
+## 第七步：开始聊天
+
+1. 在 Teams 中搜索你的机器人名称（例如"Zylos"）
+2. 点击开始私信对话
+3. 发送任意消息——Zylos 将会回复
+
+> **首条消息：** 第一个向机器人发送私信的用户将成为 **Owner（所有者）**。所有者始终拥有完整访问权限，不受策略设置限制。
+
+### 添加到群组和频道
+
+1. 打开群聊或团队频道
+2. 将机器人应用添加到对话中
+3. @提及机器人即可与之互动
+
+## 使用提示
+
+### 智能模式与提及模式
+群组和频道可以两种模式运行：
+- **提及模式**（默认）：仅在 @提及时机器人才回复
+- **智能模式**：机器人接收所有消息，根据上下文决定何时回复
+
+### 语音消息
+在 Teams 中发送语音消息——机器人将自动转录并回复音频内容（需启用语音转录功能）。
+
+### 文件和图片附件
+- **发送文件给机器人：** 在聊天中分享文件——机器人可以读取文档、图片和其他附件
+- **接收机器人的文件：** 机器人以内联方式发送图片，也可以分享文件引用
+
+## 访问控制
+
+与其他渠道类似，你可以通过 Zylos 或管理 CLI 配置机器人的交互权限。
+
+### 私信访问
+
+| 模式 | 行为 |
+|------|------|
+| `owner` | 仅所有者可以私信（默认） |
+| `allowlist` | 所有者 + 指定用户可以私信 |
+| `open` | 租户内任何人可以私信 |
+
+**通过 Zylos：**
+
+```
+Set the Teams DM policy to allowlist
+Add <user_aad_id> to the Teams allowlist
+```
+
+**通过管理 CLI：**
+
+```bash
+zylos-ms-teams set-dm-policy allowlist
+zylos-ms-teams add-dm-allow <user_aad_id>
+zylos-ms-teams set-group-policy allowlist
+```
+
+### 群组访问
+
+| 模式 | 行为 |
+|------|------|
+| `disabled` | 忽略所有群组消息 |
+| `allowlist` | 仅配置的群组可用（默认） |
+| `open` | 机器人在任何群组中响应 @提及 |
+
+## 功能
+
+| 功能 | 需要 Graph API | 状态 |
+|------|---------------|------|
+| 私信 | 否 | 可用 |
+| 群聊/频道消息 | 否 | 可用 |
+| @提及检测 | 否 | 可用 |
+| 图片附件（接收） | 否 | 可用 |
+| 文件附件（接收） | 是 | 可用 |
+| OneDrive/SharePoint 文件 | 是 | 可用 |
+| 聊天历史上下文 | 是 | 可用 |
+| 语音转录 | 否 | 可用 |
+| 主动消息 | 否 | 可用 |
+| 图片发送（发出） | 否 | 可用 |
+
+## 故障排查
+
+### 机器人不响应
+- 验证配置中的 App ID 和 App Password 是否正确
+- 检查消息端点是否可从公网访问
+- 检查服务：`pm2 status zylos-ms-teams`
+- 查看日志：`pm2 logs zylos-ms-teams --lines 50`
+
+### 在 Teams 中搜索不到应用
+- 确保应用清单已正确打包并旁加载
+- 尝试完全退出并重启 Teams
+
+### 文件附件出现 401 错误
+- 确保已授予 Graph API 权限并获得管理员同意（第三步）
+
+### 机器人在群组/频道中不可见
+- 机器人必须先添加到团队或群聊中
+- 安装时使用"添加到团队"
+
+## 更新应用
+
+更新机器人时（新图标、新描述）：
+
+1. 在 `manifest.json` 中更新 `version` 字段
+2. 使用更新的文件重新打包 `.zip` 文件
+3. 在 Teams 中：**应用** -> **管理你的应用** -> 找到你的应用 -> **上传新版本**
+4. **完全退出并重启 Teams** 以清除缓存的应用元数据
+
+## 配置参考
+
+| 配置项 | 位置 | 说明 |
+|--------|------|------|
+| `TEAMS_APP_ID` | `~/zylos/.env` | Azure 中的应用程序（客户端）ID |
+| `TEAMS_APP_PASSWORD` | `~/zylos/.env` | Azure 中的客户端密钥 |
+| `TEAMS_TENANT_ID` | `~/zylos/.env` | Azure 中的目录（租户）ID |
+| 配置文件 | `~/zylos/components/ms-teams/config.json` | 完整运行时配置 |
+| PM2 服务 | `zylos-ms-teams` | PM2 命令中使用的服务名称 |
+
+MS Teams 组件运行本地 Webhook 监听器。Caddy 将 `/ms-teams/api/messages` 路径反向代理到这个内部端口，无需直接暴露。
