@@ -39,11 +39,14 @@ Microsoft Teams 渠道通过 Bot Framework 将 Zylos 连接到 Microsoft Teams�
 
 > 密钥值在创建后仅显示一次。如果丢失，你必须创建新的密钥。
 
-## 第三步：添加 Graph API 权限（可选）
+## 第三步：添加 Graph API 权限（可选但推荐）
 
-这些权限可启用文件附件、聊天历史上下文和用户解析功能。基本消息传递不需要这些权限，但它们可以解锁完整功能集。
+Graph API 权限可解锁完整功能集。分为两种类型：
 
-**通过应用清单批量导入（推荐）：**
+- **应用程序权限** — 机器人作为服务运行（无需用户登录）。启用聊天历史、文件下载和用户解析。
+- **委托权限** — 机器人代表已登录用户执行操作。用于反应（💬 思考指示器）、群聊/频道图片下载和通过 Graph 发送频道消息。
+
+### 应用程序权限
 
 1. 在应用注册中，前往**清单**标签页
 2. 找到 `"requiredResourceAccess"` 数组，替换为：
@@ -56,7 +59,13 @@ Microsoft Teams 渠道通过 Bot Framework 将 Zylos 连接到 Microsoft Teams�
       { "id": "6b7d71aa-70aa-4810-a8d9-5d9fb2830017", "type": "Role" },
       { "id": "7b2449af-571a-4f28-b208-4b8f865d5da6", "type": "Role" },
       { "id": "01d4f6a5-17f3-4c51-b160-bfc8e3fe57ba", "type": "Role" },
-      { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" }
+      { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" },
+      { "id": "6b7d71aa-70aa-4810-a8d9-5d9fb2830017", "type": "Scope" },
+      { "id": "7b2449af-571a-4f28-b208-4b8f865d5da6", "type": "Scope" },
+      { "id": "01d4f6a5-17f3-4c51-b160-bfc8e3fe57ba", "type": "Scope" },
+      { "id": "b9bb2381-47a4-46cd-aafb-00cb12f68504", "type": "Scope" },
+      { "id": "116b7235-7cc6-461e-b163-8e55691d839e", "type": "Scope" },
+      { "id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope" }
     ]
   }
 ]
@@ -66,14 +75,30 @@ Microsoft Teams 渠道通过 Bot Framework 将 Zylos 连接到 Microsoft Teams�
 4. 前往 **API 权限**，点击**为 [你的租户] 授予管理员同意**
 5. 验证所有权限显示绿色勾号
 
-| 权限 GUID | 权限 | 用途 |
-|-----------|------|------|
-| `6b7d71aa...` | `Chat.Read.All` | 读取私信和群聊历史 |
-| `7b2449af...` | `ChannelMessage.Read.All` | 读取频道消息历史 |
-| `01d4f6a5...` | `Files.Read.All` | 下载 OneDrive/SharePoint 文件 |
-| `df021288...` | `User.Read.All` | 解析用户提及 |
+| 权限 | 类型 | 用途 |
+|------|------|------|
+| `Chat.Read.All` | 应用程序 | 读取私信和群聊历史 |
+| `ChannelMessage.Read.All` | 应用程序 | 读取频道消息历史 |
+| `Files.Read.All` | 应用程序 | 下载 OneDrive/SharePoint 文件 |
+| `User.Read.All` | 应用程序 | 解析用户提及 |
+| `Chat.ReadWrite` | 委托 | 发送反应（💬 思考指示器） |
+| `ChannelMessage.Send` | 委托 | 在频道中发送反应 |
+| `ChannelMessage.Read.All` | 委托 | 从频道下载图片/文件 |
+| `Files.Read.All` | 委托 | 代表用户下载共享文件 |
+| `offline_access` | 委托 | 通过刷新令牌保持委托授权 |
 
 > 管理员同意需要租户管理员权限。如果你不是管理员，请联系 IT 部门授予同意。
+
+### 委托授权设置
+
+委托权限需要机器人所有者进行一次性 OAuth 登录。安装完成后：
+
+1. 告诉 Zylos：`Set up Teams delegated auth`
+2. Zylos 生成 Microsoft 登录 URL——在浏览器中打开
+3. 使用你的 Microsoft 账号登录并授予请求的权限
+4. 授权后，机器人存储刷新令牌并保持自动认证
+
+这将启用反应（处理消息时的 💬 思考指示器）以及群聊和频道中的图片/文件下载功能。
 
 ## 第四步：安装 Microsoft Teams 组件
 
@@ -220,18 +245,20 @@ $ADM set-group-mode <conversation_id> mention|smart
 
 ## 功能
 
-| 功能 | 需要 Graph API | 状态 |
-|------|---------------|------|
-| 私信 | 否 | 可用 |
-| 群聊/频道消息 | 否 | 可用 |
-| @提及检测 | 否 | 可用 |
-| 图片附件（接收） | 否 | 可用 |
-| 文件附件（接收） | 是 | 可用 |
-| OneDrive/SharePoint 文件 | 是 | 可用 |
-| 聊天历史上下文 | 是 | 可用 |
-| 语音转录 | 否 | 可用 |
-| 主动消息 | 否 | 可用 |
-| 图片发送（发出） | 否 | 可用 |
+| 功能 | 需要 | 状态 |
+|------|------|------|
+| 私信 | — | 可用 |
+| 群聊/频道消息 | — | 可用 |
+| @提及检测 | — | 可用 |
+| 图片附件（私信） | — | 可用 |
+| 图片附件（群聊/频道） | 委托 | 可用 |
+| 文件附件（接收） | 应用程序 | 可用 |
+| OneDrive/SharePoint 文件 | 应用程序 | 可用 |
+| 聊天历史上下文 | 应用程序 | 可用 |
+| 反应（💬 思考指示器） | 委托 | 可用 |
+| 语音转录 | — | 可用 |
+| 主动消息 | — | 可用 |
+| 图片发送（发出） | — | 可用 |
 
 ## 故障排查
 
