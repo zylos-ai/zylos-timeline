@@ -1,5 +1,5 @@
 {
   "title": "通信渠道",
   "defaultOpen": true,
-  "pages": ["index", "web-console", "telegram", "lark", "hxa-connect"]
+  "pages": ["index", "web-console", "telegram", "lark", "ms-teams", "hxa-connect"]
 }
