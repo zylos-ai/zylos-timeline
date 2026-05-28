@@ -3,7 +3,12 @@ import createNextIntlPlugin from 'next-intl/plugin';
 
 /** @type {import('next').NextConfig} */
 const config = {
+  output: 'export',
   reactStrictMode: true,
+  trailingSlash: true,
+  images: {
+    unoptimized: true,
+  },
 };
 
 const withMDX = createMDX();

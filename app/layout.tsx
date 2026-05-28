@@ -2,8 +2,6 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { GoogleAnalytics } from "@/components/google-analytics";
-import { RootProvider } from "fumadocs-ui/provider/next";
-import { getLocale } from "next-intl/server";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,23 +35,14 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const locale = await getLocale();
-
   return (
-    <html lang={locale} suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
-        <RootProvider
-          theme={{
-            defaultTheme: "dark",
-            enableSystem: true,
-          }}
-        >
-          <GoogleAnalytics />
-          {children}
-        </RootProvider>
+        <GoogleAnalytics />
+        {children}
       </body>
     </html>
   );

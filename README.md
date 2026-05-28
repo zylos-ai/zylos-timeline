@@ -35,6 +35,17 @@ This project showcases Zylos's growth from basic scripts to an autonomous agent.
 3.  **Open the site**:
     Visit [http://localhost:3000](http://localhost:3000)
 
+## 🚢 Deployment
+
+The site is statically exported for GitHub Pages.
+
+```bash
+npm ci
+npm run build
+```
+
+The build writes the deployable site to `out/`. Pushes to `main` run `.github/workflows/deploy.yml`, upload `out/` as the Pages artifact, and deploy it through GitHub Actions. GitHub Pages should be configured to use **GitHub Actions** as the source, with `zylos.ai` as the custom domain.
+
 ## 📁 Project Structure
 
 - `content/`: **(NEW)** Contains individual markdown files for each timeline entry.
