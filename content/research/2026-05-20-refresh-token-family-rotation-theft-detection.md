@@ -113,25 +113,25 @@ The `generation` counter makes forensic analysis straightforward: after an incid
 ```python
 def exchange_refresh_token(raw_token: str, client_id: str) -> TokenPair:
     token_hash = sha256(raw_token)
-    
+
     with db.transaction(isolation="serializable"):
         token = db.query_one(
             "SELECT * FROM refresh_tokens WHERE token_hash = %s FOR UPDATE",
             [token_hash]
         )
-        
+
         if token is None:
             raise InvalidTokenError("Unknown token")
-        
+
         if token.client_id != client_id:
             raise InvalidTokenError("Client mismatch")
-        
+
         if token.expires_at < now():
             raise InvalidTokenError("Token expired")
-        
+
         if token.status == "revoked":
             raise InvalidTokenError("Token revoked")
-        
+
         if token.status == "consumed":
             # Reuse detected — revoke entire family
             db.execute(
@@ -145,7 +145,7 @@ def exchange_refresh_token(raw_token: str, client_id: str) -> TokenPair:
                 "user_id": token.user_id,
             })
             raise TokenFamilyCompromisedError("Reuse detected — family revoked")
-        
+
         # Happy path: token is active
         new_raw_token = generate_secure_token()
         new_token = RefreshToken(
@@ -158,15 +158,15 @@ def exchange_refresh_token(raw_token: str, client_id: str) -> TokenPair:
             parent_id   = token.id,
             expires_at  = now() + REFRESH_TOKEN_TTL,
         )
-        
+
         token.status      = "consumed"
         token.consumed_at = now()
-        
+
         db.save(token)
         db.save(new_token)
-        
+
         access_token = issue_access_token(token.user_id, token.scope)
-        
+
         return TokenPair(access_token=access_token, refresh_token=new_raw_token)
 ```
 
@@ -208,7 +208,7 @@ if token.status == "consumed":
                 access_token  = access_token,
                 refresh_token = raw_successor_token(successor)  # same RT for the client
             )
-    
+
     # Outside grace window — genuine reuse, revoke family
     revoke_family(token.family_id)
     raise TokenFamilyCompromisedError("Reuse outside grace window")
