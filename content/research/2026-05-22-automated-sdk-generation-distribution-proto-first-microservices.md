@@ -118,7 +118,7 @@ publish:npm:
     - cd gen/ts
     - npm version ${CI_COMMIT_TAG#v} --no-git-tag-version
     - npm publish --registry https://registry.npmjs.org
-    
+
 publish:pypi:
   stage: publish
   rules:
