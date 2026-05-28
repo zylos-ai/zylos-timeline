@@ -24,7 +24,7 @@ Migrate zylos-timeline hosting from Vercel to GitHub Pages. Convert Next.js to s
 ### Phase 1: Static Export (resolve build blockers)
 
 - [ ] Add `output: 'export'` and `images: { unoptimized: true }` to `next.config.mjs`
-- [ ] **Fix root layout i18n blocker**: `app/layout.tsx` imports `getLocale` from `next-intl/server` and calls `await getLocale()` — this triggers `headers()` which blocks static export. Remove `getLocale()` from root layout; locale is already handled by `[locale]/layout.tsx` via `setRequestLocale()` + `generateStaticParams()`. Root `<html lang>` can use a hardcoded default or be moved into `[locale]/layout.tsx`.
+- [ ] **Fix root layout i18n blocker**: `app/layout.tsx` imports `getLocale` from `next-intl/server` and calls `await getLocale()` — this triggers `headers()` which blocks static export. Remove `getLocale()` from root layout; locale is already handled by `[locale]/layout.tsx` via `setRequestLocale()` + `generateStaticParams()`. Root layout keeps `<html>`/`<body>` ownership with a static default `<html lang="en">`; locale-specific provider/messages stay in `[locale]/layout.tsx`.
 - [ ] **Fix sitemap blocker**: `app/sitemap.ts` is a dynamic metadata route. Either add `export const dynamic = 'force-static'` and verify `out/sitemap.xml` is generated, or convert to a build script that generates `public/sitemap.xml`. Sitemap should include both default and zh locale URLs.
 - [ ] **Fix robots blocker**: `app/robots.ts` same issue. Add `export const dynamic = 'force-static'` or convert to static `public/robots.txt`.
 - [ ] Remove `app/api/search/route.ts` (incompatible with static export)
