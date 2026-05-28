@@ -85,9 +85,9 @@ Google never open-sourced Zanzibar itself, but the 2019 paper spawned a generati
 
 ### SpiceDB
 
-**Maintainer:** AuthZed (raised $26M Series A)  
-**License:** Apache 2.0  
-**Storage backends:** PostgreSQL, CockroachDB, MySQL, Spanner, etcd  
+- **Maintainer:** AuthZed (raised $26M Series A)
+- **License:** Apache 2.0
+- **Storage backends:** PostgreSQL, CockroachDB, MySQL, Spanner, etcd
 
 SpiceDB is the most faithful Zanzibar implementation. Its schema language (`.zed`) closely mirrors Zanzibar's namespace configuration syntax. Key distinguishing features:
 
@@ -98,9 +98,9 @@ SpiceDB is the most faithful Zanzibar implementation. Its schema language (`.zed
 
 ### OpenFGA
 
-**Maintainer:** Auth0 / Okta (CNCF Sandbox project)  
-**License:** Apache 2.0  
-**Storage backends:** PostgreSQL, MySQL, SQLite (dev), in-memory  
+- **Maintainer:** Auth0 / Okta (CNCF Sandbox project)
+- **License:** Apache 2.0
+- **Storage backends:** PostgreSQL, MySQL, SQLite (dev), in-memory
 
 OpenFGA takes a more developer-ergonomic approach. Its authorization model is expressed in JSON DSL and the API surface is designed to integrate easily into existing Auth0 workflows.
 
@@ -113,9 +113,9 @@ OpenFGA has the broadest language SDK support (Go, Java, .NET, Python, JavaScrip
 
 ### Ory Keto
 
-**Maintainer:** Ory (open source identity stack)  
-**License:** Apache 2.0  
-**Storage backends:** PostgreSQL, MySQL, SQLite, CockroachDB  
+- **Maintainer:** Ory (open source identity stack)
+- **License:** Apache 2.0
+- **Storage backends:** PostgreSQL, MySQL, SQLite, CockroachDB
 
 Keto is simpler and more opinionated. It focuses on the core Zanzibar tuple store and check/list APIs, integrating tightly with Ory Kratos (identity management) and Ory Oathkeeper (API gateway proxy). Teams running the full Ory stack get seamless integration; teams not using Ory will find Keto's limited schema language and weaker consistency guarantees (it relies on the underlying database, not a purpose-built consistency model) to be limiting at scale.
 
@@ -123,9 +123,9 @@ Keto's sweet spot is smaller applications where operational simplicity outweighs
 
 ### Permify
 
-**Maintainer:** Permify (YC W23)  
-**License:** AGPL-3.0 (core) / commercial  
-**Storage backends:** PostgreSQL, MySQL, Memory  
+- **Maintainer:** Permify (YC W23)
+- **License:** AGPL-3.0 (core) / commercial
+- **Storage backends:** PostgreSQL, MySQL, Memory
 
 Permify targets developer experience and rapid iteration. Its YAML-based schema is more accessible than SpiceDB's `.zed` syntax. Notable features include a visual playground for modeling and testing permissions interactively, built-in data filtering (lookup queries at the application level), and OpenTelemetry integration out of the box.
 
