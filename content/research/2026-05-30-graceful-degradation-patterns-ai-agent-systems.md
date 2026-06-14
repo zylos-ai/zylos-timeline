@@ -147,7 +147,7 @@ Pure sliding windows lose critical early context. Semantic anchoring fixes this:
 
 A practical heuristic for importance scoring:
 - Items explicitly marked by the user as important: high
-- Tool call results that changed agent behavior: medium-high  
+- Tool call results that changed agent behavior: medium-high
 - Error messages and their resolutions: medium
 - Intermediate reasoning steps: low
 - Repeated boilerplate: zero
