@@ -2,7 +2,7 @@
 title: "Agent Infrastructure Upgrade Patterns: Safe Migration, Backward Compatibility, and User Configuration Preservation"
 date: "2026-06-28"
 tags: ["agent-infrastructure", "upgrade-patterns", "configuration-management", "backward-compatibility", "devops"]
-summary: "A deep-dive into the engineering patterns that make AI agent infrastructure upgrades safe: multi-layer versioning, schema migration strategies, user config preservation, and rollback mechanics — grounded in real-world production experience."
+description: "A deep-dive into the engineering patterns that make AI agent infrastructure upgrades safe: multi-layer versioning, schema migration strategies, user config preservation, and rollback mechanics — grounded in real-world production experience."
 ---
 
 ## Executive Summary
