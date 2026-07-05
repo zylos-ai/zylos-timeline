@@ -25,7 +25,8 @@ co-authored by Claude Code leaking secrets at more than double the human-only ba
 The security industry's response has crystallized around a few concrete moves: OWASP shipped a
 dedicated **Non-Human Identities Top 10** (January 2025); a wave of vendors (Astrix, Oasis Security,
 Entro, Aembit, Natoma) built products specifically for NHI discovery, lifecycle, and brokered auth;
-Microsoft shipped **Entra Agent ID** (preview May 2025, expanded GA at Ignite November 2025) as
+Microsoft shipped **Entra Agent ID** (preview May 2025, expanded public preview at Ignite
+November 2025, generally available April 2026) as
 first-class IAM for agents; Google, Anthropic, and others extended workload identity federation so
 agents authenticate via short-lived, federated tokens instead of static keys; and the IETF began
 drafting agent-specific extensions to OAuth (token exchange, WIMSE, agentic JWTs) to handle
@@ -257,9 +258,10 @@ The hardest governance problem in this space is not agent-to-service auth — it
   grants, and **delete delegation entries the moment a purpose (e.g., a migration tool) is
   complete** rather than leaving them provisioned "just in case" — advice that maps precisely onto
   why leftover custodial grants from decommissioned tools are a recurring source of audit findings.
-- **Microsoft Entra Agent ID.** Announced in preview at Microsoft Build in May 2025 and expanded to
-  public preview at Ignite in November 2025, Entra Agent ID gives AI agents first-class identity
-  objects inside Entra — the same Zero Trust machinery (Conditional Access, real-time risk
+- **Microsoft Entra Agent ID.** Announced in preview at Microsoft Build in May 2025, expanded to
+  public preview at Ignite in November 2025, and generally available since April 2026, Entra Agent
+  ID gives AI agents first-class identity objects inside Entra — the same Zero Trust machinery
+  (Conditional Access, real-time risk
   detection, lifecycle management) applied to human and workload identities now applies to agents,
   using standard protocols (OAuth 2.0, MCP, A2A). Its **Agent Registry** is the notable governance
   primitive: an extensible metadata repository giving a unified inventory view of every agent
@@ -324,8 +326,9 @@ The standards landscape is moving fast and is only partially settled as of mid-2
   2.1 client, and clients must implement **RFC 8707 Resource Indicators** (a `resource` parameter
   identifying the target MCP server) in both authorization and token requests. A large MCP spec
   revision — described as the biggest since the protocol's launch, aligning authorization more
-  closely with mainstream OAuth/OIDC deployments — was in release-candidate form as of late July
-  2026, with client registration favoring OAuth Client ID Metadata Documents over the
+  closely with mainstream OAuth/OIDC deployments — was published as a release candidate on May 21,
+  2026, with the final specification planned for July 28, 2026, and with client registration
+  favoring OAuth Client ID Metadata Documents over the
   now-deprecated-for-this-purpose Dynamic Client Registration (RFC 7591). GitGuardian separately
   found 24,008 unique secrets exposed specifically in MCP configuration files in its 2026 dataset —
   a reminder that a protocol-level auth model doesn't prevent credential leakage if implementers
@@ -468,6 +471,7 @@ autonomous agent instances:
 - [Microsoft Learn — What is Microsoft Entra Agent ID?](https://learn.microsoft.com/en-us/entra/agent-id/what-is-microsoft-entra-agent-id)
 - [Microsoft Tech Community — Announcing Microsoft Entra Agent ID](https://techcommunity.microsoft.com/blog/microsoft-entra-blog/announcing-microsoft-entra-agent-id-secure-and-manage-your-ai-agents/3827392)
 - [Microsoft Learn — Entra Ignite 2025 key announcements](https://learn.microsoft.com/en-us/entra/fundamentals/whats-new-ignite-2025)
+- [Microsoft Learn — Microsoft Entra releases and announcements (Agent ID platform GA, April 2026)](https://learn.microsoft.com/en-us/entra/fundamentals/whats-new)
 - [Hunters Security — DeleFriend: design flaw in Domain-Wide Delegation](https://www.hunters.security/en/blog/delefriend-a-newly-discovered-design-flaw-in-domain-wide-delegation-could-leave-google-workspace-vulnerable-for-takeover)
 - [Palo Alto Unit 42 — Critical risk in Google Workspace's Domain-Wide Delegation](https://unit42.paloaltonetworks.com/critical-risk-in-google-workspace-delegation-feature/)
 - [Google Workspace Admin Help — Domain-wide delegation best practices](https://knowledge.workspace.google.com/admin/apps/domain-wide-delegation-best-practices)
@@ -490,6 +494,6 @@ A few figures in this article could not be independently confirmed against a pri
 should be treated as reported-but-unconfirmed:
 
 - The **Cisco–Astrix deal value** (reported between $250M–$400M across outlets) is based on press reporting; neither company had confirmed exact deal terms in the sources reviewed.
-- The **MCP 2026-07-28 specification** was described as a release candidate as of the search date (July 2026) — its "largest revision since launch" framing and final publication date should be treated as pending until the spec is finalized.
+- The **MCP 2026-07-28 specification** was published as a release candidate on May 21, 2026, with the final version planned for July 28, 2026 — still upcoming as of this article's date, so its "largest revision since launch" framing and final content should be treated as pending until the spec is finalized.
 - The specific **IETF draft names (AIMS, WIMSE Dual-Identity Credential, Agentic JWT, SCIM for agents)** came from secondary summaries of early-2026 Internet-Drafts rather than a direct read of the draft text; treat the framing of what each draft "proposes" as a paraphrase of search-result summaries, not a verified reading of the drafts themselves.
 - **IDC's "1.3 billion AI agents by 2028"** and the **45:1 / 100:1 machine-to-human identity ratio** are widely cited across vendor content in the sources reviewed but trace back to vendor/analyst marketing materials rather than a single verifiable primary report.
