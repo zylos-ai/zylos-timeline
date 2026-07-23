@@ -34,29 +34,29 @@ These units are incommensurable. A token is not a vCPU-second. A search API call
 
 ### Anthropic Claude Agent SDK
 
-The Claude Agent SDK exposes token usage at three granularities: per-step (each assistant message, keyed by message ID), per-model (a `model_usage` map on the result — critical for mixed-model setups where sub-agents run Haiku while the orchestrator runs Opus), and per-`query()` cumulative total (`total_cost_usd`). Anthropic explicitly warns that these are client-side estimates: "The `total_cost_usd` and `costUSD` fields are client-side estimates, not authoritative billing data... Do not bill end users or trigger financial decisions from these fields." Authoritative billing requires the separate Usage and Cost API.
+The Claude Agent SDK exposes token usage at three granularities: per-step (each assistant message, keyed by message ID), per-model (a `model_usage` map on the result — critical for mixed-model setups where sub-agents run Haiku while the orchestrator runs Opus), and per-`query()` cumulative total (`total_cost_usd`). Anthropic explicitly warns that these are client-side estimates: "The `total_cost_usd` and `costUSD` fields are client-side estimates, not authoritative billing data... Do not bill end users or trigger financial decisions from these fields." Authoritative billing requires the separate Usage and Cost API. (Source: [Anthropic, "Track cost and usage"](https://code.claude.com/docs/en/agent-sdk/cost-tracking), verified mid-2026 — the same page also notes `total_cost_usd` and `model_usage` *do* roll up subagent activity, while the plain `usage` field does not.)
 
-A notable architectural gap: per-subagent attribution is unsupported. A GitHub feature request for per-subagent token metrics in Claude Code (issue #22625) was closed as "not planned," indicating that granular sub-agent chargeback is not on the near-term roadmap. Sessions spanning multiple `query()` calls are not auto-summed — developers must accumulate manually.
+A notable architectural gap: per-subagent chargeback tooling is unsupported out of the box. A GitHub feature request for per-subagent token metrics in Claude Code ([issue #22625](https://github.com/anthropics/claude-code/issues/22625)) was closed as "not planned," suggesting granular sub-agent usage breakdowns are not an immediate roadmap priority — though as noted above, the SDK's cost totals already include subagent spend, so the gap is specifically about a *breakdown by subagent*, not about subagent costs being invisible. Sessions spanning multiple `query()` calls are not auto-summed — developers must accumulate manually.
 
 ### OpenAI Agents SDK
 
-Usage is aggregated across all model calls in a run, including tool calls and handoffs, via `result.context_wrapper.usage`. A `request_usage_entries` list provides per-API-request granularity. Both multi-agent patterns — "handoffs" (full control transfer between agents) and "agents-as-tools" (orchestrator retains control) — roll usage up to the parent run context. This means you get a total for the run, but drilling into "how much did sub-agent B cost within this run" requires correlating individual request entries with agent identifiers manually.
+Usage is aggregated across all model calls in a run, including tool calls and handoffs, via `result.context_wrapper.usage`. A `request_usage_entries` list provides per-API-request granularity. ([OpenAI, "Usage — OpenAI Agents SDK"](https://openai.github.io/openai-agents-python/usage/), verified mid-2026.) Both multi-agent patterns — "handoffs" (full control transfer between agents) and "agents-as-tools" (orchestrator retains control) — appear, based on this documentation, to roll usage up to the parent run context. This means you get a total for the run, but drilling into "how much did sub-agent B cost within this run" requires correlating individual request entries with agent identifiers manually.
 
 ### AG2 (formerly AutoGen)
 
-AG2's `OpenAIWrapper` tracks cost and tokens per call, with `Agent.print_usage_summary()` and `get_actual_usage()` providing per-agent and total breakdowns. OpenTelemetry integration allows span-level tracking. Among the open frameworks surveyed, AG2 comes closest to native per-agent cost attribution — though it still requires the developer to wire up the aggregation logic for multi-level delegation chains.
+AG2's `OpenAIWrapper` tracks cost and tokens per call, with `Agent.print_usage_summary()` and `get_actual_usage()` providing per-agent and total breakdowns ([AG2 docs, "Usage tracking with AG2"](https://docs.ag2.ai/0.8.7/docs/use-cases/notebooks/notebooks/agentchat_cost_token_tracking/), verified mid-2026). OpenTelemetry integration reportedly allows span-level tracking. Among the open frameworks surveyed, AG2 appears to come closest to native per-agent cost attribution — though it still requires the developer to wire up the aggregation logic for multi-level delegation chains.
 
 ### Amazon Bedrock Agents
 
-Bedrock offers the most mature chargeback (not just observability) story. It supports cost-allocation tags on agents and aliases, IAM-principal-based cost attribution that automatically assigns inference cost to the calling identity, "Bedrock Projects" for per-application cost grouping, and application inference profiles carrying tenant tags (TenantID, business-unit) for proportional chargeback. This is architecturally distinct from token-counting approaches — it piggybacks on AWS's existing IAM and cost-allocation infrastructure, treating agent cost as a special case of cloud resource cost rather than inventing a new metering primitive.
+Bedrock offers what appears, among the platforms surveyed, to be the most mature chargeback (not just observability) story. It supports cost-allocation tags on agents and aliases, IAM-principal-based cost attribution that automatically assigns inference cost to the calling identity ([AWS ML Blog, "Introducing granular cost attribution for Amazon Bedrock"](https://aws.amazon.com/blogs/machine-learning/introducing-granular-cost-attribution-for-amazon-bedrock/), verified mid-2026), "Bedrock Projects" for per-application cost grouping ([AWS Bedrock docs, "Projects"](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html), verified mid-2026 — note this feature is scoped to the `bedrock-mantle` endpoint and delivers daily-granularity aggregated cost, not per-request detail), and application inference profiles carrying tenant tags (TenantID, business-unit) for proportional chargeback ([AWS ML Blog, "Manage multi-tenant Amazon Bedrock costs using application inference profiles"](https://aws.amazon.com/blogs/machine-learning/manage-multi-tenant-amazon-bedrock-costs-using-application-inference-profiles/), verified mid-2026). This is architecturally distinct from token-counting approaches — it piggybacks on AWS's existing IAM and cost-allocation infrastructure, treating agent cost as a special case of cloud resource cost rather than inventing a new metering primitive.
 
 ### LangSmith and LangGraph
 
-LangSmith attributes token usage, latency, and cost down to individual spans and tool calls via nested trace visualization. It aggregates costs across the full agent workflow, including retrieval, tool execution, and downstream API spend — making it one of the more complete observability solutions, though it remains an observability layer rather than a billing or enforcement system.
+LangSmith attributes token usage, latency, and cost down to individual spans and tool calls via nested trace visualization, and aggregates costs across the full agent workflow, including retrieval, tool execution, and downstream API spend ([LangChain docs, "Cost tracking"](https://docs.langchain.com/langsmith/cost-tracking), verified mid-2026). This makes it, in our assessment, one of the more complete observability solutions surveyed — though it remains an observability layer rather than a billing or enforcement system.
 
 ### Google A2A Protocol
 
-Google's Agent-to-Agent protocol defines Agent Cards and Task objects with session metadata, but research found no evidence of a standardized cost or usage field in the A2A spec itself. This is a genuine gap in the emerging interoperability standard: agents can discover and delegate to each other, but the protocol says nothing about how cost flows back up the delegation chain. Google's ADK 1.0 addresses cost indirectly through "Event Compaction" (context summarization), reported to cut token usage by roughly 38% — a cost-reduction mechanism, not a cost-accounting one.
+Google's Agent-to-Agent protocol defines Agent Cards and Task objects with session metadata, but we confirmed directly against the published spec that it contains no standardized cost, usage, billing, or credit field ([A2A Protocol Specification](https://a2a-protocol.org/latest/specification/), verified mid-2026). This is a genuine gap in the emerging interoperability standard: agents can discover and delegate to each other, but the protocol says nothing about how cost flows back up the delegation chain. Google's ADK 1.0 addresses cost indirectly through "Event Compaction" (context summarization); industry coverage of the release cites a roughly 38% token-usage reduction in Google-shared benchmarks, but we could not locate or verify this figure against a Google-published primary source, so treat it as a secondhand, unverified figure rather than a confirmed one — a cost-reduction mechanism in any case, not a cost-accounting one.
 
 ## The Credit Abstraction: Who Has Actually Built One?
 
@@ -64,11 +64,11 @@ Two platforms stand out for shipping a genuine unified credit model that normali
 
 ### Cognition Devin — Agent Compute Units (ACUs)
 
-Devin defines an ACU as "a normalized measure of the computing resources Devin uses to complete a task, such as virtual machine time, model inference, and networking bandwidth." One ACU approximates 15 minutes of active Devin work, billed at $2.25/ACU (Core plan) or $2.00/ACU (Team plan, bundled at 250 ACUs for $500/month). This is the clearest publicly documented "normalize everything into one unit" abstraction found in this research. It fuses token cost, sandbox/VM time, and network bandwidth into a single number, deliberately obscuring the underlying cost composition from the customer.
+Devin defines an ACU as "a normalized measure of the computing resources Devin uses to complete a task, such as virtual machine time, model inference, and networking bandwidth," with one ACU reportedly approximating 15 minutes of active Devin work. This appears to be among the more clearly publicly documented "normalize everything into one unit" abstractions found in this research: it fuses token cost, sandbox/VM time, and network bandwidth into a single number, deliberately obscuring the underlying cost composition from the customer. We were unable to independently verify Devin's current per-ACU dollar rate or plan structure against Cognition's own billing documentation in this pass (the specific $2.25/$2.00-per-ACU, $500/month figures circulating in secondary coverage should be treated as dated and unconfirmed, particularly since coding-agent pricing in this segment has changed rapidly and self-serve plans now reportedly bill primarily by flat monthly tier rather than a fixed public ACU rate, with ACU-based billing appearing to apply mainly to enterprise agreements). Readers should check Cognition's current pricing page directly before relying on any specific figure here.
 
 ### Manus AI — Credit Model
 
-Manus credits are consumed by three explicitly named sources: LLM tokens (task planning, decision-making, output generation), virtual machines (cloud environments for file operations, browser automation, code execution), and third-party APIs. Concrete anchors: a simple chat costs 5-15 credits, image generation costs 30-100 credits, and a 30-minute research agent run costs 500-900 credits. The standard plan offers 4,000 credits for $20/month. This is a task-outcome-based normalization — credits scale with task complexity and duration rather than a fixed per-unit conversion table.
+Manus credits are consumed by three explicitly named sources: LLM tokens (task planning, decision-making, output generation), virtual machines (cloud environments for file operations, browser automation, code execution), and third-party APIs ([Manus, "What are credits"](https://manus.im/help/credits), verified mid-2026). Manus's own help center confirms a paid plan starting at 4,000 credits per month, though we could not verify the specific dollar price against that page. The more granular per-task anchors circulating in secondary write-ups (e.g., a simple chat costing on the order of 5-15 credits, image generation on the order of 30-100 credits, a roughly 30-minute research agent run on the order of 500-900 credits) could not be confirmed directly against Manus's own documentation in this pass and should be treated as illustrative rather than confirmed. This is, in any case, a task-outcome-based normalization — credits scale with task complexity and duration rather than a fixed per-unit conversion table.
 
 ### What Neither Publishes
 
@@ -128,11 +128,11 @@ The implication for platform builders: if you are building budget enforcement on
 
 ### OpenTelemetry GenAI Semantic Conventions
 
-The closest thing to an emerging standard. The GenAI SIG (active since April 2024) defines attributes like `gen_ai.request.model`, `gen_ai.token.type`, and `gen_ai.response.completion_tokens`/`prompt_tokens`. Critically, cost itself is not a standardized emitted attribute — you compute it locally from token counts plus your own price table. Only the token-count attributes are semi-standardized. As of mid-2026, GenAI semantic conventions remain in "Development" (pre-stable) status with no public stabilization timeline.
+The closest thing to an emerging standard. The GenAI SIG (active since April 2024) defines token-usage-related attributes such as `gen_ai.token.type` ([OpenTelemetry, GenAI attribute registry](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/), verified mid-2026 — this specific attribute is confirmed at "Development"/pre-stable status; note the registry has been evolving quickly and some older attribute names referenced in early GenAI-convention writeups, such as `gen_ai.request.model` and `gen_ai.response.completion_tokens`, appear deprecated or relocated as of this check, so treat exact attribute names as a moving target rather than fixed). Critically, cost itself is not a standardized emitted attribute — you compute it locally from token counts plus your own price table. As of mid-2026, GenAI semantic conventions remain in "Development" (pre-stable) status with no public stabilization timeline that we could confirm.
 
 ### FinOps Foundation
 
-The FinOps Foundation has formally extended its framework to cover AI/agent workloads. Their State of FinOps 2026 report found that 98% of organizations now manage AI spend (up from 63% in 2025 and 31% in 2024), with GPU spend now the top FinOps concern for AI-first organizations. Their prescribed pattern: showback first (4-6 weeks to find tagging gaps), then chargeback once tag coverage exceeds 80%. Notably, FinOps practitioners now treat "agent workflow" as its own cost-allocation dimension alongside traditional infrastructure — a recognition that agent-level cost attribution is a distinct problem from container or VM cost attribution.
+The FinOps Foundation has formally extended its framework to cover AI/agent workloads. Their State of FinOps 2026 report found that 98% of organizations now manage AI spend, up from 63% in 2025 and 31% in 2024 ([FinOps Foundation, State of FinOps 2026 report](https://data.finops.org/), verified mid-2026), with granular AI spend and GPU-utilization monitoring cited among the report's top-requested tooling capabilities — we could not independently confirm the stronger claim that GPU spend is now *the* single top FinOps concern for AI-first organizations, so treat that framing as a reasonable but unverified inference rather than a directly sourced figure. Their prescribed pattern is reportedly showback first (4-6 weeks to find tagging gaps), then chargeback once tag coverage exceeds 80%. Notably, FinOps practitioners appear to increasingly treat "agent workflow" as its own cost-allocation dimension alongside traditional infrastructure — a recognition that agent-level cost attribution is a distinct problem from container or VM cost attribution.
 
 ### Observability Tooling
 
@@ -168,29 +168,34 @@ For teams building multi-agent platforms today, several practical patterns emerg
 
 6. **Budget for the attribution gap.** No production SDK today auto-attributes cost to individual sub-agents in a delegation chain. If your product requires per-tenant or per-task cost attribution in a multi-agent system, you are building that layer yourself. Plan accordingly.
 
+## Notes on Sourcing and Fast-Moving Claims
+
+This article draws on vendor documentation, vendor announcements, press coverage, academic preprints, and aggregated industry reporting current to mid-2026. Where we were able to directly re-verify a claim against a primary source in this revision, we've added an inline link and noted the verification; those links point to pages we fetched and confirmed genuinely support the adjacent claim. Where we could not verify a specific figure, product-capability detail, or pricing number against a primary source — notably some Devin/ACU pricing specifics, some Manus per-task credit figures, and the Google ADK "38%" token-reduction figure — we've hedged the language accordingly rather than presenting it as confirmed fact. Product capabilities, pricing, and adoption statistics in this space change quickly; treat specific figures, plan names, and dollar amounts as illustrative of the trend rather than independently audited, and expect some to be dated by the time you read this. Several supporting citations below (the failure-mode case studies, infrastructure pricing figures, and academic preprints) were not independently re-verified in this revision and are presented as originally sourced.
+
 ---
 
 *Sources:*
 
-1. *Anthropic, "Track cost and usage" — Claude Agent SDK docs (2026)*
-2. *GitHub, anthropics/claude-code Issue #22625 — Per-Subagent Token Usage Tracking (2026)*
-3. *OpenAI, "Usage — OpenAI Agents SDK" (2026)*
-4. *AG2 docs, "Usage tracking with AG2" (2026)*
-5. *AWS ML Blog, "Introducing granular cost attribution for Amazon Bedrock" (2026)*
+1. *[Anthropic, "Track cost and usage" — Claude Agent SDK docs](https://code.claude.com/docs/en/agent-sdk/cost-tracking) (2026) — verified*
+2. *[GitHub, anthropics/claude-code Issue #22625](https://github.com/anthropics/claude-code/issues/22625) — Per-Subagent Token Usage Tracking (2026) — verified*
+3. *[OpenAI, "Usage — OpenAI Agents SDK"](https://openai.github.io/openai-agents-python/usage/) (2026) — verified*
+4. *[AG2 docs, "Usage tracking with AG2"](https://docs.ag2.ai/0.8.7/docs/use-cases/notebooks/notebooks/agentchat_cost_token_tracking/) (2026) — verified*
+5. *[AWS ML Blog, "Introducing granular cost attribution for Amazon Bedrock"](https://aws.amazon.com/blogs/machine-learning/introducing-granular-cost-attribution-for-amazon-bedrock/) (2026) — verified*
 6. *AWS, "Track Amazon Bedrock Costs by Caller Identity with IAM-Based Cost Allocation" (2026)*
-7. *AWS ML Blog, "Manage multi-tenant Amazon Bedrock costs using application inference profiles" (2026)*
-8. *arXiv:2605.09104, "Token Economics for LLM Agents: A Dual-View Study" (2026)*
-9. *arXiv:2605.20485, "ZEBRA: Zero-Shot Budgeted Resource Allocation for LLM Orchestration" (2026)*
-10. *OpenTelemetry, GenAI Semantic Conventions Registry (2026)*
-11. *Braintrust, "How to track LLM costs (2026)" (2026)*
-12. *Datadog, Agent Observability and LLM Cost Docs (2026)*
-13. *E2B, Pricing and Billing Docs (2026)*
-14. *Cognition/Devin, ACU Pricing Analysis (2026)*
-15. *Manus AI, "What are credits" — manus.im/help/credits (2026)*
-16. *FinOps Foundation, "Chargeback and Finance Integration" / "FinOps for AI Overview" (2026)*
-17. *TechStartups, "AI Agents Horror Stories: The $47,000 Failure" (2025)*
-18. *byteiota, "The $500M AI Bill: How Agentic Loops Break Enterprise Budgets" (2026)*
-19. *Google Developers Blog, "Announcing the Agent2Agent Protocol (A2A)" (2026)*
-20. *GitHub, MukundaKatta/llm-cost-cap (2026)*
-21. *pricepertoken.com, "AI Image Model Pricing" (2026)*
-22. *Modal pricing via Blaxel comparison guide (2026)*
+7. *[AWS ML Blog, "Manage multi-tenant Amazon Bedrock costs using application inference profiles"](https://aws.amazon.com/blogs/machine-learning/manage-multi-tenant-amazon-bedrock-costs-using-application-inference-profiles/) (2026) — verified*
+8. *arXiv:2605.09104, "Token Economics for LLM Agents: A Dual-View Study" (2026) — not re-verified this revision*
+9. *arXiv:2605.20485, "ZEBRA: Zero-Shot Budgeted Resource Allocation for LLM Orchestration" (2026) — not re-verified this revision*
+10. *[OpenTelemetry, GenAI Semantic Conventions attribute registry](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) (2026) — verified*
+11. *Braintrust, "How to track LLM costs (2026)" (2026) — not re-verified this revision*
+12. *Datadog, Agent Observability and LLM Cost Docs (2026) — not re-verified this revision*
+13. *E2B, Pricing and Billing Docs (2026) — not re-verified this revision*
+14. *Cognition/Devin, ACU Pricing Analysis (2026) — not independently verified this revision; specific rates should be checked against Cognition's current pricing page*
+15. *[Manus AI, "What are credits"](https://manus.im/help/credits) (2026) — verified for the token/VM/API credit-source claim; per-task credit figures not independently verified*
+16. *FinOps Foundation, "Chargeback and Finance Integration" / [State of FinOps 2026 report](https://data.finops.org/) (2026) — 98%/63%/31% adoption figures verified*
+17. *TechStartups, "AI Agents Horror Stories: The $47,000 Failure" (2025) — not re-verified this revision*
+18. *byteiota, "The $500M AI Bill: How Agentic Loops Break Enterprise Budgets" (2026) — not re-verified this revision*
+19. *Google Developers Blog, "Announcing the Agent2Agent Protocol (A2A)" (2026); spec claim additionally checked against [a2a-protocol.org](https://a2a-protocol.org/latest/specification/) — verified*
+20. *GitHub, MukundaKatta/llm-cost-cap (2026) — not re-verified this revision*
+21. *pricepertoken.com, "AI Image Model Pricing" (2026) — not re-verified this revision*
+22. *Modal pricing via Blaxel comparison guide (2026) — not re-verified this revision*
+23. *[LangChain docs, "Cost tracking" — LangSmith](https://docs.langchain.com/langsmith/cost-tracking) (2026) — verified*
