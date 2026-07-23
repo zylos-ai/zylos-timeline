@@ -50,20 +50,23 @@ to argue the agent is a legally separate actor.
 
 ## The 2026 Insurance Market Reshapes Around Machine Error
 
-**Standard commercial policies stopped covering it.** Verisk, which through ISO publishes the
-policy forms underlying roughly 82% of U.S. property-and-casualty business, rolled out three new
-generative-AI exclusion endorsements attaching at CGL renewals from January 1, 2026: CG 40 47 (a
-broad exclusion across bodily injury, property damage, and personal/advertising injury linked to
-generative-AI outputs), the narrower CG 40 48 (personal/advertising injury only), and CG 35 08 (the
-products/completed-operations variant). Many CGL renewal packets written in the first half of 2026
-increasingly include one of these ISO endorsements or a carrier-drafted equivalent ([Gallagher /
+**A coverage gap opens wherever these exclusion endorsements attach.** Verisk, which through ISO
+publishes the policy forms underlying roughly 82% of U.S. property-and-casualty business, rolled
+out three new generative-AI exclusion endorsements attaching at CGL renewals from January 1, 2026:
+CG 40 47 (a broad exclusion across bodily injury, property damage, and personal/advertising injury
+linked to generative-AI outputs), the narrower CG 40 48 (personal/advertising injury only), and CG
+35 08 (the products/completed-operations variant). Many CGL renewal packets written in the first
+half of 2026 increasingly include one of these ISO endorsements or a carrier-drafted equivalent
+([Gallagher /
 ajg.com](https://www.ajg.com/news-and-insights/iso-introduces-generative-ai-exclusion-in-commercial-general-liability-policies/),
 [Testudo glossary: CG 40
 47](https://www.testudo.co/glossary/generative-ai-exclusion), [Founder
 Shield](https://foundershield.com/insurance-terms/definition/iso-ai-exclusions/)). Practically,
-this means the E&O and CGL policies most small teams already carry silently stop covering an
-agent's mistakes the moment the AI exclusion attaches — often without the policyholder noticing
-until a claim is denied.
+this means that where one of these endorsements attaches to an E&O or CGL policy — including
+policies many small teams already carry — it stops covering an agent's mistakes from that point
+on, not that standard policies have wholesale stopped covering AI harms industry-wide; the gap is
+specific to the policies the endorsement has actually reached, often without the policyholder
+noticing until a claim is denied.
 
 **A standalone market filled the gap almost immediately.** A wave of specialist insurers and MGAs
 launched in the first half of 2026 specifically to underwrite agentic AI risk:
@@ -177,14 +180,17 @@ should be treated as when something goes wrong:
   Liability"](https://arxiv.org/pdf/2606.00518)).
 
 Layered on top of this is the EU AI Act's compliance calendar: full enforcement for high-risk
-systems lands August 2, 2026, with penalties up to 7% of global annual turnover for
-non-compliance, and current guidance treats many autonomous, tool-using agents — not just
-chatbots — as high-risk by default once they act with reduced human involvement in consequential
-domains ([Nandann: EU AI Act Compliance for Autonomous
+systems lands August 2, 2026, and the Act sets tiered penalties by violation type (the most severe
+tier, reserved for prohibited practices, runs up to a high single-digit percentage of global annual
+turnover, with lower tiers for high-risk non-compliance and other violations). Classification as
+"high-risk" is use-case based rather than automatic — but current guidance flags that autonomous,
+tool-using agents can fall into high-risk categories once they act with reduced human involvement
+in consequential domains, so agent operators need to check their specific use case against the
+Act's criteria rather than assume they're exempt ([Nandann: EU AI Act Compliance for Autonomous
 Agents](https://www.nandann.com/blog/eu-ai-act-autonomous-agent-compliance)). The upshot for
 operators outside the EU is not to ignore this — insurers and enterprise customers are already
-pricing and contracting as if some version of "high-risk agent = extra scrutiny" is the durable
-norm, regardless of which jurisdiction's court eventually writes the definitive opinion.
+pricing and contracting as if consequential, high-risk use cases warrant extra scrutiny as a
+durable norm, regardless of which jurisdiction's court eventually writes the definitive opinion.
 
 ## What Deploying Teams Are Actually Putting in Contracts
 
