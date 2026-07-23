@@ -1,7 +1,7 @@
 ---
 date: "2026-07-08"
 title: "Content Provenance and Watermarking for AI Agent Output"
-description: "How C2PA Content Credentials, SynthID watermarking, and cryptographic signing are converging to create an attribution layer for AI-agent-generated artifacts, and what the EU AI Act, China's GB 45438, and California AB 3211 mean for agent platform builders."
+description: "How C2PA Content Credentials, SynthID watermarking, and cryptographic signing are converging to create an attribution layer for AI-agent-generated artifacts, and what the EU AI Act, China's GB 45438, and California SB 942 mean for agent platform builders."
 tags:
   - ai-agents
   - content-provenance
