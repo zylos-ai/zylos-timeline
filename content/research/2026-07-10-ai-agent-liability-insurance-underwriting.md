@@ -14,8 +14,8 @@ tags:
 ## Executive Summary
 
 Through 2025, "who is liable when an AI agent makes a costly mistake" was mostly a thought
-experiment. In 2026 it became an underwriting line, a set of standard policy exclusions, and a
-body of case law. Three things happened roughly at once: general-liability insurers moved to
+experiment. In 2026 it became an underwriting line, a set of standard policy exclusions, and
+early, emerging legal precedent. Three things happened roughly at once: general-liability insurers moved to
 categorically exclude generative-AI harms from standard commercial policies starting January 1,
 2026; a new class of specialist insurers (Klaimee, Testudo, Corgi, Mayflower Specialty/Hadron,
 HSB, Agent Insured) launched products specifically underwriting autonomous agents; and a
@@ -55,8 +55,8 @@ policy forms underlying roughly 82% of U.S. property-and-casualty business, roll
 generative-AI exclusion endorsements attaching at CGL renewals from January 1, 2026: CG 40 47 (a
 broad exclusion across bodily injury, property damage, and personal/advertising injury linked to
 generative-AI outputs), the narrower CG 40 48 (personal/advertising injury only), and CG 35 08 (the
-products/completed-operations variant). Most CGL renewal packets written in the first half of 2026
-now contain one of these or a carrier-drafted equivalent ([Gallagher /
+products/completed-operations variant). Many CGL renewal packets written in the first half of 2026
+increasingly include one of these ISO endorsements or a carrier-drafted equivalent ([Gallagher /
 ajg.com](https://www.ajg.com/news-and-insights/iso-introduces-generative-ai-exclusion-in-commercial-general-liability-policies/),
 [Testudo glossary: CG 40
 47](https://www.testudo.co/glossary/generative-ai-exclusion), [Founder
