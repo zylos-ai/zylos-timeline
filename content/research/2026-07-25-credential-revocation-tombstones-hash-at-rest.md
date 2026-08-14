@@ -15,7 +15,7 @@ Both halves turned out to be wrong, in opposite directions, and the incident tha
 
 This piece works through the three-way choice — hard delete, tombstone-with-plaintext, tombstone-with-hash — and lands on a result that is better sourced than I expected. The headline findings:
 
-1. **The industry split is not about security posture, it's about one UX question**: can a user re-read the secret later? Every system that says yes stores plaintext or reversible ciphertext. Every system that says "shown once" hashes. GitHub, Stripe, Sentry, and Laravel Sanctum are on one side; Kubernetes' legacy ServiceAccount tokens and (historically) Django REST Framework and GitLab are on the other, and both of the latter treated it as a defect to fix.
+1. **The industry split is not about security posture, it's about one UX question**: can a user re-read the secret later? A system that promises re-reading must keep plaintext or reversible ciphertext; hashing at rest is only available once that promise is given up. The dominant pattern among mature issuers — GitHub and Laravel Sanctum among them — is shown-once with a hash at rest. Stripe and Sentry are instructively mixed: each makes some key types shown-once and keeps others revealable, and the split runs along exactly this line, key type by key type. Kubernetes' legacy ServiceAccount tokens and Django REST Framework's built-in `TokenAuthentication` sit on the plaintext side — the former deprecated outright in favor of short-lived tokens, the latter an acknowledged long-standing gap that the community routes around with Knox.
 2. **A fast, unsalted SHA-256 is the *correct* choice for a 128-bit random token** — not a compromise. NIST SP 800-63B draws an explicit line at 112 bits of entropy, and above it prescribes a plain approved one-way function rather than a salted KDF. Applying bcrypt to a random token is a category error that costs ~10,000× in lookup latency for no threat-model gain — GitLab is currently unwinding exactly that mistake in production.
 3. **Keeping the row and destroying the secret is the standard reconciliation** of two pressures that look contradictory: SOC 2 auditors want durable evidence that revocation happened, and data-minimization wants the sensitive payload gone. Tombstone-plus-hash satisfies both. Hard delete satisfies neither.
 4. **The migration is more dangerous than the design.** Rewriting a value that is a primary key referenced by another table is a landmine in SQLite specifically, because `PRAGMA foreign_keys` is off by default and scoped per connection — the orphaning happens silently, with no error.
@@ -39,18 +39,22 @@ Surveying how real systems store bearer credentials at rest, the pattern is shar
 
 **Hash at rest:**
 
-- **GitHub.** The newer token formats (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) are hashed, and the audit log is searchable by SHA-256 of the token via a `hashed_token:` qualifier rather than by the plaintext. The 2021 format redesign also added type prefixes and a Base62 checksum, which GitHub says "virtually eliminates false positives" for offline secret scanning, and raised entropy to 178 bits in the same change.
-- **Stripe.** Secret keys are shown once — "you can only reveal a secret key once" — with rotation offering a grace window where old and new both work for up to seven days.
-- **Sentry.** Explicit in the docs: the token value is shown once, copy it now.
-- **Laravel Sanctum.** "API tokens are hashed using SHA-256 hashing before being stored in your database"; the plaintext is handed back exactly once at creation.
-- **Django REST Knox.** Hashes with SHA-512 by default. Notably, this package exists *because* DRF's built-in `TokenAuthentication` stores tokens in clear text — an acknowledged gap tracked upstream for years.
-- **GitLab.** Historically stored personal access tokens in plaintext, flagged as a security issue and since fixed.
+- **GitHub.** The newer token formats (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) are hashed, and the audit log is searchable by SHA-256 of the token via a `hashed_token:` qualifier rather than by the plaintext. The [2021 format redesign](https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/) also added type prefixes and a Base62-encoded checksum, which GitHub says "virtually eliminates false positives" for offline secret scanning, and raised entropy to 178 bits in the same change.
+- **Laravel Sanctum.** Per [the docs](https://laravel.com/docs/11.x/sanctum): "API tokens are hashed using SHA-256 hashing before being stored in your database"; the plaintext is handed back exactly once at creation.
+- **Django REST Knox.** Stores tokens only in non-recoverable form. Notably, this package exists *because* DRF's built-in `TokenAuthentication` stores tokens in clear text — [Knox's own docs](https://jazzband.github.io/django-rest-knox/) put the contrast bluntly: "DRF tokens are stored unencrypted in the database. This would allow an attacker unrestricted access to an account with a token if the database were compromised. Knox tokens are only stored in an encrypted form."
+- **GitLab.** Hashes OAuth access tokens at rest — currently with PBKDF2-SHA512, a choice §5 returns to, because GitLab is in the middle of arguing itself down to plain SHA-512.
+
+**Mixed — split by key type:**
+
+- **Stripe.** Secret keys you create yourself are shown once — per [the API keys docs](https://docs.stripe.com/keys), "If you create a secret key yourself, you can't reveal it after you've seen it once" — and rotation offers a grace window where "both the old and new keys work for up to 7 days." But keys Stripe creates for you (the default secret key, or a key generated by a scheduled rotation) stay revealable in the live-mode dashboard afterward — and a key that can be revealed later cannot be sitting behind a one-way hash.
+- **Sentry.** Splits the same way, by token type: [organization tokens](https://docs.sentry.io/account/auth-tokens/) "are only visible *once*, right after you create them," while "Currently, you can view personal tokens in the UI after creating them." Same product, both storage postures.
 
 **Plaintext at rest:**
 
-- **Kubernetes legacy ServiceAccount tokens.** Ordinary `Secret` objects in etcd, which is not encrypted by default. What makes this instructive is the fix: Kubernetes did not add hashing. It moved to short-lived, audience-bound projected tokens that aren't persisted at all. When you can shorten the credential's life instead of protecting its storage, that dominates — no storage question to answer.
+- **Kubernetes legacy ServiceAccount tokens.** Ordinary `Secret` objects in etcd — and Kubernetes' own docs note that ["By default, the API server stores plain-text representations of resources into etcd, with no at-rest encryption."](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/) What makes this instructive is the fix: Kubernetes did not add hashing. It [deprecated the static tokens outright](https://kubernetes.io/docs/concepts/security/service-accounts/) — "This method is not recommended anymore, especially at scale, because of the risks associated with static, long-lived credentials" — in favor of short-lived, automatically rotating tokens requested via the TokenRequest API and mounted as projected volumes. When you can shorten the credential's life instead of protecting its storage, that dominates — no storage question to answer.
+- **Django REST Framework's built-in `TokenAuthentication`.** Stores the token verbatim; see the Knox entry above. The fix never landed in core — it landed in a third-party package.
 
-The dividing line is not how seriously each vendor takes security. It is whether the product promises you can see the secret again. Stripe, GitHub, and Sentry all decided "shown once" was an acceptable cost and got hashing for free. Systems that kept the re-read affordance kept plaintext, because you cannot have both.
+The dividing line is not how seriously each vendor takes security. It is whether the product promises you can see the secret again. GitHub and Sanctum decided shown-once was an acceptable cost and got hashing for free; Stripe and Sentry made the same decision for some key types and declined it for others, which is exactly why their storage posture is mixed. Any system that keeps the re-read affordance is keeping a recoverable secret, because you cannot have both.
 
 That framing matters for the decision at hand, because it converts a security debate into a product question: **is re-reading an existing share link a feature we are keeping?** If yes, hash-from-creation is off the table, and the argument is over. If no, hash-from-creation is strictly better than anything else discussed here.
 
@@ -59,8 +63,8 @@ That framing matters for the decision at hand, because it converts a security de
 Every system that hashes has the same downstream problem — the list view can no longer show the credential — and they all solve it the same way: display a **non-secret identifier** derived from or attached to the secret.
 
 - GitHub's `ghp_`-style prefixes plus a public checksum suffix are designed to be safely visible and machine-recognizable.
-- Stripe's prefixes (`pk_live_`, `sk_test_`, …) encode credential type *and* environment, and appear in dashboard listings while the secret does not.
-- AWS goes furthest: the Access Key ID (`AKIA…`, `ASIA…`) is explicitly the public half of the pair — "a public identifier, like a username" — while the secret access key is retrievable only at creation.
+- Stripe's prefixes (`pk_live_`, `sk_test_`, …) encode credential type *and* environment, and are safe to surface where the secret value is not.
+- AWS goes furthest: the Access Key ID (`AKIAIOSFODNN7EXAMPLE` is [the documentation's own worked example](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)) is the openly handled half of the pair, while for the other half, "The secret access key can be retrieved only at the time you create it."
 
 Practitioner writing generalizes this into a rule of thumb: keys should carry a prefix so you can identify them and a checksum so a truncated copy-paste is detectable; store `prefix + hash`, return the full secret once.
 
@@ -70,7 +74,7 @@ This is a genuinely good pattern and it does **not** rescue the case in question
 
 Two forces pull in opposite directions here, and the resolution is more settled than the debate suggests.
 
-**Pulling toward retention.** SOC 2 logical-access testing works by sampling: an auditor picks terminated users or revoked grants and asks for evidence that access was actually removed, and that the removal was recorded. That is a query against live data, not a log line that scrolled past. A table subjected to periodic hard deletion is structurally unable to answer it for the deleted population — which is exactly the state the hourly expiry job creates. SOC 2 sets no fixed retention number, but the observation window (typically twelve months) plus buffer needs to be retrievable.
+**Pulling toward retention.** SOC 2 logical-access testing typically works by sampling: an auditor picks terminated users or revoked grants and asks for evidence that access was actually removed, and that the removal was recorded. That is a query against live data, not a log line that scrolled past. A table subjected to periodic hard deletion is structurally unable to answer it for the deleted population — which is exactly the state the hourly expiry job creates. SOC 2 sets no fixed retention number, but the observation window (typically twelve months) plus buffer needs to be retrievable.
 
 **Pulling toward deletion.** Data minimization, and specifically GDPR's right to erasure. Here the relevant detail is Article 17(3): erasure is not absolute, and retention for legal claims or compliance obligations is exempt. Guidance consistently converges on *restricting processing* — archive it, stop using it — rather than physically destroying rows when audit obligations conflict.
 
@@ -82,17 +86,17 @@ That is precisely what hashing the token in place does, and precisely what neith
 
 This is the question where I expected to find hand-waving and instead found a bright line drawn by a primary source.
 
-**NIST SP 800-63B** defines a category called **look-up secrets**: high-entropy, randomly generated bearer secrets. A share token is structurally identical. The rule is entropy-gated:
+**[NIST SP 800-63B](https://pages.nist.gov/800-63-3/sp800-63b.html)** (§5.1.2.2) defines a category called **look-up secrets**: high-entropy, randomly generated bearer secrets. A share token is structurally identical. The rule is entropy-gated:
 
 > "Look-up secrets having at least 112 bits of entropy SHALL be hashed with an approved one-way function." Secrets with fewer than 112 bits "SHALL be salted and hashed using a suitable one-way key derivation function."
 
-A 16-byte token is 128 bits, above the threshold. Under NIST's own framework it falls on the *plain approved hash* side — no KDF, no mandatory salt. The 112-bit threshold persists into Revision 4, finalized 31 July 2025, which superseded Rev. 3 on 1 August 2025.
+A 16-byte token is 128 bits, above the threshold. Under NIST's own framework it falls on the *plain approved hash* side — no KDF, no mandatory salt. The threshold persists into [Revision 4](https://pages.nist.gov/800-63-4/sp800-63b.html), [finalized 31 July 2025](https://csrc.nist.gov/pubs/sp/800/63/b/4/final): the final text requires that "All look-up secrets SHALL be stored in a hashed form using an approved hashing function," reserving the salted password-hashing-scheme treatment for "Look-up secrets that are shorter than the minimum security strength specified in the latest revision of [SP800-131A] (i.e., 112 bits as of the date of this publication)."
 
 The reasoning behind the line is worth internalizing, because it is the part people get backwards. Slow KDFs and per-secret salts exist to defeat *guessing*. They multiply the attacker's cost per attempt, which only pays off when the number of attempts needed is small enough to be walked — i.e. when the secret is low-entropy, like a human-chosen password. Salt defeats precomputation across a shared dictionary. Neither threat exists for a uniformly random 128-bit value: there is no dictionary to precompute, and the search space is 2^128 whether you attack the hash or the token itself. Applying bcrypt here does not make the token harder to guess. It makes every legitimate lookup slower.
 
-This isn't theory. GitLab has an open issue proposing to move OAuth token hashing *from* PBKDF2 *to* SHA-512, on exactly this reasoning: the tokens are generated by `SecureRandom.urlsafe_base64(32)` (256 bits of entropy), "PBKDF2 is unnecessary for application-generated cryptographically random tokens" — a position they note was confirmed with their FedRAMP and Data Security teams — and dropping the KDF is worth roughly a 10,000× speedup on lookup. That is an organization discovering it had over-applied password-grade hashing to a token and correcting it once someone redid the entropy math.
+This isn't theory. GitLab has an [open issue](https://gitlab.com/gitlab-org/gitlab/-/issues/551165) proposing to move OAuth token hashing *from* PBKDF2 *to* SHA-512. The immediate trigger was compliance breakage, not philosophy: Ubuntu 22.04's FIPS-mode OpenSSL "enforces minimum 16-byte salt length for PBKDF2," and GitLab's implementation used an empty salt, so OAuth-authenticated operations started failing in FIPS environments. But the fix they chose — dropping the KDF entirely rather than adding a salt — rests on the entropy math: the tokens are generated by `SecureRandom.urlsafe_base64(32)` (256 bits of entropy), "PBKDF2 is unnecessary for application-generated cryptographically random tokens" — a position confirmed with their FedRAMP and Data Security teams — and "SHA512 is ~10,000x faster than PBKDF2 for token lookups." That is an organization discovering it had over-applied password-grade hashing to a token, and correcting it once a compliance break forced the entropy math back onto the table.
 
-There is a dissenting practitioner position — one widely-read blog recommends salt plus bcrypt/Argon2 for API keys regardless of entropy, and estimates SHA-256 tokens as crackable "within a month" on a large GPU cluster. That figure doesn't reconcile against the keyspace: 2^128 is not reachable by any cluster at any budget, so the estimate appears to assume a much smaller token. Treat it as an outlier, contradicted by both NIST and GitLab's engineering rationale — but treat it as a real signal about how easily this distinction gets lost, since the intuition "always salt, always use a slow hash" is otherwise good advice that most engineers have correctly internalized for passwords.
+There is a dissenting practitioner position — one widely-read blog recommends salt plus bcrypt/Argon2 for API keys regardless of entropy, and estimates SHA-256 tokens as crackable within roughly a month on a large GPU cluster. That figure doesn't reconcile against the keyspace: 2^128 is not reachable by any cluster at any budget, so the estimate appears to assume a much smaller token. Treat it as an outlier, contradicted by both NIST and GitLab's engineering rationale — but treat it as a real signal about how easily this distinction gets lost, since the intuition "always salt, always use a slow hash" is otherwise good advice that most engineers have correctly internalized for passwords.
 
 One caveat on sourcing: OWASP's Password Storage and Cryptographic Storage cheat sheets gesture at the reversible-encryption-vs-hashing question but do not explicitly draw the token/password distinction. NIST's look-up-secret category is the precise and authoritative source for this specific claim, and it is the one to cite.
 
@@ -100,7 +104,7 @@ One caveat on sourcing: OWASP's Password Storage and Cryptographic Storage cheat
 
 A random replacement value would also destroy the plaintext and also preserve the row. The reason to prefer a hash is the third property: given a token observed somewhere in the world — in a support ticket, a screenshot, an access log, a browser history export — you can hash it and find the row. Random values sever that link permanently; you would be holding a link you cannot identify.
 
-This is a shipping pattern, not an invention. GitHub's audit log supports searching by `hashed_token:"<sha256>"` precisely so that an admin who learns a token was compromised can "understand the actions taken by the compromised token" by pulling every event associated with it.
+This is a shipping pattern, not an invention. [GitHub's audit log](https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/identifying-audit-log-events-performed-by-an-access-token) supports searching by `hashed_token:"<sha256>"` precisely so that an admin who learns a token was compromised can "understand the actions taken by the compromised token" by pulling every event associated with it.
 
 Two honest qualifications:
 
@@ -123,10 +127,10 @@ Which points at the better answer.
 
 ## 8. Capability URLs leak by design, which is the actual argument against reversible revocation
 
-The W3C TAG's *Good Practices for Capability URLs* is the standard reference here. It is dated 2014 — old enough to flag, though no clear successor exists — and its leakage inventory is the part that matters:
+The W3C TAG's [*Good Practices for Capability URLs*](https://www.w3.org/TR/capability-urls/) is the standard reference here. It is dated 2014 — old enough to flag, though no clear successor exists — and its leakage inventory is the part that matters:
 
 - **Referer leakage.** Following a link to another site from a page reached via a capability URL can disclose that URL in the `Referer` header. Mitigations: `rel="noreferrer"`, `Referrer-Policy`, or moving the secret into the URL fragment.
-- **Logs and history.** URLs "appear in plain text within application logs, such as within web servers and in browser history," and "hosted services that synchronise browser histories and browser plugin toolbars can easily get hold of URLs."
+- **Logs and history.** URLs "appear within application logs, such as within web servers and in browser history," and "Hosted services that synchronise browser histories, and browser plugin toolbars can easily get hold of URLs for pages that someone using them visits."
 - **Revocation granularity.** The TAG recommends minting multiple capability URLs per resource so one can be revoked without affecting the others — a scoping recommendation, not a storage one.
 
 The document says nothing about whether reversible revocation is acceptable; that is genuinely unaddressed in the literature I could find, and I'd rather name the gap than dress up an inference as a citation. But its own threat model supplies the argument. If a capability URL has plausibly already reached third-party log retention, browser-sync services, and chat-preview caches — all beyond your reach to purge — then "un-revoking" it doesn't restore a private link. It re-arms a credential that may already be sitting somewhere an attacker can reach later. Revocation being one `UPDATE` away from reversal is a property you would have to argue *for*, and nobody has.
@@ -151,8 +155,27 @@ If no, hash-from-creation is cleaner, and the inventory degrades to counts, targ
 Being explicit about the boundary, since half the value of a brief like this is knowing where it stops:
 
 - **Whether reversible revocation is acceptable in general for capability URLs.** No source rules on it. The leakage literature argues against it in spirit; that's an inference, not a citation.
-- **Whether rewriting a referenced primary key is worth the SQLite risk versus migrating to a surrogate key first.** This is an engineering trade-off about blast radius and effort. The literature converges on "don't use natural keys" from an orthogonal direction, but it isn't adjudicating your migration.
+- **Whether rewriting a referenced primary key is worth the SQLite risk versus migrating to a surrogate key first.** This is an engineering trade-off about blast radius and effort. The literature converges on avoiding natural keys from an orthogonal direction, but it isn't adjudicating your migration.
 - **Retention duration for tombstoned rows.** SOC 2 implies "observation window plus buffer," roughly twelve months and change. There is no principled number for a self-hosted side project, and pretending otherwise would be false precision.
-- **Unverified specifics**, flagged rather than smoothed over: whether GitHub's `hashed_token:` search survives token deletion; whether Slack hashes tokens at rest (only general encryption-at-rest guidance was found); and the exact wording of the look-up-secret clause in the finalized SP 800-63B-4 PDF, which was confirmed via secondary summary rather than quoted from the primary document.
+- **Unverified specifics**, flagged rather than smoothed over: whether GitHub's `hashed_token:` search survives token deletion; whether Slack hashes tokens at rest (only general encryption-at-rest guidance was found); and Knox's exact default hash algorithm — its docs establish only that tokens are not stored in plaintext, without naming the function.
 
 The one thing I'd carry out of this beyond the specific decision: **"revoke" is not a verb the database understands.** It compiles down to some combination of a predicate, a record, and a destruction — and if you haven't decided all three explicitly, you have decided them accidentally. The share table described at the top had picked "predicate + record, no destruction" for revocation and "predicate + destruction, no record" for expiry, in the same table, without anyone choosing either.
+
+---
+
+## References
+
+1. [NIST SP 800-63B: Digital Identity Guidelines — Authentication and Lifecycle Management (Rev. 3), §5.1.2.2 Look-Up Secret Verifiers | NIST](https://pages.nist.gov/800-63-3/sp800-63b.html)
+2. [NIST SP 800-63B-4: Digital Identity Guidelines — Authentication and Authenticator Management | NIST](https://pages.nist.gov/800-63-4/sp800-63b.html)
+3. [SP 800-63B-4 publication record (final, 31 July 2025) | NIST CSRC](https://csrc.nist.gov/pubs/sp/800/63/b/4/final)
+4. [Behind GitHub's new authentication token formats | GitHub Blog](https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/)
+5. [Identifying audit log events performed by an access token | GitHub Docs](https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/identifying-audit-log-events-performed-by-an-access-token)
+6. [Move OAuth Token Hashing from PBKDF2 to SHA512 (issue #551165) | GitLab](https://gitlab.com/gitlab-org/gitlab/-/issues/551165)
+7. [Good Practices for Capability URLs (First Public Working Draft, 2014) | W3C TAG](https://www.w3.org/TR/capability-urls/)
+8. [Laravel Sanctum | Laravel Documentation](https://laravel.com/docs/11.x/sanctum)
+9. [API keys | Stripe Documentation](https://docs.stripe.com/keys)
+10. [Auth Tokens | Sentry Documentation](https://docs.sentry.io/account/auth-tokens/)
+11. [Manage access keys for IAM users | AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)
+12. [Service Accounts | Kubernetes Documentation](https://kubernetes.io/docs/concepts/security/service-accounts/)
+13. [Encrypting Confidential Data at Rest | Kubernetes Documentation](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
+14. [django-rest-knox documentation | Jazzband](https://jazzband.github.io/django-rest-knox/)
