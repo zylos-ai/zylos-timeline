@@ -101,7 +101,7 @@ export default async function ResearchDetailPage({ params }: PageProps) {
                             {report.date}
                         </div>
 
-                        <h1 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60 mb-6 leading-tight">
+                        <h1 className="text-4xl md:text-5xl font-bold [overflow-wrap:anywhere] text-foreground dark:bg-clip-text dark:text-transparent dark:bg-gradient-to-r dark:from-white dark:to-white/60 mb-6 leading-tight">
                             {report.title}
                         </h1>
 
