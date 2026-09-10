@@ -9,7 +9,7 @@ tags: ["ai-agents", "human-in-the-loop", "concurrency", "api-design", "event-sou
 
 A document review system renders a file to an approver (snapshot S1), the approver writes a comment, and the comment-create endpoint re-reads the file at write time (snapshot S2). If the document changed in between, the human's feedback is stored against content they never saw. This is not an edge case — it is the default failure mode of any system that treats "the current version of the document" as an implicit, mutable pointer rather than an explicit, immutable argument. The fix is structural, not cosmetic: the server must persist *which* rendered snapshot was actually served, bind every downstream artifact (comments, approvals, signatures) to that specific `view_snapshot_id`, and treat retries and concurrent edits with the same discipline used in payments APIs — idempotency keys plus compare-and-swap.
 
-This problem has been solved, partially, in at least four adjacent fields: code review tooling (GitHub, Gerrit, Phabricator), collaborative document editing (Google Docs, CRDT/OT systems), web annotation standards (W3C Web Annotation, Hypothesis), and HTTP concurrency control (ETag/If-Match, idempotency keys). None of these fields calls the concept "view-snapshot binding," but all of them reinvented pieces of it. This article surveys that prior art, extracts the recurring design patterns, and argues that AI agent platforms — where content mutates at LLM-generation speed and a human "approval" click is often the only safety gate before an irreversible action — need to treat this as a first-class architectural concern, not an afterthought fixed with an `updated_at` timestamp check.
+This problem has been solved, partially, in at least four adjacent fields: code review tooling (GitHub, Gerrit, Phabricator), document annotation and collaborative editing (Drive API anchors, CRDT/OT systems), web annotation standards (W3C Web Annotation, Hypothesis), and HTTP concurrency control (ETag/If-Match, idempotency keys). None of these fields calls the concept "view-snapshot binding," but all of them reinvented pieces of it. This article surveys that prior art, extracts the recurring design patterns, and argues that AI agent platforms — where content mutates at LLM-generation speed and a human "approval" click is often the only safety gate before an irreversible action — need to treat this as a first-class architectural concern, not an afterthought fixed with an `updated_at` timestamp check.
 
 ## The Problem: Feedback That Binds to the Wrong Version
 
@@ -38,12 +38,12 @@ The common shape across all three: **bind to an immutable content identifier (co
 
 ### 2. Document Collaboration: CRDT/OT Position Anchoring and Web Annotation
 
-Google Docs solves a harder version of the same problem because, unlike code diffs, prose is edited character-by-character in real time. Google's Drive API documentation states that a comment anchor is created by calling `comments.create` with "a JSON anchor string containing the revision ID and region," and warns plainly that "anchors are immutable, and their position relative to the content of a document cannot be guaranteed between revisions" ([Manage comments and replies, Google Drive API](https://developers.google.com/workspace/drive/api/guides/manage-comments)). This is a direct admission of the same problem: the anchor is a snapshot-relative coordinate, and using it against a different revision is explicitly unsupported.
+The **Google Drive API** accepts a JSON comment anchor containing a revision identifier and region. Anchors are immutable, and the API does not guarantee their positions across revisions. Crucially, Google Workspace editor apps treat API-created anchored comments as unanchored: this interface does not describe native Google Docs real-time comment anchoring. It is prior art for applications that store and interpret their own revision-relative anchors. See [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments).
 
 Real-time collaborative editors solve the finer-grained version of "where did this annotation point, now that the text moved" with two complementary techniques:
 
 - **CRDT relative positions (Yjs).** Yjs represents every character/element as an `Item` with a globally unique ID (`client`, `clock`). A `RelativePosition` stores a reference to that ID rather than a numeric offset, so it "stays correct regardless of what other users do to the document" — insertions and deletions elsewhere don't invalidate it ([Y.RelativePosition docs](https://docs.yjs.dev/api/relative-positions)). This is structurally identical to anchoring a comment to a commit SHA: the anchor references an immutable unit, not a position that shifts.
-- **OT step mapping (ProseMirror).** ProseMirror's transform library provides a `Mapping` abstraction that "collects a series of step maps and allows you to map through them in one go," letting a position captured against document version N be translated forward to its corresponding position in version N+k ([prosemirror-transform README](https://github.com/ProseMirror/prosemirror-transform/blob/master/src/README.md); see also Marijn Haverbeke's [Collaborative Editing in ProseMirror](https://marijnhaverbeke.nl/blog/collaborative-editing.html)). This is the "translate an old anchor forward" analogue to Phabricator's comment-porting — but done losslessly because every intervening step is known and composable, rather than fuzzy-matched.
+- **Step mapping (ProseMirror).** `Mapping` composes the position transformations produced by intervening edits. That gives deterministic coordinate mapping, not lossless preservation of annotation meaning. `MapResult.deleted` and `deletedAcross` report deletion; if the annotated text is gone, a mapped boundary is not an exact counterpart of that text. Keep the original snapshot and mark such anchors deleted/orphaned rather than claiming successful re-anchoring. Lossless recovery documented for mirrored inverse steps during rebasing is a narrower case, not a guarantee for arbitrary edits. See [ProseMirror mapping source](https://github.com/ProseMirror/prosemirror-transform/blob/master/src/map.ts).
 
 Where the underlying content isn't a live-editable CRDT/OT document — e.g., annotating arbitrary web pages you don't control — the **W3C Web Annotation Data Model** formalizes "anchoring" via typed Selectors (`TextQuoteSelector`, `TextPositionSelector`, `FragmentSelector`, `RangeSelector`) that describe *how* to relocate a target within a document ([Web Annotation Data Model, W3C Recommendation](https://www.w3.org/TR/annotation-model/)). **Hypothesis** implements the pragmatic, degraded-content case: it stores three selectors per anchor (range, text-position, text-quote-with-32-chars-context) and falls back through them in order, using a Bitap/Myers-diff-based fuzzy text search when the page has changed enough that exact positions no longer resolve ([Fuzzy Anchoring, Hypothesis](https://web.hypothes.is/blog/fuzzy-anchoring/)). This is the annotation-layer equivalent of "best-effort re-anchoring with visible degradation" — the system tries hard to relocate the anchor, but never pretends the relocation is exact when it isn't.
 
@@ -54,7 +54,7 @@ The general HTTP mechanism for "I observed version X, only act if it's still X" 
 Two subtleties matter for this specific problem:
 
 - **The ETag of a rendered body is not the same thing as the version of the source content.** A document renderer might inject a timestamp, a per-request nonce, or reviewer-specific UI chrome into the HTML it serves — producing a different byte-for-byte ETag on every request even when the underlying source content is unchanged. Conflating "ETag of what was rendered" with "content version" causes false-positive conflicts (harmless re-renders blocked) or false negatives (the ETag is stable/generic while the source semantically changed underneath it). The `view_snapshot_id` needs to be pinned to the *source* content version (e.g., a content hash or a monotonic revision number of the underlying document), independent of incidental rendering variance.
-- **Idempotency keys solve a different but adjacent problem: safe retries, not staleness detection.** Stripe's model — client generates a UUID, sends it as an `Idempotency-Key` header, server persists the first response keyed by that value and replays it verbatim on retry — guarantees a retried write has exactly one effect ([Designing robust and predictable APIs with idempotency, Stripe](https://stripe.com/blog/idempotency); [Idempotent requests, Stripe API reference](https://docs.stripe.com/api/idempotent_requests)). Brandur Leach's widely-cited implementation notes the concrete schema: an `idempotency_keys` table with `locked_at`, a `recovery_point` state machine ("started" → "ride_created" → "finished"), and `SERIALIZABLE` transactions so that "if two different transactions both try to lock any one key, one of them will be aborted by Postgres" ([Implementing Stripe-like Idempotency Keys in Postgres](https://brandur.org/idempotency-keys)). Compare-and-swap (CAS) — read a version counter, write only if it still matches — is the general primitive underneath both idempotency-key locking and ETag/If-Match ([Compare-and-swap, Wikipedia](https://en.wikipedia.org/wiki/Compare-and-swap)). The two must compose: idempotency keys prevent a retry from *duplicating* a comment; CAS/If-Match against `view_snapshot_id` prevents a comment from silently *forking* onto a document version the reviewer never saw. A system needs both — they close different gaps.
+- **Idempotency keys solve safe retries, not staleness detection.** Stripe stores the original response after execution begins, compares retry parameters, and replays the stored result while the key remains retained. Validation failures or conflicts before execution are not saved; a key reused after pruning can create a new operation. See [Stripe's idempotent request contract](https://docs.stripe.com/api/idempotent_requests). For a snapshot-bound endpoint, authenticate first and replay a matching completed request before applying a new staleness check. Otherwise a successful submission retried after a document edit incorrectly becomes a conflict. Separately, the initial current-version check and insert must serialize with document writers. A unique idempotency key alone cannot provide that concurrency guard.
 
 ### 4. Event-Sourcing and Audit: Served-Content Logs and Temporal Queries
 
@@ -68,7 +68,7 @@ The general security vocabulary for "a check and an action separated by a gap in
 
 This framing matters specifically for AI agent platforms because the gap is no longer a UI-race curiosity — it's structural. A July 2026 systematization-of-knowledge paper surveying 39 papers on AI coding agent execution security places TOCTOU races alongside sandbox isolation, MCP threats, and identity delegation as one of 17 core categories of agent execution-security research, explicitly framing cases where "an agent validates a piece of external state... and then acts on a stale copy of that state after it has changed," including trust-boundary races where "execution occurs before a user's trust decision takes effect" ([The Balkanization of Execution-Security Research for AI Coding Agents, arXiv:2607.05743](https://arxiv.org/abs/2607.05743)). An agent that regenerates a document between a human's read and their approval click is the same shape of bug as a symlink-swap TOCTOU exploit, just at the application layer instead of the filesystem layer — and the standard TOCTOU mitigations translate directly: eliminate the gap (bind check and action atomically), or make the check-then-use sequence itself atomic via locking/CAS rather than time-based assumptions.
 
-The adjacent solved problem is **software supply-chain artifact signing**. Sigstore issues short-lived certificates tied to OIDC identity, signs the artifact, and logs the signature in the Rekor transparency log, so that what gets deployed is cryptographically tied to exactly the artifact that was built and reviewed — not "whatever is currently at that path" ([Software Supply Chain Security Beyond SBOMs: Sigstore, SLSA, and Build Provenance](https://aquilax.ai/blog/supply-chain-artifact-signing-slsa)). SLSA's Build track (levels L0–L3) formalizes provenance guarantees about *which* build produced *which* artifact. The analogy to document review is exact: a human approval should sign (or at minimum durably reference) the specific content hash/snapshot ID, functioning as a lightweight, human-issued attestation over an immutable artifact — the same shape as a CI system attesting over a build output.
+**Software supply-chain signing** provides useful primitives, but not an automatic review-to-deploy guarantee. Sigstore verification checks a signature against an artifact and expected signer identity; [SLSA build provenance](https://slsa.dev/spec/v1.2/provenance) describes how an output relates to its build and source. Neither alone proves that a human reviewed that artifact or that a deployment ran those exact bytes. A review workflow must separately record approval over an explicit subject digest, verify the approval's authority, and enforce that digest at the publication/execution boundary. See [Sigstore signature verification](https://docs.sigstore.dev/cosign/verifying/verify/). If reviewed source is transformed into a build output, record and verify that transformation's provenance rather than claiming source and binary are byte-identical.
 
 ### 6. 2025–2026 Developments: MCP and Agent Control Planes
 
@@ -84,61 +84,83 @@ On the agent-platform-governance side, current writing on production AI agent co
 
 **3. Immutable Artifact Gating.** Content-address the document (hash the canonical bytes) and make that hash — not a mutable document ID + "latest" — the thing that gets rendered, reviewed, and approved. Approval binds to the hash. This borrows directly from Git's object model and Sigstore/SLSA provenance: the approved thing and the deployed thing are checked for byte-identity, not "same document_id, presumably still current." *Trade-off:* requires a content-addressed storage layer or at minimum a strong hash column; needs a clear policy for what happens when a newer version exists (block, re-request approval, or allow with a diff-visible warning).
 
-**4. Idempotency-Key + CAS Write Discipline.** Every comment/approval submission carries a client-generated idempotency key (dedupes retries) *and* a CAS precondition — `If-Match: <view_snapshot_id or content ETag>` or an equivalent application-level version check (rejects writes against stale current-state, returning 409/412 rather than forking). These solve different problems and both are required: idempotency-key alone permits binding to the wrong version consistently on retry; CAS alone permits duplicate side effects on retry without the key. *Trade-off:* adds a `409 Conflict`/`412 Precondition Failed` path the client UI must handle gracefully (typically: "the document changed since you viewed it — reload and re-review").
+**4. Idempotency-Key + Atomic Version Gate.** Require a client-generated key, the served snapshot ID, and an explicit expected source revision. Replay a matching authorized completed request first; for a new request, compare the revision and create the comment within a transaction that excludes concurrent document edits. An HTTP endpoint may expose a strong `If-Match` validator for its defined representation; an opaque served-view ID is not automatically that validator. This pattern chooses a strict current-at-creation policy. Historical comments are another valid design, but must be explicitly bound to the old snapshot and labeled outdated, not described as current approvals. *Trade-off:* new stale submissions get a conflict and require re-review; retries of an already accepted submission return their original result.
 
 **5. Outdated-but-Visible (Soft Invalidation).** When a document changes after a comment/approval was anchored, don't delete, don't silently rebind — mark the artifact "outdated relative to version N+1" and keep both the old anchor and a path to the diff against current, as GitHub and Phabricator do. This preserves the audit trail's integrity: the human's original judgment about version N remains a true fact even after N+1 exists. *Trade-off:* UI complexity in surfacing staleness without overwhelming reviewers (GitHub's own community routinely files bugs about outdated-comment visibility, suggesting this is a genuinely hard UX problem, not just an engineering afterthought).
 
-**6. Point-in-Time Replay via Served-Content Log + Temporal Storage.** Combine pattern 1 with system-versioned/temporal tables (or an event-sourced document store) so that "replay exactly what the reviewer saw" is a first-class, ordinary query — `SELECT content FOR SYSTEM_TIME AS OF <served_at>` or equivalent — rather than a forensic exercise reconstructing state from scattered logs. *Trade-off:* storage/retention cost for full historical content, and a retention policy decision (how long must "what did they see" remain reconstructable — indefinitely for compliance-heavy domains, 24h–30d for most others, mirroring Stripe's guidance to recycle idempotency keys after a bounded horizon).
+**6. Snapshot Replay via Retained Content.** Resolve `view_snapshot_id` to the immutable retained revision or content object that was actually rendered. `served_at` is useful audit metadata, but querying document state at that timestamp is insufficient: an edit may land between reading the source and committing the serve event. Temporal storage can retain versions, but retrieval must use the recorded version identifier. *Trade-off:* content, served-view records, and approval evidence need coordinated retention based on the product's audit and privacy requirements. Stripe's minimum 24-hour key retention concerns retry deduplication, not a norm for document-audit retention; no universal 24h–30d audit window follows from it.
 
-### Illustrative schema sketch
+### Illustrative schema and serialized write protocol
+
+This is a proposed strict current-at-creation protocol, not an implementation attributed to the systems above. Source revisions and served-view rows are immutable. A renderer first retains the exact source revision, then records the view pointing to it, and serves those pinned bytes; it must not reread “latest” while rendering. A serve record proves what the server prepared/sent, not that the human read it. If exact rendered output matters, retain that output and its renderer/assets identity too.
 
 ```sql
--- The core fix: persist what was served, don't recompute it at write time.
+CREATE TABLE document_versions (
+    document_id UUID NOT NULL,
+    revision_number BIGINT NOT NULL,
+    content_hash TEXT NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (document_id, revision_number)
+);
 CREATE TABLE view_snapshots (
-    view_snapshot_id   UUID PRIMARY KEY,
-    document_id        UUID NOT NULL,
-    content_hash        TEXT NOT NULL,   -- content-addressed: hash of canonical bytes
-    revision_number     BIGINT NOT NULL, -- monotonic source revision, not render revision
-    served_to           UUID NOT NULL REFERENCES users(id),
-    served_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    view_snapshot_id UUID PRIMARY KEY,
+    document_id UUID NOT NULL,
+    revision_number BIGINT NOT NULL,
+    served_to UUID NOT NULL REFERENCES users(id),
+    served_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    FOREIGN KEY (document_id, revision_number)
+        REFERENCES document_versions(document_id, revision_number)
 );
-
--- Every downstream write requires the snapshot id explicitly.
 CREATE TABLE comments (
-    comment_id          UUID PRIMARY KEY,
-    view_snapshot_id    UUID NOT NULL REFERENCES view_snapshots(view_snapshot_id),
-    idempotency_key      UUID NOT NULL,
-    body                 TEXT NOT NULL,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (idempotency_key)
+    comment_id UUID PRIMARY KEY,
+    actor_id UUID NOT NULL REFERENCES users(id),
+    view_snapshot_id UUID NOT NULL REFERENCES view_snapshots(view_snapshot_id),
+    idempotency_key UUID NOT NULL,
+    body TEXT NOT NULL,
+    response_status INTEGER NOT NULL,
+    response_body JSONB NOT NULL,
+    UNIQUE (actor_id, idempotency_key)
 );
-
--- Write path (pseudocode):
---   1. snapshot = view_snapshots.get(view_snapshot_id)              -- must exist
---   2. current  = documents.get(snapshot.document_id)
---   3. if current.revision_number != snapshot.revision_number:
---        return 409 Conflict  { "reason": "document_changed_since_view",
---                                "viewed_revision": snapshot.revision_number,
---                                "current_revision": current.revision_number }
---        -- pattern 5: do NOT silently rebind; surface the diff, let the human decide
---   4. insert comment with (view_snapshot_id, idempotency_key) — CAS via UNIQUE constraint
---   5. return 201, comment bound to snapshot.content_hash, not to "current"
 ```
 
-The `409` path is the entire fix: it converts a silent data-integrity bug into a visible, recoverable UX moment — "the document changed since you looked at it, here's the diff, re-review or proceed knowingly" — which is exactly what GitHub does with outdated PR comments, what Google Docs' anchor API refuses to guarantee across revisions, and what Stripe's idempotency layer does for retried payments.
+The `documents` table (not shown) holds the current revision. Every document edit updates that row and its new immutable version in one transaction; revisions increase monotonically and are never reused. Use PostgreSQL `READ COMMITTED` with the following lock order on all submit paths:
+
+```text
+1. Authenticate actor; load immutable view; require view.served_to == actor
+   and current permission to comment on that document. Apply these checks
+   on retries too; an idempotency key is not authorization.
+2. BEGIN. Acquire a transaction-scoped lock for (actor, idempotency_key),
+   shared across every worker/instance (e.g. a PostgreSQL advisory lock).
+3. Look up comments by (actor, idempotency_key).
+   If found: compare view_snapshot_id and body to the original request.
+   Mismatch => rollback and reject key reuse.
+   Match => end transaction and replay stored status/body; do not retest
+   whether the document has since changed.
+4. SELECT revision_number FROM documents WHERE id = view.document_id
+   FOR UPDATE; hold this row lock until transaction end.
+   If revision != view.revision: rollback and return 409 with both revisions.
+5. Insert the immutable comment and its original 201 response in the same
+   transaction, bound to view_snapshot_id. COMMIT before returning success.
+```
+
+The key lock serializes duplicate submissions, including keys mistakenly reused with a different snapshot. The document row lock prevents an edit between the revision check and comment commit; writers cannot bypass this lock by changing content elsewhere. This is a lock-based compare-and-write gate, not CAS via a `UNIQUE` constraint. PostgreSQL documents that `FOR UPDATE` conflicts with updates to the locked row until transaction completion. See [row and advisory locks](https://www.postgresql.org/docs/current/explicit-locking.html).
+
+If an edit commits first, the new submission observes its revision and conflicts. If the comment commits first, a later edit may proceed, making the comment outdated without changing its original anchor. A lost response after commit is replayed on retry, even after that edit. Failure before commit leaves no successful effect and permits a fresh attempt. This sketch retains successful results with the immutable comment; if those records are pruned, the API must define key-expiry behavior rather than promise unlimited deduplication.
+
+For an approval that triggers a later action, current-at-creation is only the first boundary. The executor must consume the approved immutable subject and enforce the action's version/digest policy at use time; a stored approval must not authorize whatever later becomes “latest.”
 
 ## Implications for AI Agent Platforms
 
 Agent-generated content changes at a categorically different rate than human-edited documents — an agent can regenerate a full document in the seconds it takes a human to read the first paragraph. This makes the S1/S2 drift bug far more likely to trigger in practice than in human-only code review, where the analogous window (someone force-pushes while you're mid-review) is comparatively rare. Three consequences follow:
 
 - **Human approval gates are only as meaningful as their binding.** An "approve" click that resolves against "current content" rather than a pinned `view_snapshot_id` is security theater: it looks like a human-in-the-loop control but doesn't actually constrain what gets acted on. This is the direct analogue of TOCTOU-vulnerable privilege checks — the approval is the "check," the agent's subsequent action is the "use," and if they're not atomically tied to the same state, the gate can be silently bypassed by ordinary concurrent activity, no attacker required.
-- **"Review-to-deploy artifact equivalence" should be a platform invariant, not a per-feature choice.** Just as SLSA provenance ties a specific build to a specific source commit, agent platforms should be able to prove — not just claim — that the artifact a human approved is byte-identical to the artifact that was subsequently executed/published/deployed. Content-addressing plus a signed (or at minimum, logged and hash-pinned) approval record gives this for free.
+- **"Review-to-deploy artifact equivalence" should be a platform invariant, not a per-feature choice.** Just as SLSA provenance ties a specific build to a specific source commit, agent platforms should be able to prove — not just claim — that the artifact a human approved is byte-identical to the artifact that was subsequently executed/published/deployed. Record the reviewed subject digest, verify the approval authority, and verify the actual artifact digest at execution/publication. Where a build transforms reviewed source into an artifact, verify the build provenance as a separate link; signing alone does not establish this chain.
 - **MCP and similar agent-tool protocols currently leave resource-versioning as an implementer's problem.** With the 2026-07-28 MCP spec moving toward stateless, self-describing requests, platform builders integrating document/resource review over MCP should not assume the protocol gives them staleness detection — they need to add their own content-hash or revision-ID field to resource payloads and treat it as load-bearing, the same way they'd treat an ETag.
 
 ## Open Questions
 
 - **Granularity of "snapshot."** Is a `view_snapshot_id` per full-document render sufficient, or does fine-grained agent-mediated collaboration (e.g., multiple agents editing different sections concurrently) require CRDT-style sub-document anchors even for approval workflows, not just for live co-editing?
-- **Retention economics.** Full point-in-time replay (pattern 6) is expensive at scale. What's the right default retention window for "what was served" logs in regulated vs. unregulated domains, and should it differ from idempotency-key retention (typically 24h)?
+- **Retention economics.** Full point-in-time replay (pattern 6) is expensive at scale. What's the right default retention window for "what was served" logs in regulated vs. unregulated domains, and how should it differ from the API's independently specified idempotency-key retention?
 - **UX for staleness, unsolved even by market leaders.** GitHub's own community continues to file friction reports about outdated-comment visibility years after the mechanism was built — suggesting "tell the human their feedback is now stale, without being annoying or lossy" is still an open interaction-design problem, not just a backend one.
 - **Standardization gap.** No standard equivalent of RFC 9110's ETag/If-Match exists yet for "the version of the semantic content a human was shown," as distinct from "the version of the rendered representation." Should this be an MCP extension, a W3C Web Annotation profile, or an application-layer convention each platform reinvents?
 - **Agent-as-reviewer.** Everything above assumes a human is the approver being protected from stale content. As agents themselves start approving other agents' outputs (agent-mediated review chains), does the same binding requirement apply symmetrically, and does an agent's "view" of a snapshot need the same immutability guarantee as a human's?
@@ -155,7 +177,7 @@ Agent-generated content changes at a categorically different rate than human-edi
 - [T7447: Bring inline comments forward across revision updates — Phabricator](https://secure.phabricator.com/T7447)
 - [Manage comments and replies — Google Drive API](https://developers.google.com/workspace/drive/api/guides/manage-comments)
 - [Y.RelativePosition — Yjs Docs](https://docs.yjs.dev/api/relative-positions)
-- [prosemirror-transform README — ProseMirror](https://github.com/ProseMirror/prosemirror-transform/blob/master/src/README.md)
+- [Position mapping implementation — ProseMirror](https://github.com/ProseMirror/prosemirror-transform/blob/master/src/map.ts)
 - [Collaborative Editing in ProseMirror — Marijn Haverbeke](https://marijnhaverbeke.nl/blog/collaborative-editing.html)
 - [Web Annotation Data Model — W3C Recommendation](https://www.w3.org/TR/annotation-model/)
 - [Fuzzy Anchoring — Hypothesis blog](https://web.hypothes.is/blog/fuzzy-anchoring/)
@@ -171,7 +193,9 @@ Agent-generated content changes at a categorically different rate than human-edi
 - [Time-of-check to time-of-use — Wikipedia](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use)
 - [CWE-367: Time-of-check Time-of-use (TOCTOU) Race Condition](https://cwe.mitre.org/data/definitions/367.html)
 - [The Balkanization of Execution-Security Research for AI Coding Agents — arXiv:2607.05743](https://arxiv.org/abs/2607.05743)
-- [Software Supply Chain Security Beyond SBOMs: Sigstore, SLSA, and Build Provenance — AquilaX](https://aquilax.ai/blog/supply-chain-artifact-signing-slsa)
+- [Verifying Signatures — Sigstore](https://docs.sigstore.dev/cosign/verifying/verify/)
+- [Provenance — SLSA v1.2](https://slsa.dev/spec/v1.2/provenance)
+- [Explicit Locking — PostgreSQL](https://www.postgresql.org/docs/current/explicit-locking.html)
 - [The 2026-07-28 MCP Specification Release Candidate — Model Context Protocol Blog](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/)
 - [Key Changes — Model Context Protocol Changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
 - [The AI Agent Control Plane in 2026 — Preloop](https://preloop.ai/resources/ai-agent-control-plane-2026)
