@@ -1,7 +1,7 @@
 ---
 date: "2026-07-27"
 title: "Durable User Intent in Realtime Agent UIs: Why the End Button Must Always Win"
-description: "How client-side guards silently swallow critical user intents like end, cancel, and submit — and the persist-mint-resend pattern that guarantees delivery across disconnects, races, and half-open sockets."
+description: "How client-side guards silently swallow critical user intents like end, cancel, and submit — and a persist-mint-resend pattern for retrying delivery across disconnects, races, and half-open sockets."
 tags: ["realtime", "websocket", "idempotency", "voice-agents", "ui-patterns", "reliability", "state-machines", "offline-first"]
 ---
 
@@ -23,7 +23,7 @@ Three client-side mechanisms, each individually reasonable, combine into intent 
 
 The common structure: each guard assumes the blocked state is short-lived and the user will retry into a healthier moment. When the state is *not* short-lived, the guard converts a recoverable server-side situation into a permanently stuck client — and the server, which has robust handling for the end/cancel request, never receives it.
 
-A production instance of this class: LiveKit's agent framework had a case where [agent-side session shutdown left the user stranded in the room](https://community.livekit.io/t/agent-disconnects-after-session-shutdown-drain-true-but-user-remains-stuck-in-room-production-issue/647) — teardown on one side was assumed to imply notification of the other. Another: LiveKit's end-call tool [failed ~30% of the time against Gemini Live](https://github.com/livekit/agents/issues/5096) because the termination handshake waited on an unbounded audio-playback-completion signal. Both are the same lesson from different directions: **termination must be a first-class, boundedly-acknowledged message, not an inference from a side effect.**
+A production instance of this class: LiveKit's agent framework had a case where [agent-side session shutdown left the user stranded in the room](https://community.livekit.io/t/agent-disconnects-after-session-shutdown-drain-true-but-user-remains-stuck-in-room-production-issue/647) — teardown on one side was assumed to imply notification of the other. In another [LiveKit issue](https://github.com/livekit/agents/issues/5096), one user reported roughly 70% end-call success with Gemini Live and frequent tool-reply timeouts. This is a user-reported symptom, not a measured general failure rate or confirmed root cause. The [specific implementation cited](https://github.com/livekit/agents/blob/18cbb001d34d23affa7b8f3bd17ce4c0a44d61eb/livekit-agents/livekit/agents/beta/tools/end_call.py#L92) bounds its wait for speech creation at five seconds and calls shutdown in `finally`; a later wait on the speech handle has no explicit timeout there, but the report does not establish that it caused the observed failures. The engineering lesson is to give termination an explicit acknowledgement and deadline, and verify which stage actually failed.
 
 ## Prior Art: Everyone Converged on the Same Three Moves
 
@@ -45,9 +45,9 @@ Payment APIs solved retried-command dedup a decade ago, and their contract is pr
 
 The shared rule: the identifier is generated **once, client-side, at the moment the intent is expressed**, and travels unchanged with every retry. An ID minted inside the send routine regenerates on each attempt and defeats the dedup entirely.
 
-### Resend on channel-ready signals, not timers
+### Use channel-ready signals alongside an explicit acknowledgement policy
 
-- **MQTT QoS 1/2** requires unacknowledged messages to be re-sent *specifically on reconnect* with the same packet identifier — and v5 explicitly forbids resending at any other time ([EMQX design docs](https://docs.emqx.com/en/emqx/latest/design/retransmission.html)). The redelivery trigger is "the channel just became viable", a principled event, not a timer racing the guard state.
+- **MQTT QoS 1/2** requires unacknowledged messages to be re-sent *specifically on reconnect* with the same packet identifier — and v5 explicitly forbids resending at any other time ([EMQX design docs](https://docs.emqx.com/en/emqx/latest/design/retransmission.html)). This is a MQTT packet-retransmission rule, not a prohibition on application-level acknowledgement deadlines or deduplicated command retries.
 - **Socket.IO** is at-most-once by default; at-least-once requires explicitly adding acks, timeouts, and retries ([delivery guarantees](https://socket.io/docs/v4/delivery-guarantees)) — a reminder that realtime frameworks do not give you durable delivery for free.
 - **Phoenix Channels** rejoins topics automatically after reconnect and buffers pushes for flush-on-join — and still had a documented edge case where a pre-join push was buffered but never flushed ([issue #1295](https://github.com/phoenixframework/phoenix/issues/1295)). Even frameworks built for this get the edges wrong; the pattern needs testing against adversarial timing, not just happy paths.
 
@@ -55,7 +55,7 @@ The shared rule: the identifier is generated **once, client-side, at the moment 
 
 The realtime voice APIs already expose the right server-side primitives; the client's job is to use them idempotently:
 
-- **OpenAI Realtime** documents `response.cancel` as safe to send even when no response is in progress — you get an error event but "the session will remain unaffected" ([API reference](https://platform.openai.com/docs/api-reference/realtime-client-events/response)). A redundantly re-sent cancel is harmless by design. This is precisely the property that lets a client resend its end/cancel intent on every ready signal without first consulting local guard state.
+- **OpenAI Realtime** allows `response.cancel` when no response is running, returning an error without ending the session. That tolerance does **not** establish idempotence across different responses. The [generated API contract](https://github.com/openai/openai-python/blob/main/src/openai/types/realtime/response_cancel_event.py) has an optional `response_id`: omitting it targets the in-progress response in the default conversation. A delayed unscoped retry intended for response A can therefore cancel a later response B. A relay should bind each logical cancellation to a stable response ID and session generation, deduplicate the client request, and reject a retry that belongs to a replaced session. A response cancellation is also distinct from ending the whole session.
 - **Gemini Live** hard-caps connection lifetimes and sends a `GoAway` message with a `timeLeft` countdown before terminating, plus periodic `SessionResumptionUpdate` tokens the client persists and presents on reconnect ([session docs](https://ai.google.dev/gemini-api/docs/live-session)). Graceful termination is a first-class message type, and session continuity rides on a durable client-held token — the same persist-and-represent structure as a durable intent.
 
 For an agent platform running conversations over a relay (browser → relay → model provider), this means the relay's canonical session state machine should treat "user requested end" as a **persistent flag with a request ID** that the client re-asserts on every `ready`/`mode-changed`/reconnect signal until the server confirms the terminal state — rather than as a single message whose loss strands the session.
@@ -67,8 +67,8 @@ Event sourcing gives the cleanest vocabulary: a **command** is an expression of 
 ## Practitioner Checklist
 
 1. **Persist the intent locally the instant it's expressed** — before any network attempt, in state that survives reconnects (and ideally page reloads).
-2. **Mint a stable request ID at intent-creation time**, never inside the retried send path.
-3. **Resend on every channel-ready signal** (reconnect, ready, mode-change-settled) until the server confirms the terminal state. Stop conditions come from the server, not from local guard flags.
+2. **Mint a stable request ID at intent-creation time**, never inside the retried send path. Bind it to the intended resource and session generation; a cancellation must not retarget a later response.
+3. **Retry pending intents on channel-ready signals** (reconnect, ready, mode-change-settled), preserving the original target and generation. Stop on a terminal acknowledgement, rejection, or explicit expiry; do not carry a stale cancellation into a new session.
 4. **Guards only reduce noise.** Post-click disable to suppress duplicate submission of an *already-persisted* intent is fine. Any guard whose failure mode is "the intent was never recorded or sent" is a bug.
 5. **Never trust `send()` or `readyState`.** Detect zombie connections with an application-level heartbeat (miss threshold ≈ 3, interval below the shortest infra idle timeout in the path).
 6. **Server-side idempotency is the actual correctness layer**: same ID + same params → same outcome, replayed safely within a stated retention window; same ID + different params → explicit conflict.
