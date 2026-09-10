@@ -1,7 +1,7 @@
 ---
 date: "2026-07-29"
 title: "MCP 2026-07-28 Spec Overhaul: Stateless Core, OAuth/OIDC, Tasks, and Apps"
-description: "The Model Context Protocol's biggest rewrite since launch drops protocol-level sessions, hardens OAuth/OIDC, and ships Tasks and Apps as official extensions — with Claude adopting it on day one."
+description: "The Model Context Protocol's biggest rewrite since launch drops protocol-level sessions, hardens OAuth/OIDC, and ships Tasks and Apps as official extensions — with Anthropic announcing a Claude rollout on release day."
 tags:
   - research
   - mcp
@@ -14,9 +14,9 @@ tags:
 
 On July 28, 2026, the Model Context Protocol (MCP) steering group published the **2026-07-28 specification**, described by its own maintainers as the "most substantial changes... since adding authorization." The headline change is that **MCP is now stateless at the protocol layer**: the `initialize`/`initialized` handshake and the `Mcp-Session-Id` header are gone, replaced by self-contained, per-request messages that any server instance behind a plain round-robin load balancer can handle. Alongside this rewrite, the spec **hardens OAuth 2.1/OIDC authorization** (closing an authorization-server "mix-up" vulnerability class and fixing a long-standing Dynamic Client Registration bug that broke desktop/CLI clients), and promotes two capabilities — **Tasks** (durable, pollable long-running operations) and **Apps** (sandboxed, server-rendered interactive UI) — from experimental/ad-hoc status to official, versioned **extensions**.
 
-The release followed a ten-week release-candidate validation window (RC published May 21, 2026) led by MCP lead maintainers David Soria Parra and Den Delimarsky, with Tier 1 SDKs (TypeScript, Python, Go, C#, plus a beta Rust SDK) shipping support on day one. Anthropic simultaneously rolled out client-side support across Claude products — Claude.ai, the Claude Developer Platform, and Claude Code — including enterprise-managed auth via Entra/Okta, connector observability dashboards, and a research-preview "MCP tunnels" feature for reaching private-network servers. By the announcement, MCP had reportedly reached roughly 400M monthly SDK downloads (4x growth this year) and 950+ connectors in Claude's directory, with other reporting citing over 10,000 public MCP servers across the ecosystem.
+The release followed a ten-week release-candidate validation window (RC published May 21, 2026) led by MCP lead maintainers David Soria Parra and Den Delimarsky, with Tier 1 SDKs (TypeScript, Python, Go, C#, plus a beta Rust SDK) shipping support on day one. Anthropic simultaneously announced that support was rolling out across Claude products; its announcement did not establish completed same-day availability across Claude.ai, the Claude Developer Platform, and Claude Code. It also highlighted enterprise-managed auth via Entra/Okta, connector observability dashboards, and a research-preview "MCP tunnels" feature for reaching private-network servers. By the announcement, MCP had reportedly reached roughly 400M monthly SDK downloads (4x growth this year) and 950+ connectors in Claude's directory, with other reporting citing over 10,000 public MCP servers across the ecosystem.
 
-The spec is explicitly **breaking** for anything built around protocol-level sessions or the old synchronous long-running-task pattern, but ships a formal deprecation policy: Roots, Sampling, Logging, and the legacy HTTP+SSE transport are deprecated with a **minimum 12-month runway** before removal, and Dynamic Client Registration is deprecated in favor of Client ID Metadata Documents (CIMD) while remaining functional. Community reaction, notably on Hacker News, was largely favorable — the stateless redesign directly answers years of complaints that MCP's stateful design fought load balancers and complicated horizontal scaling — while security researchers (Akamai, SecurityWeek, Backslash) flagged that several protocol-level guarantees have now shifted into "implementation responsibility," creating new categories of risk around predictable task/state identifiers, header-based secret leakage, task-based denial-of-service, and UI-extension cross-site scripting.
+The spec is explicitly **breaking** for anything built around protocol-level sessions or the old experimental Tasks methods, but ships a formal deprecation policy: Roots, Sampling, Logging, and the legacy HTTP+SSE transport are deprecated with a **minimum 12-month runway** before removal, and Dynamic Client Registration is deprecated in favor of Client ID Metadata Documents (CIMD) while remaining functional. Community reaction, notably on Hacker News, was largely favorable — the stateless redesign directly answers years of complaints that MCP's stateful design fought load balancers and complicated horizontal scaling — while security researchers (Akamai, SecurityWeek, Backslash) flagged that several protocol-level guarantees have now shifted into "implementation responsibility," creating new categories of risk around predictable task/state identifiers, header-based secret leakage, task-based denial-of-service, and UI-extension cross-site scripting.
 
 ## 1. What Changed vs. the Previous Version
 
@@ -45,17 +45,17 @@ Two capabilities that previously lived as experiments or community conventions �
 
 ### What was stateful before
 
-Since the 2025-03-26 spec, MCP's Streamable HTTP transport worked much like a conventional stateful web session: a client opened a connection with an `initialize` request, the server replied with an `initialized` acknowledgment and issued an `Mcp-Session-Id`, and every subsequent request in that logical conversation had to carry that session ID. Because tool state, list results, and in-flight long-running operations were implicitly scoped to that session, production deployments needed:
+In the [2025-03-26 lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle), the client sent `initialize`, the server returned `InitializeResult`, and the client then sent `notifications/initialized`. Streamable HTTP servers [could optionally assign an `Mcp-Session-Id`](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#session-management); clients had to echo it only when the server assigned one. Deployments that kept state in these sessions faced infrastructure choices, rather than universal protocol requirements:
 
-- **Sticky sessions** at the load balancer, pinning a client to one backend instance for the life of the session.
-- A **shared session store** (Redis or similar) if any horizontal scaling was needed, so a request landing on a different instance could still find the session state.
-- **Deep packet inspection** at gateways, since routing and metering required parsing JSON-RPC bodies to figure out what a request was actually doing.
+- **Sticky sessions** could keep requests on the backend holding the session state.
+- A **shared session store** (Redis or similar) could instead make that state accessible to multiple instances; horizontal scaling without session state did not inherently require one.
+- Separately, **body inspection** was needed at gateways that routed or metered by JSON-RPC method or tool name.
 
 This is precisely the pattern that generated years of developer complaints, particularly from operators running MCP at scale. A representative Hacker News comment from an MCP gateway/registry operator (Glama) put it bluntly: "I cannot tell you what portion of our issues/bugs were due to the need to persist server state."
 
 ### What changed and why
 
-The 2026-07-28 spec eliminates the handshake and the `Mcp-Session-Id` header entirely. Every request is now self-contained: protocol version, client identity, and capabilities travel in a `_meta` field on each call, and a new optional `server/discover` RPC handles capability negotiation without establishing persistent state. The MCP blog's framing is explicit about the motivation: a remote server that previously needed sticky sessions, a shared session store, and deep packet inspection can now run "behind a plain round-robin load balancer," routing on the new `Mcp-Method` header alone.
+The 2026-07-28 spec eliminates the handshake and the `Mcp-Session-Id` header entirely. Every request is now self-contained: protocol version, client identity, and capabilities travel in a `_meta` field on each call, and a new `server/discover` RPC lets clients discover capabilities without establishing persistent state. Calling it is optional for clients, but [servers must implement it](https://modelcontextprotocol.io/specification/2026-07-28/server/discover). The MCP blog's framing is explicit about the motivation: a remote server that previously needed sticky sessions, a shared session store, and deep packet inspection can now run "behind a plain round-robin load balancer," routing on the new `Mcp-Method` header alone.
 
 Where servers genuinely need cross-call state — a multi-step workflow, a shopping cart, an in-progress upload — the spec doesn't pretend state disappears. Instead, it makes it **explicit rather than implicit**: servers mint an opaque, server-issued handle from a tool call, and that handle is passed back and forth as an ordinary tool argument in subsequent calls, rather than being invisibly carried by transport-layer session plumbing. This is the same design principle behind the Tasks extension.
 
@@ -76,20 +76,20 @@ Security commentary (SecurityWeek, citing Akamai analysis) frames this as a doub
 
 ## 4. The Tasks Extension
 
-Tasks moves from an experimental, session-coupled feature to the first official extension (`io.modelcontextprotocol/tasks`) under the new extensions framework, redesigned from the ground up to fit the stateless model.
+Tasks moves from an experimental core feature to the first official extension (`io.modelcontextprotocol/tasks`) under the new extensions framework, redesigned from the ground up to fit the stateless model.
 
-**Old pattern:** a long-running operation was tied to a blocking or session-scoped call — clients would effectively wait on a synchronous `tasks/result`-style call or rely on a persistent connection and session state to track progress.
+**Previous Tasks:** the [2025-11-25 experimental feature](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) already returned an immediate task handle and supported `tasks/get` polling, with deferred result retrieval through `tasks/result`. The latter could block until completion; using Tasks did not require holding the original tool call open.
 
-**New pattern:** a `tools/call` can return a **durable, opaque task handle** instead of (or in addition to) a final result. The server decides which calls become async tasks — clients don't control this decision. From there, the client drives the task lifecycle explicitly and statelessly:
+**New extension:** after both client and server explicitly opt in, the server chooses per supported request whether to return `CreateTaskResult` (`resultType: "task"`) instead of the ordinary result. This replaces the old client-requested task augmentation; `tasks/get` now also returns the completed result or failure. Ordinary synchronous tools remain supported, and slow work alone does not require extension adoption. The [extension overview](https://modelcontextprotocol.io/extensions/tasks/overview) defines the lifecycle:
 
 - `tasks/get` — poll-based status/result retrieval.
 - `tasks/update` — update a task (e.g., supply follow-up input mid-flight).
 - `tasks/cancel` — cancel an in-progress task.
 - `subscriptions/listen` — a single opt-in stream for receiving change notifications per task type, for clients that don't want to poll.
 
-Because task handles are explicit, server-issued, and passed as ordinary arguments (the same "make state visible" principle as the core stateless rewrite), a task can be picked up, polled, or cancelled from a completely different server instance than the one that created it — which is the entire point of decoupling long-running work from a sticky session.
+Explicit task handles allow requests to reach another instance, but the ID does not supply distributed storage or execution control. **Cross-instance operation requires application infrastructure** through which that instance can access durable task state and results and route cancellation to the executor. This is an implementation implication of the extension's durable-creation and state-serving responsibilities, together with the [core specification blog's distinction between application and transport state](https://blog.modelcontextprotocol.io/posts/2026-07-28/#no-handshake-or-sessions).
 
-This matters directly for **agentic workflows**: many realistic agent tasks (a multi-minute code generation job, a data pipeline run, a document processing job, a human-in-the-loop approval step) don't fit neatly into a single synchronous request/response cycle. Tasks gives agent frameworks and MCP hosts a standard way to say "start this, give me a handle, and I'll check back" — with durability across load-balanced infrastructure, not just within one long-held connection. It's a much closer match to how production job queues and workflow engines already behave, and it removes an entire class of ad hoc, vendor-specific "polling shims" that MCP server authors had previously built themselves.
+This matters directly for **agentic workflows**: many realistic agent tasks (a multi-minute code generation job, a data pipeline run, a document processing job, a human-in-the-loop approval step) don't fit neatly into a single synchronous request/response cycle. Tasks gives agent frameworks and MCP hosts a standard way to say "start this, give me a handle, and I'll check back" — with cross-instance durability when backed by the state and execution infrastructure described above. It matches production job queues and workflow engines while evolving the standardized polling already present in experimental Tasks.
 
 ## 5. The Apps Extension
 
@@ -103,9 +103,9 @@ The tradeoff is a genuinely new attack surface: rendering server-authored HTML/J
 
 ## 6. Implications for Agent Tool Ecosystems
 
-Anthropic adopted the spec immediately and comprehensively rather than incrementally:
+[Anthropic announced the Claude rollout](https://claude.com/blog/bringing-mcp-2026-07-28-to-claude) alongside the spec release, and highlighted related MCP capabilities:
 
-- Client-side support shipped across Claude.ai, the Claude Developer Platform, and Claude Code on announcement day.
+- Spec support was described as rolling out across Claude products soon; the announcement did not confirm completion for each product on release day.
 - **Interactive tools** (MCP Apps) for inline UI rendering in Claude conversations.
 - **Enterprise-managed auth**, letting admins provision MCP connectors org-wide through Entra/Okta-style identity providers rather than per-user consent.
 - **Observability dashboards** for connector publishers to track performance and adoption of their published MCP servers.
@@ -127,9 +127,11 @@ The spec is explicitly and deliberately **breaking**, though maintainers built i
 |---|---|
 | `initialize`/`initialized` handshake, `Mcp-Session-Id` header | Remove session-based handshake; read protocol version/capabilities from per-request `_meta`; implement `server/discover` |
 | Session-scoped caches, workflow progress, per-conversation config | Replace with explicit, server-issued handles passed as ordinary tool arguments |
-| Blocking/synchronous long-running calls, `tasks/list` | Migrate to the Tasks extension; poll via `tasks/get`, act via `tasks/update`/`tasks/cancel` |
+| Old experimental Tasks methods, including `tasks/list` and separate `tasks/result` | Replace removed methods when retaining Tasks functionality; the new extension requires explicit client/server opt-in, with results via `tasks/get` and interaction via `tasks/update`/`tasks/cancel` |
 | Loose/non-compliant tool input schemas | Full JSON Schema 2020-12 compliance now required; validator-quirk-dependent schemas may start failing |
-| Unauthenticated or ad hoc auth servers | Align with OAuth 2.1/OIDC; expose RFC 9728 Protected Resource Metadata |
+| Protected HTTP implementations choosing the MCP authorization model | Follow its OAuth/OIDC requirements and expose RFC 9728 Protected Resource Metadata; this does not require public unauthenticated servers to add authorization |
+
+Ordinary synchronous long-running tools are not required to adopt Tasks. [Authorization is optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements); its flow covers HTTP, while stdio implementations are advised to obtain credentials from the environment instead.
 
 **Deprecated with a minimum 12-month grace period (safe to defer, but should be planned):**
 
@@ -139,7 +141,7 @@ The spec is explicitly and deliberately **breaking**, though maintainers built i
 - **Dynamic Client Registration** → migrate toward Client ID Metadata Documents.
 - **Legacy HTTP+SSE transport** → migrate to Streamable HTTP.
 
-Practically, this means any MCP server that leaned on session identifiers for state, or that implemented its own bespoke long-polling/job-tracking pattern for slow tools, needs a genuine refactor — not a config flag. Servers that were already mostly stateless (pure function-call tools with no cross-call memory) are largely unaffected beyond header and schema compliance. All four Tier 1 SDKs (TypeScript, Python, Go, C#) shipped 2026-07-28 support simultaneously with the spec, and a Rust SDK is available in beta, which substantially lowers the migration cost for server authors willing to upgrade their SDK dependency rather than hand-roll the new wire format.
+Practically, servers that relied on protocol session identifiers or the removed experimental Tasks methods need a refactor. A bespoke job-tracking API does not need to adopt Tasks merely because its tools are slow, provided it otherwise conforms to the new core. Servers that were already mostly stateless (pure function-call tools with no cross-call memory) are largely unaffected beyond header and schema compliance. All four Tier 1 SDKs (TypeScript, Python, Go, C#) shipped 2026-07-28 support simultaneously with the spec, and a Rust SDK is available in beta, which substantially lowers the migration cost for server authors willing to upgrade their SDK dependency rather than hand-roll the new wire format.
 
 ## 8. Security Considerations and Community Reception
 
@@ -154,7 +156,7 @@ Practically, this means any MCP server that leaned on session identifiers for st
 
 Zavodchik's framing captures the general security-community consensus: "Critical security boundaries are now entirely dependent on how developers implement them" — echoing the spec's own long-standing (and now more consequential) position that MCP "cannot enforce these security principles at the protocol level" and that implementors "SHOULD" build robust consent, authorization, and access-control layers on top.
 
-**Adoption timeline:** RC announced May 21, 2026 → ten-week validation period with SDK maintainers and client implementers → final specification published July 28, 2026, with Tier 1 SDKs and Anthropic's Claude-side rollout landing the same day. The NSA/DoD published MCP-specific security guidance on June 2, 2026, during the RC validation window — itself a signal of how far MCP had already moved from developer tool to infrastructure requiring formal government security review before this spec even shipped.
+**Adoption timeline:** RC announced May 21, 2026 → ten-week validation period with SDK maintainers and client implementers → final specification published July 28, 2026, with Tier 1 SDK support available and Anthropic announcing its Claude-side rollout that day. The NSA/DoD published MCP-specific security guidance on June 2, 2026, during the RC validation window — itself a signal of how far MCP had already moved from developer tool to infrastructure requiring formal government security review before this spec even shipped.
 
 ## Sources
 
