@@ -46,11 +46,17 @@ git cat-file -p <commit-sha>
 # Extract the tree hash a ref points to
 git rev-parse <ref>^{tree}      # equivalently: git rev-parse <ref>:
 
-# Compare two commits' trees directly — empty output means zero file drift
-git diff <sha-A>^{tree} <sha-B>^{tree}
+# Equality gate: compare resolved tree OIDs, not displayed diff text
+set -euo pipefail
+TREE_A=$(git rev-parse --verify <sha-A>^{tree})
+TREE_B=$(git rev-parse --verify <sha-B>^{tree})
+test "$TREE_A" = "$TREE_B"
+
+# Diagnostic display only
+git diff --no-ext-diff --no-textconv <sha-A>^{tree} <sha-B>^{tree}
 ```
 
-These are plumbing commands operating on Git's object model directly, so they behave predictably under scripting. `git diff A^{tree} B^{tree}` with no output is the strongest cheap statement available: not "these commits look similar" but "these trees hash to the same content" (barring a hash collision — one reason Git and hosting providers have hardened against known SHA-1 attacks and are moving toward SHA-256 object storage).
+`rev-parse` resolves object identifiers; equality of the resolved tree OIDs is the identity gate (subject to hash collision resistance). Ordinary `git diff` is a human-facing display, with textconv enabled by default: a converter can discard differing bytes and leave empty output for unequal trees. Use the OIDs for the gate and `--no-ext-diff --no-textconv` for an unconverted diagnostic diff, not as a substitute for that comparison.
 
 ## Tree-Hash Equivalence: The Worked Example
 
@@ -61,14 +67,15 @@ These are plumbing commands operating on Git's object model directly, so they be
 **3. A verifier gate checks tree equivalence before release**, instead of the always-false `Y == X`:
 
 ```bash
-REVIEWED_TREE=$(git rev-parse X^{tree})
-MERGED_TREE=$(git rev-parse Y^{tree})
+set -euo pipefail
+REVIEWED_TREE=$(git rev-parse --verify X^{tree})
+MERGED_TREE=$(git rev-parse --verify Y^{tree})
 
 if [ "$REVIEWED_TREE" = "$MERGED_TREE" ]; then
   echo "OK: zero file drift between reviewed and merged commit"
 else
   echo "FAIL: merged tree diverges from what was reviewed" >&2
-  git diff X^{tree} Y^{tree}   # exact diff of what changed
+  git diff --no-ext-diff --no-textconv X^{tree} Y^{tree}   # diagnostic
   exit 1
 fi
 ```
@@ -77,18 +84,29 @@ If this passes, every byte of every file in `Y` is provably identical to what th
 
 **4. A release tag is cut on `Y`.** `git tag -a v2.7.0 Y` creates a new tag object, but the check already ran against `Y`'s tree — the tag is a durable pointer to an already-verified tree. The tag's own SHA is irrelevant to the equivalence proof.
 
-**5. Deploy checks out the tag, builds, and pins by digest**, not tag name:
+**5. Build an isolated snapshot of the verified tag and request deployment by digest.** This scoped example assumes a trusted CI job, a self-contained tracked source tree with no submodules or Git LFS materialization, and no `export-ignore` / `export-subst` attributes (including local/global overrides). `git archive` honors those attributes, so repositories using them need an explicitly reviewed export policy instead. The build must not require `.git`, untracked generated files, or extra local contexts. The job exclusively owns the temporary directory throughout the build.
 
 ```bash
-git rev-parse v2.7.0^{tree}    # must equal $MERGED_TREE from step 3
+set -euo pipefail
+TAG_COMMIT=$(git rev-parse --verify 'v2.7.0^{commit}')
+TAG_TREE=$(git rev-parse --verify "${TAG_COMMIT}^{tree}")
+test "$TAG_TREE" = "${MERGED_TREE:?run step 3 first}" || {
+  echo "FAIL: release tag tree differs from verified merge" >&2
+  exit 1
+}
 
-IMAGE_DIGEST=$(docker buildx build --push -t registry/app:v2.7.0 . \
-  --metadata-file meta.json && jq -r '."containerimage.digest"' meta.json)
-
-kubectl set image deployment/app app=registry/app@${IMAGE_DIGEST}
+BUILD_TMP=$(mktemp -d)
+mkdir "$BUILD_TMP/context"
+git archive --format=tar "$TAG_COMMIT" | tar -xf - -C "$BUILD_TMP/context"
+# Current checkout edits, untracked and ignored files never enter this context.
+docker buildx build --push -t registry/app:v2.7.0 \
+  --metadata-file "$BUILD_TMP/meta.json" "$BUILD_TMP/context"
+IMAGE_DIGEST=$(jq -er '."containerimage.digest" |
+  select(test("^sha256:[0-9a-f]{64}$"))' "$BUILD_TMP/meta.json")
+kubectl set image deployment/app "app=registry/app@${IMAGE_DIGEST}"
 ```
 
-A tag is a mutable pointer that can be retargeted, accidentally or maliciously; a digest is the content hash of the image manifest. Deploying by digest means "exactly this image, byte for byte," the same guarantee tree-hash comparison gives for source. The proof chain: reviewed tree → merged tree (equal, proven) → tagged tree (equal, proven) → built image digest (deployed, pinned) → running workload (re-verifiable by digest at any time).
+The tag can move, so resolve it once to an immutable commit before checking and exporting. Unlike `docker build ... .`, the exported context excludes changes in the caller's working directory; build metadata is also outside the context. Under the stated export assumptions, the gates establish reviewed tree = merged tree = exported tag tree, then submit the builder's reported digest for deployment. They do **not** prove a successful rollout or an honest build: verify the actual workload separately, including any multi-platform index-to-platform-manifest relationship. External dependencies, the builder, and reproducibility still need the controls below.
 
 Most CI pipelines that try to enforce "review == deploy" today compare commit SHAs, branch pointers, or PR numbers — porcelain identifiers that don't survive a squash or cherry-pick without deliberate lineage tooling. Tree-hash comparison sidesteps this by operating one layer down, on Git's actual content model, where "same content" has one unambiguous, checkable answer.
 
@@ -117,15 +135,20 @@ Tree-hash equivalence and reproducible builds give you the mechanism; attestatio
 
 The Source Track is directly relevant: it requires that if additional changes are made *during* review, those changes must be reviewed too — codifying, as a formal control, the exact "review must cover the final revision" problem this article addresses. L4 requires two trusted parties to agree before a change lands on a protected branch, with a defined "Trusted Robot" exception for automation like dependency bots.
 
-**Sigstore** provides the signing/transparency infrastructure making these attestations trustworthy: **Fulcio** issues short-lived certificates bound to an OIDC identity (no long-lived key management); **Rekor** is an append-only transparency log timestamping every signing event, making forged or backdated attestations detectable; **cosign** is the CLI tying both together for signing and verifying artifacts.
+**Sigstore** provides the signing/transparency infrastructure making these attestations trustworthy: **Fulcio** issues short-lived certificates bound to an OIDC identity (no long-lived key management); **Rekor** is an append-only transparency log that records submitted signing evidence; inclusion is a property of the chosen signing service and verification policy, not a guarantee for every signature; **cosign** is the CLI tying both together for signing and verifying artifacts.
 
-**GitHub artifact attestations** (`actions/attest`) operationalize this for GitHub Actions: a workflow generates an in-toto/SLSA provenance attestation after build, signs it via Sigstore, and stores it queryable by digest:
+**GitHub artifact attestations** (`actions/attest`) operationalize this for GitHub Actions: a workflow generates an in-toto/SLSA provenance attestation after build, signs it via Sigstore, and stores it queryable by digest. Public repositories use the Sigstore public-good instance with its transparency log; private repositories use GitHub’s Sigstore instance, which has no transparency log. Private attestations still support signature and identity verification; do not promise a Rekor trail for them.
+
+For a container, use the immutable registry digest confirmed by workload inspection, not a mutable tag. The following assumes `DEPLOYED_DIGEST` is that verified manifest/index digest (including platform mapping where applicable), and `TAG_COMMIT` is the expected build source commit resolved above:
 
 ```bash
-gh attestation verify oci://ghcr.io/ORG/IMAGE:tag -R ORG/REPO
+gh attestation verify "oci://registry/app@${DEPLOYED_DIGEST:?confirm running artifact}" \
+  -R ORG/REPO \
+  --signer-workflow ORG/REPO/.github/workflows/release.yml \
+  --source-digest "${TAG_COMMIT:?expected source commit}"
 ```
 
-This cryptographically confirms the digest was produced by a specific workflow run in a specific repository.
+This verifies signed provenance for that artifact and enforces the expected repository, signer workflow, and source digest. These expectations must come from trusted release policy, not the attestation being checked. Under a trusted-builder assumption, this links the artifact to the expected build source; it authenticates claims, not independent proof that the builder executed them honestly. A compromised workflow can falsify workflow-controlled predicate fields. This recipe is a command-contract example, not a report of a live registry verification.
 
 None of these layers substitutes for the others: tree-hash equivalence is the fast, mandatory, zero-infrastructure check; reproducible builds extend the proof to build output but require real engineering investment; attestation doesn't prove equivalence itself — it proves *who* claimed *what*, non-repudiably, verifiable by someone outside the pipeline. A pragmatic stack: tree-hash gating on every merge, reproducible builds as a stretch goal for high-value artifacts, attestation for external auditability.
 
@@ -158,6 +181,11 @@ Content-addressable equivalence gating converts "trust that nothing changed" fro
 ## References
 
 - [Git Internals - Git Objects](https://git-scm.com/book/id/v2/Git-Internals-Git-Objects) — blob/tree/commit object model
+- [git-diff Documentation](https://git-scm.com/docs/git-diff) — textconv and diagnostic display
+- [git-archive Documentation](https://git-scm.com/docs/git-archive) — snapshot export and attribute behavior
+- [Docker build contexts](https://docs.docker.com/build/concepts/context/) — local directory inputs
+- [GitHub CLI attestation verification](https://cli.github.com/manual/gh_attestation_verify) — digest and producer-policy verification
+- [How GitHub generates attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations#how-github-generates-artifact-attestations) — public/private Sigstore distinction
 - [git-rev-parse Documentation](https://git-scm.com/docs/git-rev-parse) — `<rev>^{tree}` and `<rev>:` tree-hash syntax
 - [Git Tools - Revision Selection](https://git-scm.com/book/en/v2/Git-Tools-Revision-Selection)
 - [Save the precious build minutes! Reusing build outputs with Git Tree Hash](https://dev.to/taskworld/save-the-precious-build-minutes-reusing-build-outputs-with-git-tree-hash-k61) — practical tree-hash usage pattern
