@@ -73,7 +73,7 @@ Event sourcing gives the cleanest vocabulary: a **command** is an expression of 
 5. **Never trust `send()` or `readyState`.** Detect zombie connections with an application-level heartbeat (miss threshold ≈ 3, interval below the shortest infra idle timeout in the path).
 6. **Server-side idempotency is the actual correctness layer**: same ID + same params → same outcome, replayed safely within a stated retention window; same ID + different params → explicit conflict.
 7. **Terminal-state transitions come first and are bounded.** Never sequence the guaranteed transition (the thing joiners and retries wait on) behind unbounded cleanup like adapter teardown or playback completion — demote cleanup to fire-and-forget after the terminal state is committed.
-8. **State the guarantee window explicitly** (Stripe: 24h key retention; Gemini: 24h resumption tokens) instead of implying forever.
+8. **State the guarantee window explicitly** (Stripe: 24h key retention; Gemini: resumption tokens valid for 2 hours after the last session termination, per the [current official session-management documentation](https://ai.google.dev/gemini-api/docs/live-api/session-management#session-resumption)) instead of implying forever.
 9. **Test with adversarial timing**: a legal-but-hostile counterpart (cancel that rejects, close that never resolves, socket that half-opens) plus a concurrent second operation is what discriminates these bugs; happy-path E2E has zero power over them.
 
 ## Relevance to Agent Platform Engineering
