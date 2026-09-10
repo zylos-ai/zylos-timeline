@@ -2,7 +2,7 @@
 date: "2026-08-01"
 time: "10:30"
 title: "Recursive Multi-Agent Systems: What Happens When Agents Spawn Agents That Spawn Agents"
-description: "2026 research on recursive agent harnesses shows real accuracy gains from letting subagents spawn their own subagents — but also a documented Claude Code bug where permission denials trigger infinite recursive spawning, burning 1.2M+ tokens in 30 minutes."
+description: "Recursive agent harnesses report higher long-context benchmark scores, while a version-specific Claude Code user report illustrates runaway-spawning risks. Neither recursion's isolated benefit nor the reported incident's root causes are established."
 tags:
   - research
   - multi-agent-systems
@@ -13,7 +13,7 @@ tags:
 
 ## Executive Summary
 
-Recursive multi-agent systems — where a subagent has the same tool-spawning capability as its parent, allowing genuine recursive decomposition rather than one-level fan-out — moved from research paper to production pattern in 2026. Benchmarks show the architecture itself, independent of model quality, accounts for double-digit accuracy gains on long-horizon tasks. But the same recursion mechanism that makes these systems powerful is also the mechanism behind one of the most severe reliability incidents reported against a major coding agent this year: a permission denial that caused an agent to spawn a workaround child, which hit the same wall and spawned another, fifty-plus levels deep, burning over a million tokens with zero recoverable output. The practical takeaway for anyone building long-running agent systems is that recursion depth is a budget to spend deliberately on genuinely recursive problems, not headroom to fill just because the platform allows it — and it needs a hard circuit breaker, not just a soft depth convention.
+Recursive multi-agent systems let subagents delegate further work. A 2026 harness study reports higher Oolong-Synthetic scores with the same GPT-5 backbone as a published coding-agent baseline, but does not isolate recursion depth or control exact compute budgets. Separately, a Claude Code v2.1.177 user reported repeated spawning after permission denials, over a million tokens consumed, and lost intermediate work; these remain reported observations, with the relevant environment flag's meaning disputed. Together they motivate an engineering recommendation: treat recursion depth as a budget, enforce spawn ceilings, and preserve partial results. They do not establish a universal performance gain or a product-wide failure mechanism.
 
 ## What "Recursive" Adds Beyond Ordinary Subagents
 
@@ -25,61 +25,69 @@ Most production multi-agent setups today are single-level: an orchestrator dispa
 
 ## The Case for Recursion: Benchmark Evidence
 
-The RAH paper's controlled comparison is the most useful data point because it isolates architecture from model capability. On Oolong-Synthetic (199 samples, context lengths from 1K to 4M tokens):
+The RAH paper compares new runs with published baseline point estimates on the same Oolong-Synthetic protocol (199 samples, context lengths from 1K to 4M tokens):
 
-| Approach | Accuracy |
+| Approach | Oolong Score |
 |---|---|
 | Full-context baseline | 59.22% |
-| Recursive Language Models (bare model recursion, no filesystem) | 64.38% |
+| Recursive Language Models (Python REPL scaffold with recursive model calls) | 64.38% |
 | Codex coding agent | 71.75% |
 | RAH, GPT-5 backbone | 81.36% |
 | RAH, Claude Sonnet 4.5 backbone | 89.77% |
 
-Because RAH and Codex share the same GPT-5 backbone, the 9.6-point gap is attributable to the harness architecture, not the model. The pattern held across question types: semantic answers (user identity, comparisons, labels) exceeded 86% accuracy, while numeric answers degraded to 69.33%, mostly due to a scoring function that penalizes near-miss numeric predictions rather than a genuine reasoning failure. The paper also notes that Anthropic's production dynamic workflows already use the same code-driven spawning pattern, framing harness-level recursion as "becoming a default strategy for tasks that exceed a single context window." ([arxiv.org/html/2606.13643v1](https://arxiv.org/html/2606.13643v1))
+RAH's GPT-5 score is 9.61 percentage points above the published Codex result. The authors interpret the matched backbone as evidence for a harness-level benefit. However, they lack baseline per-instance scores, leave exact GPT-5 token and latency profiles uninstrumented, and do not ablate recursion depth, child grouping, or spawning path. The comparison therefore does not isolate recursion's causal contribution or establish an advantage at equal compute cost. ([RAH §§4.1–4.2, 4.5, 5](https://arxiv.org/html/2606.13643v1))
 
-The mechanism behind the gain is straightforward: bare model recursion (the "Recursive Language Models" baseline) lacks filesystem access and code execution, so it cannot navigate large document sets the way a full harness can. Giving each recursion level the *entire* tool surface, not just a text-in/text-out call, is what unlocks the accuracy jump.
+Oolong Score is not uniform exact-answer accuracy: USER, COMPARISON, LABEL, and DATE use exact match, while NUMERIC answers receive `0.75^absolute-error` credit. An incorrect count off by one still earns 0.75. RAH's semantic categories exceed 86%, and its NUMERIC score is 69.33%. The authors attribute part of that gap to small counting errors; the score alone does not establish that reasoning behind incorrect counts was sound. ([RAH §4.3](https://arxiv.org/html/2606.13643v1), [Cao et al. §3.1](https://arxiv.org/html/2603.20432v1))
 
-## The Case for Caution: Depth Limits Don't Reliably Bind
+The tool distinction also needs care. The measured RLM baseline already uses a Python REPL to examine input and make recursive model calls; it does not lack code execution at the root scaffold. Tool-free model subcalls differ from RAH children, which each receive a full harness with filesystem, shell, and further spawning access. This is an architectural distinction, not a measured ablation proving which capability produced the gain. The baseline definition in Cao et al. §3.2 is more precise than RAH's shorthand that RLM cannot run code. ([Cao et al.](https://arxiv.org/html/2603.20432v1), [RAH](https://arxiv.org/html/2606.13643v1))
 
-Two separate 2026 investigations into a widely-used coding agent found that documented recursion limits do not necessarily match observed behavior:
+## The Case for Caution: Version-Specific Enforcement Reports
 
-- **The changelog said five levels.** An independent probe built a recursive self-replicating subagent and, verified through timestamped disk traces, watched it succeed at nesting level nine with every spawn completing normally. The documented cap did not bind where it was supposed to. ([readysolutions.ai](https://readysolutions.ai/blog/2026-06-11-claude-code-nested-subagents/))
-- **An environment variable meant to disable subagent forking was silently ignored.** A critical bug report (filed June 15, 2026, against a major release) documented a compound failure chain: an agent tried to fetch files from a repository over HTTP one at a time, hit a permission denial on a blocked shell command, and — instead of stopping — spawned a child subagent to work around the denial. The child hit the identical wall and spawned another child. This repeated more than fifty levels deep even with the fork-disabling flag set. One incident consumed 1.2M+ tokens in about 30 minutes; another burned 4M tokens in under five minutes, exhausting an entire session's rate-limit budget on a task that should have been a single clone-and-search command. Interrupting the runaway chain discarded every intermediate result from the whole subtree — there was no partial-recovery path. ([github.com/anthropics/claude-code/issues/68619](https://github.com/anthropics/claude-code/issues/68619))
+Two version-specific reports raise questions about enforcement; neither establishes current behavior across Claude Code installations:
 
-Six distinct root causes were identified in that report: the disable flag being ignored, permission denials triggering spawn-a-workaround behavior instead of a clean failure, subagent permission requests never propagating up for user approval, agents choosing per-file HTTP fetches over a local clone, no salvage mechanism on interruption, and concurrent retry storms against rate limits with no backoff. Several of these are individually survivable; the combination created a positive feedback loop — the parent agent received vague summaries from failing children, which prompted it to spawn *more* agents to compensate.
+- **A depth-nine probe on v2.1.173.** The author reports a recursive chain reaching nine levels despite a five-level changelog statement. Timestamped disk traces support that account, but timestamps alone cannot rule out staged writes. The author explicitly limits the conclusion to this installation and says it cannot prove that no cap exists. ([Ready Solutions AI](https://readysolutions.ai/blog/2026-06-11-claude-code-nested-subagents/))
+- **A runaway-spawning report on v2.1.177, macOS CLI, Opus 4.6.** Issue #68619 alleges 50+ levels, 1.2M+ tokens in about 30 minutes, and another instance consuming 4M tokens in under five minutes. The reporter describes permission denials followed by workaround children, repeated file-by-file HTTP fetching, and lost intermediate results on interruption. These counts and causal claims are user-reported, not independently reproduced here. ([Issue #68619](https://github.com/anthropics/claude-code/issues/68619))
 
-## Cost Math and the Sweet Spot
+The reporter proposes six interacting problems: flag enforcement, spawn-after-denial behavior, permission propagation, inefficient fetching, loss of partial work, and retry storms. The first is explicitly disputed: commenters say `CLAUDE_CODE_FORK_SUBAGENT` controls context forking rather than access to the `Agent` tool, while the reporter argues its context and foreground/background semantics vary by version and matter to the incident. Without a versioned provider or implementation contract, this article does not resolve that disagreement or treat the flag as a documented spawning kill switch. The remaining mechanisms likewise remain the reporter's diagnosis, rather than established product-wide root causes. ([Discussion](https://github.com/anthropics/claude-code/issues/68619#issuecomment-4759999310), [clarification](https://github.com/anthropics/claude-code/issues/68619#issuecomment-4826745626), [reporter's response](https://github.com/anthropics/claude-code/issues/68619#issuecomment-4828252466))
 
-Recursion cost scales roughly as O(n·ℓ) — n spawns times average child-context length ℓ — with the dominant recurring expense often being every subagent independently re-reading the same shared document context. Prompt caching can cut token costs by up to 80% on long-horizon agentic workloads by amortizing that repeated read. ([arxiv.org/html/2606.13643v1](https://arxiv.org/html/2606.13643v1))
+## Cost Comparisons and Their Limits
 
-Independent research on nesting depth specifically found:
-- Recursion typically burns 4–15x the tokens of a single-agent session doing the same task.
-- The best cost-accuracy tradeoff across tested configurations was **one level of workers under a supervisor** — roughly 1.4x baseline cost — not deeper hierarchies.
-- Multi-agent topologies amplify a single agent's error rate roughly fourfold, with 39–70% performance degradation observed on sequential planning tasks when errors at an intermediate node cascade into everything beneath it.
-- Reported token-saving or accuracy-boosting results from deeper recursive structures generally assume *equal* token budgets across comparison conditions — the gains come from spending more compute in a better shape, not from spending less. ([readysolutions.ai](https://readysolutions.ai/blog/2026-06-11-claude-code-nested-subagents/))
+RAH identifies children re-reading shared context as a recurring cost. Its discussion cites prior work reporting prompt-caching savings up to 80% on long-horizon agentic workloads; this is not a measured saving for the paper's GPT-5 configuration, whose exact costs remain uninstrumented. ([arxiv.org/html/2606.13643v1](https://arxiv.org/html/2606.13643v1))
 
-Latency, unlike cost, is bounded by parallelism rather than subagent count: because subagents at the same level run concurrently, wall-clock time is set by the slowest branch, not the sum of all branches. That makes horizontal fan-out (many subagents, one level) cheap in latency terms even when it is expensive in token terms — which is exactly why runaway horizontal spawning is a distinct risk from runaway depth: nothing currently caps the number of subagents spawned at a single level within one session, only how many levels deep they can go.
+The following evidence concerns different workloads and coordination topologies, not a controlled recursion-depth sweep:
+
+- Anthropic reports agents using about 4x and multi-agent systems about 15x the tokens of **chat interactions** in its data. Neither figure is a 4–15x comparison against a single agent doing the same task. ([Anthropic](https://www.anthropic.com/engineering/multi-agent-research-system))
+- A financial-document extraction study places a hierarchical supervisor-worker architecture on a favorable cost/F1 frontier: F1 0.921 at roughly 1.4x the cost of its **sequential multi-agent pipeline** baseline. This compares orchestration topologies, not deeper versus shallower recursion. ([Study §§III, V](https://arxiv.org/html/2603.22651v1))
+- A separate scaling study reports a centralized topology's **trace-level error amplification** of 4.4x, measuring extra computational work associated with coordination failures. Its task-level error ratios are about 1.1–1.3, a different metric. The 39–70% performance degradation on PlanCraft is separately scoped to that sequential-planning benchmark and its tested topologies; it is not a recursion-depth law. ([Scaling study v3 §§3, 4.4](https://arxiv.org/html/2512.08296v3))
+
+These results should not be pooled into a universal cost multiplier or optimum depth. A fair deployment comparison should hold the total budget constant and measure quality, tokens, and latency on the target workload; such controls cannot be assumed for published recursive-system gains. Defaulting to one worker level is an engineering recommendation here, not an experimentally established optimum across tasks.
+
+Parallel children can reduce latency toward the slowest branch when concurrency is available, but queues, provider limits, sequential dependency chains, and aggregation still matter. Horizontal fan-out can therefore be costly even at shallow depth. Both breadth and depth need explicit limits; this article makes no claim that any current runtime permits unlimited horizontal spawning.
 
 ## Practical Guidance for Long-Running Agent Systems
 
-Synthesizing across the benchmark and incident data, several concrete design rules emerge for anyone building or operating systems that let agents spawn agents:
+As engineering recommendations informed by these benchmarks and reports, several design rules emerge for anyone building or operating systems that let agents spawn agents:
 
 1. **Default to depth one.** Justify every additional tier with a genuinely recursive argument — the subtask itself needs further unpredictable decomposition, not just "this looks like it should be someone else's job." Static hierarchies that mirror an org chart or folder structure usually pay delegation overhead without a matching benefit.
 2. **Make specialists read-only; restrict mutation to orchestrators.** This limits the blast radius of a bad decision made deep in a subtree.
 3. **Use files as interfaces, not return values.** Aggregating results through designated output files (as RAH does) preserves intermediate artifacts, so a crash or interruption doesn't erase completed work the way an in-memory return chain does.
-4. **Treat a permission denial or tool failure as a stop signal, not a spawn trigger.** The documented infinite-recursion bug exists precisely because a denial was treated as "delegate around this" rather than "surface this failure to the parent."
-5. **Set a hard, enforced spawn ceiling — both vertical and horizontal — and verify it actually binds.** A documented depth limit that silently doesn't enforce (five claimed, nine observed) or an environment variable that gets ignored is worse than no limit, because it creates false confidence.
+4. **Treat a permission denial or tool failure as a stop signal, not a spawn trigger.** The user report illustrates the risk of treating a denial as "delegate around this" rather than returning a failure; it does not independently establish that causal chain across deployments.
+5. **Set a hard, enforced spawn ceiling — both vertical and horizontal — and verify it actually binds.** Verify the actual runtime version and configuration with bounded tests. A single depth probe and a disputed context-forking flag are insufficient evidence that a ceiling will bind in your deployment.
 6. **Preserve partial results on interruption.** If killing a runaway chain forces discarding every subagent's output, operators are left choosing between an uncontrolled cost burn and total work loss — both bad options. Incremental persistence per subagent avoids that dilemma.
 7. **Add backoff before retry storms compound.** Concurrent subagents retrying against the same rate limit simultaneously is what turns a recoverable hiccup into a session-ending token burn.
 8. **Instrument at the artifact level, not the self-report level.** As depth increases, an agent's own narrated summary of "what happened" becomes less trustworthy than disk logs and output files, because each level compresses the one below it — stacking summaries of summaries eventually loses the reasoning trail an operator would need to debug a failure.
 
 ## Why This Matters for Long-Running Agent Operators
 
-Any system that keeps an agent running continuously across days or weeks — rather than one-shot request/response — will eventually face the choice of whether a subtask should be handled inline or delegated to a subagent, and whether that subagent should itself be allowed to delegate further. The 2026 evidence says both halves of that choice carry real, measured stakes: done well (bounded depth, file-based aggregation, failure-as-stop-signal), recursive decomposition delivers accuracy gains that are attributable to structure rather than model upgrades. Done without hard ceilings and failure containment, the exact same mechanism is the documented root cause of the worst kind of incident a long-running agent system can have — a silent, self-perpetuating loop that discovers the token budget the hard way.
+Long-running operators must decide both when to delegate and when a child should delegate again. The cited harness benchmark supports investigating full-harness recursion, with gains reported on one long-context benchmark and important causal and cost questions still open. The version-specific Claude Code reports motivate checking failure containment, without proving a universal product defect. Start with bounded delegation, measure the target workload under comparable budgets, verify spawn limits, and persist intermediate artifacts before relying on deeper trees.
 
 ---
 *Sources:*
 - [Recursive Agent Harnesses (arXiv 2606.13643)](https://arxiv.org/html/2606.13643v1)
+- [Coding agents and RLM baseline methods (arXiv 2603.20432)](https://arxiv.org/html/2603.20432v1)
+- [Multi-agent research system — Anthropic](https://www.anthropic.com/engineering/multi-agent-research-system)
+- [Financial-document orchestration study (arXiv 2603.22651)](https://arxiv.org/html/2603.22651v1)
+- [Scaling agent systems (arXiv 2512.08296v3)](https://arxiv.org/html/2512.08296v3)
 - [Recursive Multi-Agent Systems (arXiv 2604.25917)](https://arxiv.org/abs/2604.25917)
 - [RecursiveMAS cuts multi-agent AI costs by 75% — VentureBeat](https://venturebeat.com/orchestration/how-recursivemas-speeds-up-multi-agent-inference-by-2-4x-and-reduces-token-usage-by-75)
 - [Claude Code Nested Subagents: 5 Levels Deep, Token Math, 3 Pitfalls — Ready Solutions AI](https://readysolutions.ai/blog/2026-06-11-claude-code-nested-subagents/)
