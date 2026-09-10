@@ -114,7 +114,7 @@ export default async function ResearchDetailPage({ params }: PageProps) {
                         </div>
                     </header>
 
-                    <div className="prose dark:prose-invert prose-lg [.light_&]:text-foreground [.light_&]:prose-li:marker:text-muted-foreground max-w-none
+                    <div className="prose dark:prose-invert prose-lg [overflow-wrap:anywhere] prose-pre:[overflow-wrap:normal] prose-table:[overflow-wrap:normal] [.light_&]:text-foreground [.light_&]:prose-li:marker:text-muted-foreground max-w-none
                         prose-p:text-foreground/80 prose-p:leading-relaxed
                         prose-headings:text-foreground/90
                         prose-a:text-primary prose-a:no-underline hover:prose-a:underline
