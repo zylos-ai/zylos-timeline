@@ -13,11 +13,11 @@ But a single persona is supposed to be one mind. If the person in DM B asks abou
 
 The survey below reaches a consistent answer, assembled from what shipping systems do and from what has gone wrong when they did something else:
 
-- **Send a pointer, not a payload.** Zep/Graphiti's whole architecture is built so every synthesized fact traces back to its source episode; the link is a citation, not a copy. Injecting summaries silently (the ChatGPT and Gemini pattern) is what produces the "how did it know that?" reactions and the cross-client leaks.
+- **Send a pointer, not a payload.** Zep/Graphiti's whole architecture is built so every synthesized fact traces back to its source episode; the link is a citation, not a copy. Historical ChatGPT and Gemini incidents show why silently injected summaries can produce "how did it know that?" reactions, even though both products now expose substantially more provenance and control.
 - **Deliver it as advisory data, tagged as such.** Anthropic's own developer guidance says the model treats tool-result content as untrusted and that instructions placed there may be ignored or flagged; OWASP LLM01 says to segregate and clearly denote external content. A cross-thread note should live in exactly that tier — something the receiving thread may mention, never something it must obey — because the "Bad Memory" study shows a payload sitting in a memory file is a durable, multi-session attack surface.
 - **Let the receiving thread say nothing.** Claude Tag's stated design principle (as reported) is that an annoying agent is worse than an unhelpful one; it goes dormant in channels where it repeatedly has nothing to add. A nudge mechanism without a silence option and a backoff rule becomes alert fatigue, and the clinical-alert literature puts override rates for badly tuned systems at the 49–96% range.
 - **Scope by permission, default to isolation.** Claude Tag gathers facts across channels only where admins grant it; Microsoft Copilot Studio keeps a separate memory store per person on purpose; Meta AI's memory excludes group chats entirely. The systems that skipped the scoping step are the ones with incident write-ups.
-- **Accept read-time staleness and design for it.** Letta's sleep-time compute writes links "anytime" and the live agent reads whenever it reads; nobody documents recomputing link relevance at read time. A pointer that names its source lets the receiving thread re-check freshness; an injected summary cannot.
+- **Accept read-time staleness and design for it.** Letta 0.7.0's sleep-time-enabled agent type wrote memory "anytime" while the live agent continued; the broader field still leaves read-time relevance re-scoring underspecified. A pointer that names its source lets an authorized recipient re-check freshness; an injected summary cannot.
 
 The rest of this note walks the evidence: what each system actually does (section 1), the design primitives with their trade-offs (section 2), the documented failure modes (section 3), and a minimal implementable design with metrics (section 4).
 
@@ -33,13 +33,13 @@ Claude Tag surfaces cross-context knowledge as *an agent turn in-channel* — vi
 
 ### ChatGPT memory and "reference chat history"
 
-OpenAI's memory has two documented layers — explicit saved memories and an implicit layer (rolled out April 2025, expanded June 2025) that automatically draws relevant context from past conversations into new ones — and, per independent reverse-engineering, a third undocumented layer of dense periodic user summaries injected into hidden system context, not visible or editable in settings. Surfacing is fully automatic, silent, and payload-level: the context is injected, not pointed to.
+OpenAI's current documentation describes memory as a continually updated synthesis of past chats and other enabled sources. Users can inspect and directly correct a Memory Summary, see response-level Memory Sources through the book icon, delete memories, turn memory off, or use Temporary Chat. Project-only memory can constrain references to conversations inside one project, although availability and defaults vary by plan and workspace. Memory Sources are useful provenance but are not represented as an exhaustive account of every factor that shaped a response.
 
-The documented failure is instructive precisely because it is not a bug in the narrow sense. A lawyer disabled the Memory setting, then asked ChatGPT to summarize a contract; it opened by referencing his other client. The write-up's conclusion: a setting labeled "memory" does not necessarily cover every place a product can pull in prior context. A separate 2025 episode — ChatGPT using stored names unprompted inside visible reasoning traces, independent of memory settings — drew "creepy and unnecessary" from named developers in TechCrunch's reporting. Both are the same shape: cross-conversation knowledge arriving with no provenance and no consent gate.
+Those controls postdate or clarify the surface implicated in two 2025 observations. A lawyer reported disabling the then-visible Memory setting before a contract summary referenced another client; the write-up argued that the control did not cover every path that could supply prior context at that time. A separate episode — ChatGPT using stored names unprompted inside visible reasoning traces — drew "creepy and unnecessary" from named developers in TechCrunch's reporting. These are historical examples of cross-conversation knowledge arriving without provenance that was legible to the recipient, not descriptions of the current control surface.
 
 ### Gemini "Personal Context" and the Daily Brief
 
-Google's 2025 rollout gave Gemini cross-chat recall paired with a proactive Daily Brief that resurfaces prior activity — past searches, unfinished research — without being asked. TechCrunch's August 2026 critique is blunt: the brief cannot tell the difference between something urgent or actionable and an unsolicited nudge to follow up on other things, and the second kind "doesn't feel useful; it feels creepy." Press coverage describes the feature as on by default with a kill switch and a temporary-chat mode (we could not confirm those controls against Google's own documentation). The Daily Brief is the purest example of a proactive cross-thread surfacing mechanism shipped without a relevance threshold or a silence option.
+Google's 2025 rollout gave Gemini cross-chat recall; its 2026 Personal Intelligence and Daily Brief surfaces can also synthesize Gemini chats and connected apps into proactive items. Google's current help pages expose each Daily Brief item's source, let a user mark it complete or dismiss it, accept helpful/not-helpful feedback, and provide a full Daily Brief off switch. Personal Intelligence can also be disabled for one chat, while Temporary Chat avoids saving or using that chat for personalization. TechCrunch's August 2026 critique remains useful as a historical user reaction to low-relevance proactive items, but "no provenance" and "no silence option" are no longer accurate descriptions of the documented product.
 
 ### Microsoft Copilot Studio Memory and Meta AI
 
@@ -47,7 +47,9 @@ Two deliberate non-implementations bracket the space. Microsoft's Copilot memory
 
 ### Letta / MemGPT sleep-time compute
 
-Letta's sleep-time architecture is the closest published description of "a background pass is the thing that writes cross-context memory." A sleep-time agent — often a stronger, slower model — processes context while the primary agent is idle and writes learned context into shared memory blocks that the live agent reads. Two design decisions transfer directly. The primary agent lacks tools to edit its own core memory; only the sleep-time agent can, which Letta presents as the fix for the original MemGPT design that bundled memory editing and conversation in one agent. And updates are "anytime": the sleep-time agent modifies memory in an anytime fashion, so the primary agent can read it whenever, without waiting for the sleep-time agent to finish its reasoning. Freshness is asynchronous and read-time-eventual — the live thread never blocks on consolidation, and consequently what it reads may be one cycle stale.
+Letta's April 2025 sleep-time design is the closest published description of "a background pass is the thing that writes cross-context memory," but its claim must be scoped to the sleep-time-enabled agent type released with Letta 0.7.0. In that design, the primary conversational agent did not receive the memory-editing tools; a separate sleep-time agent processed context and modified shared memory blocks in an "anytime" fashion, so the primary agent could continue and later read an asynchronously updated block.
+
+That was not a platform-wide invariant even for long. In September 2025 Letta introduced a built-in memory omni-tool that let agents modify, create, and delete their own memory blocks. In February 2026 Letta Code introduced Context Repositories: git-backed memory files managed with normal filesystem tools and background subagents; Letta subsequently described server-side sleep-time agents as being replaced by client-side subagents. The transferable property is therefore asynchronous background consolidation, not a current rule that only a sleep-time agent may edit memory.
 
 ### Zep / Graphiti, A-MEM, HippoRAG: how episodes get linked
 
@@ -67,11 +69,11 @@ Linear's GitHub integration links issues to PRs and commits and updates status f
 
 ### Notification versus context injection
 
-The systems split cleanly. ChatGPT, Gemini and Meta inject cross-conversation payloads directly into the live context, invisibly and without a consent gate. Claude Tag posts as an agent turn: visible, attributable, scoped to the channel. The GitHub duplicate detector posts a discrete comment with its reasoning. Every documented "creepy" reaction and every cross-client leak in section 3 sits on the injection side of this line. Injection optimizes for the answer "just landing"; notification optimizes for the recipient knowing where a fact came from and being able to decline it.
+The surveyed systems expose a spectrum rather than a clean binary. ChatGPT and Gemini can inject remembered or personalized context into a live response, but their current products also expose source and control surfaces; Meta's cited implementation personalizes 1:1 chats. Claude Tag posts as an agent turn: visible, attributable, scoped to the channel. The GitHub duplicate detector posts a discrete comment with its reasoning. The historical "creepy" reactions and cross-context leaks in section 3 cluster around surfacing whose provenance or scope was not legible to the recipient. Injection optimizes for the answer "just landing"; notification makes origin and refusal easier to inspect.
 
 ### Pointer plus rationale versus summary payload
 
-Zep/Graphiti is the strongest documented pointer-first design: every fact carries provenance back to its source episode. A-MEM's interlinked notes are closer to payload-plus-pointer (summaries that reference each other). For cross-thread nudges the pointer form has a property the payload form lacks: the receiving thread can go read the source (or ask the source thread directly) and judge freshness and relevance for itself, instead of trusting a summary that was true at consolidation time. It also keeps the consolidation pass out of the business of deciding *how much* of thread A thread B is allowed to see — the pointer names a location whose access is governed by whatever permission model already exists.
+Zep/Graphiti is the strongest documented pointer-first design: every fact carries provenance back to its source episode. A-MEM's interlinked notes are closer to payload-plus-pointer (summaries that reference each other). For cross-thread nudges the pointer form has a property the payload form lacks: after disclosure authorization passes, the receiving thread can follow the source and judge freshness and relevance instead of trusting a summary frozen at consolidation time. A pointer is not permission by itself: both its visible label and the referenced content must remain non-sensitive until the source-to-target disclosure check succeeds.
 
 ### Freshness: computed at sync time, read later
 
@@ -109,48 +111,55 @@ For a small team running one persona across isolated threads with a periodic con
 
 **Detection, in the consolidation pass.** While folding each thread's recent log into long-term memory, compute candidate links between live threads with a cheap score: embedding similarity of the two threads' recent summaries, plus entity and user overlap, plus temporal adjacency, along the lines of the Generative Agents blend and HippoRAG-style entity linking. Threshold conservatively; a missed link costs one "I don't know," a spurious link costs trust.
 
-**Payload: a pointer, one line of rationale, a timestamp.** "Thread A (topic X) decided Y at 02:14; relevant to your work on Z." Provenance back to the source entry, as Zep/Graphiti does for every fact. No copied context. If the receiving thread needs more, it reads the source (subject to its permissions) or asks thread A directly through the internal channel — one extra round trip is cheaper than acting on a stale summary.
+**Payload: an opaque pointer, a non-sensitive rationale, a timestamp.** Before authorization, the note may say only that a related source exists and that access is pending; it must not copy a conclusion such as "decided Y" into the label or rationale. After a source-to-target disclosure grant passes, the pointer may expose only the fields covered by that grant. If the receiving thread needs more, an authorized participant follows the source or requests disclosure through the ordinary channel — one extra round trip is cheaper than leaking a stale or private summary.
 
-**Delivery: through the ordinary message path, tagged advisory.** The note arrives as an inbound message from an internal sender, wrapped and labeled as external, advisory data — the tier Anthropic's guidance and OWASP LLM01 describe — never in the system prompt and never as user text. It states its own scope: this may be mentioned to the participant if relevant; it is not an instruction to act. Because a thread that was asleep may be woken by the note and will not have re-read consolidated memory, the note must be self-contained: everything needed to decide "mention or ignore" is in the note itself.
+**Delivery: through the ordinary message path, tagged advisory.** The note arrives as an inbound message from an internal sender, wrapped and labeled as external, advisory data — the tier Anthropic's guidance and OWASP LLM01 describe — never in the system prompt and never as user text. Its enforced authority is narrow: it may inform the response or be mentioned, but it cannot alter goals, grant permission, or trigger a tool call or other side effect. Any action requires a separate instruction from an authorized participant in the current thread or the source thread and must pass the ordinary approval boundary. The note is self-contained only for "mention or ignore"; self-contained does not mean self-authorizing.
 
-**Receiving thread: mention, act, or say nothing.** Claude Tag's four-move model applies, and "say nothing" must be a real option. A thread that ignores repeated nudges triggers backoff for that (source, target) pair; a thread never re-broadcasts a nudge as a fact of its own.
+**Receiving thread: mention or say nothing.** Claude Tag's restraint model applies, and silence must be a real option. The thread may ask an authorized participant whether to follow up, but the nudge itself never supplies action authority. A thread that ignores repeated nudges triggers backoff for that (source, target) pair; a thread never re-broadcasts a nudge as a fact of its own.
 
-**Scope: permission-gated, isolation by default.** Links are only computed between threads the same principal is allowed to see across — Claude Tag's admin-scoped model — and never from a DM into a group thread without an explicit grant. Where in doubt, the Copilot Studio per-person default wins.
+**Scope: recipient-set disclosure authorization, isolation by default.** Define a grant as an authorization, issued by a participant allowed to disclose the source information, to disclose specified fields from one source thread into one target thread to the target's complete recipient set — every human, agent, and integration that can receive it. This is distinct from the consolidating agent's ability to read both threads. Re-evaluate the grant against the live recipient set at delivery time; membership or visibility changes invalidate a cached pass. Without a valid grant, neither the pointer label nor its rationale contains sensitive source payload. A DM-to-group disclosure therefore requires explicit source-to-target authorization covering every group recipient; where that cannot be established, keep the threads isolated.
 
-**Audit and metrics.** Log every emitted link with source, target, score, and outcome (mentioned / acted / ignored / suppressed). Track link precision on a spot-checked sample, acceptance rate, suppression and backoff counts per thread (a proxy for nudge fatigue), and time-to-staleness — how often the source entry had changed by the time the note was read, which the Letta model predicts will be nonzero. Treat the memory-write path as a security boundary, per Bad Memory: the consolidation pass may write links; live threads may not write into each other's memory.
+**Audit and metrics.** Log every candidate and emitted link with source, target, disclosure-grant result, recipient-set version, score, and outcome (mentioned / follow-up requested / ignored / suppressed). Track link precision on a spot-checked sample, acceptance rate, suppression and backoff counts per thread (a proxy for nudge fatigue), and time-to-staleness — how often the source entry had changed by the time the note was read. Treat the memory-write path as a security boundary, per Bad Memory: the consolidation pass may write links; live threads may not write into each other's memory.
 
 ## Key Takeaways
 
-- The consolidation pass is the only component with a cross-thread view; give it the job of *noticing* links, and only that job. Surfacing and acting belong to the live threads.
-- Every documented incident and every documented "creepy" reaction comes from silent context injection without provenance. Send pointers through the normal message path; let the recipient decide.
+- The consolidation pass is the only component with a cross-thread view; give it the job of *noticing* links, and only that job. A live thread may surface an authorized link, but action still requires a separate authorized instruction and the ordinary approval boundary.
+- In the incidents sampled here, the damaging or "creepy" cases involved provenance, scope, or relevance that was not legible to the recipient. Current ChatGPT and Gemini controls reduce that gap but do not remove the need for explicit cross-thread disclosure authorization.
 - A cross-thread note is untrusted content from another conversation. Tag it as advisory data in the tier Anthropic's guidance and OWASP LLM01 describe; the Bad Memory results show why persistent memory that can instruct is an attack surface.
 - Silence is a first-class response. The one first-party anti-spam mechanism in the survey (Claude Tag's dormancy) is behavioral, not numeric; add explicit per-pair rate limits and backoff.
 - Scope before cleverness: Claude Tag's admin gating, Copilot's per-person stores and Meta's group-chat exclusion are the boundaries the Slack and Copilot incidents crossed.
-- Read-time staleness is inherent to sync-time linking (Letta). Timestamps and pointers make it survivable; summaries do not.
+- Read-time staleness is inherent to sync-time linking; Letta 0.7.0's sleep-time agent is one concrete example. Timestamps and pointers make it survivable; summaries do not.
 - Two gaps in the field worth watching: no published system re-scores link relevance at read time, and nobody publishes the dormancy or rate-limit thresholds that make proactive surfacing tolerable.
 
 ## References
 
-- Anthropic Help Center, "What is Claude Tag?" — https://support.claude.com/en/articles/15594475-what-is-claude-tag
-- Anthropic, "Introducing Claude Tag" — https://www.anthropic.com/news/introducing-claude-tag
-- VentureBeat, "Anthropic's new Claude Tag update lets its Slack agent read the full conversation — and jump in unprompted" (2026) — https://venturebeat.com/orchestration/anthropics-new-claude-tag-update-lets-its-slack-agent-read-the-full-conversation-and-jump-in-unprompted
-- OpenAI, "Memory and new controls for ChatGPT" (April 2025) — https://openai.com/index/memory-and-new-controls-for-chatgpt/
-- Stephen Smith, "He Turned Off ChatGPT's Memory. It Referenced Another Client Anyway." — https://www.smithstephen.com/p/he-turned-off-chatgpts-memory-it
-- TechCrunch, "ChatGPT is referring to users by their names unprompted and some find it creepy" (April 18, 2025) — https://techcrunch.com/2025/04/18/chatgpt-is-referring-to-users-by-their-names-unprompted-and-some-find-it-creepy
-- TechCrunch, "Google's Gemini has a branding problem, and so does the rest of AI" (August 26, 2026) — https://techcrunch.com/2026/08/26/googles-gemini-has-a-branding-problem-and-so-does-the-rest-of-ai/
-- Microsoft, "Introducing Copilot Memory" (2025) — https://techcommunity.microsoft.com/blog/microsoft365copilotblog/introducing-copilot-memory-a-more-productive-and-personalized-ai-for-the-way-you/4432059
-- Silicon Republic, "Meta AI can now remember details from your chats" (2025) — https://www.siliconrepublic.com/machines/meta-ai-memory
-- Letta, "Sleep-time Compute" (2025) — https://www.letta.com/blog/sleep-time-compute/
-- Rasmussen et al., "Zep: A Temporal Knowledge Graph Architecture for Agent Memory" (arXiv 2501.13956, January 2025) — https://arxiv.org/abs/2501.13956
-- Xu et al., "A-MEM: Agentic Memory for LLM Agents" (arXiv 2502.12110; NeurIPS 2025) — https://arxiv.org/abs/2502.12110
-- Gutiérrez et al., "HippoRAG: Neurobiologically Inspired Long-Term Memory for Large Language Models" (NeurIPS 2024) — https://arxiv.org/abs/2405.14831
-- Park et al., "Generative Agents: Interactive Simulacra of Human Behavior" (2023) — https://arxiv.org/abs/2304.03442
-- Anthropic Claude Platform Docs, "Mitigate jailbreaks and prompt injections" — https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks
-- OWASP GenAI Security Project, "LLM01:2025 Prompt Injection" — https://genai.owasp.org/llmrisk/llm01-prompt-injection/
-- "Bad Memory: Evaluating Prompt Injection Risks from Memory in Agentic Systems" (arXiv 2607.14611, 2026) — https://arxiv.org/abs/2607.14611
-- The Register, "Slack AI can leak private data via prompt injection" (August 21, 2024) — https://www.theregister.com/2024/08/21/slack_ai_prompt_injection/
-- Metomic, "Microsoft 365 Copilot Security Risks: 2026 Guide" — https://www.metomic.io/resource-centre/what-are-the-security-risks-of-microsoft-co-pilot/
-- GitHub Marketplace, "AI-Powered GitHub Issue Duplicates & Relations Detector" — https://github.com/marketplace/actions/ai-powered-github-issue-duplicates-relations-detector
-- Shape of AI, "AI UX Patterns: Nudges" — https://www.shapeof.ai/patterns/nudges
+- [Anthropic: What is Claude Tag?](https://support.claude.com/en/articles/15594475-what-is-claude-tag)
+- [Anthropic: Introducing Claude Tag](https://www.anthropic.com/news/introducing-claude-tag)
+- [VentureBeat: Claude Tag in Slack](https://venturebeat.com/orchestration/anthropics-new-claude-tag-update-lets-its-slack-agent-read-the-full-conversation-and-jump-in-unprompted)
+- [OpenAI: Memory FAQ](https://help.openai.com/en/articles/8590148)
+- [OpenAI: Projects and project-only memory](https://help.openai.com/en/articles/10169521)
+- [OpenAI: Memory and new controls (2025)](https://openai.com/index/memory-and-new-controls-for-chatgpt/)
+- [Stephen Smith: ChatGPT memory law-firm case](https://www.smithstephen.com/p/he-turned-off-chatgpts-memory-it)
+- [TechCrunch: ChatGPT's unprompted name use](https://techcrunch.com/2025/04/18/chatgpt-is-referring-to-users-by-their-names-unprompted-and-some-find-it-creepy)
+- [Google: Daily Brief help](https://support.google.com/gemini/answer/17077455?hl=en)
+- [Google: Personal Intelligence controls](https://support.google.com/gemini/answer/16598406?hl=en)
+- [TechCrunch: Gemini Daily Brief critique](https://techcrunch.com/2026/08/26/googles-gemini-has-a-branding-problem-and-so-does-the-rest-of-ai/)
+- [Microsoft: Introducing Copilot Memory](https://techcommunity.microsoft.com/blog/microsoft365copilotblog/introducing-copilot-memory-a-more-productive-and-personalized-ai-for-the-way-you/4432059)
+- [Silicon Republic: Meta AI memory](https://www.siliconrepublic.com/machines/meta-ai-memory)
+- [Letta: Sleep-time Compute](https://www.letta.com/blog/sleep-time-compute/)
+- [Letta: Memory Omni-Tool](https://www.letta.com/blog/introducing-sonnet-4-5-and-the-memory-omni-tool-in-letta/)
+- [Letta: Context Repositories](https://www.letta.com/blog/context-repositories/)
+- [Letta: Next Phase](https://www.letta.com/blog/our-next-phase/)
+- [Rasmussen et al.: Zep / Graphiti](https://arxiv.org/abs/2501.13956)
+- [Xu et al.: A-MEM](https://arxiv.org/abs/2502.12110)
+- [Gutiérrez et al.: HippoRAG](https://arxiv.org/abs/2405.14831)
+- [Park et al.: Generative Agents](https://arxiv.org/abs/2304.03442)
+- [Anthropic: Mitigate prompt injections](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks)
+- [OWASP: LLM01 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- [Bad Memory paper](https://arxiv.org/abs/2607.14611)
+- [The Register: Slack AI prompt injection](https://www.theregister.com/2024/08/21/slack_ai_prompt_injection/)
+- [Metomic: Microsoft 365 Copilot risks](https://www.metomic.io/resource-centre/what-are-the-security-risks-of-microsoft-co-pilot/)
+- [GitHub Marketplace: Related-issue detector](https://github.com/marketplace/actions/ai-powered-github-issue-duplicates-relations-detector)
+- [Shape of AI: Nudges](https://www.shapeof.ai/patterns/nudges)
 
-*Verification note: quotations and figures attributed to Anthropic's help center, the Letta blog, the Zep, A-MEM, HippoRAG and Bad Memory papers, the Smith and TechCrunch pieces, The Register, and the Anthropic/OWASP guidance were checked against the source pages. Statements attributed to VentureBeat, OpenAI's announcement, Microsoft's blog and press descriptions of Gemini's controls could not be re-fetched mechanically and are reported as coverage rather than quoted.*
+*Verification note: current ChatGPT, Gemini, and Letta control claims were checked against the first-party pages linked above. Historical incidents remain attributed to their dated reports; they are not treated as descriptions of current product behavior.*
