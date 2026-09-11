@@ -32,15 +32,15 @@ Historical issue reports conflict because they describe different versions and c
 
 ### Claude Agent SDK and OpenAI Agents SDK: two different control models
 
-Claude Agent SDK's Python source implements `interrupt()` by sending an SDK control request with subtype `interrupt` to the Claude Code process. That is not documented as a shared `AbortController` propagated by the SDK through every API call, tool, and child agent. Consumers should treat the control response and subsequent result stream as the observable contract, and should verify external state after interruption when a tool may already have run.
+Claude Agent SDK's Python source implements `interrupt()` by sending an SDK control request with subtype `interrupt` to the Claude Code process. The public `ClaudeSDKClient.interrupt()` returns `None` after that request succeeds, or raises an error if it fails; it does not expose the control-response payload. Callers can observe that return or error and the subsequent messages/results. They should not assume a shared `AbortController` propagated through every API call, tool, and child agent, and should verify external state when a tool may already have run.
 
 OpenAI Agents SDK exposes a different API. `cancel(mode="immediate")` cancels running tasks and clears internal queues; `cancel(mode="after_turn")` sets a flag so the current turn, pending tools, session writes, and usage accounting can finish before the next turn is prevented. The caller should continue consuming `stream_events()` until cancellation settles. These are task cancellation and a turn-boundary stop flag respectively, not proof that one abort signal reached every external API or side effect.
 
-### LangGraph: durable human-in-the-loop pause with node re-entry
+### LangGraph: checkpointed human-in-the-loop pause with node re-entry
 
-LangGraph's `interrupt()` pauses graph execution, saves state through a checkpointer, and resumes when the caller invokes the graph with `Command(resume=...)`. On resume, the containing node starts again from the beginning; code before the interrupt can therefore run again. The official guidance is to make preceding side effects idempotent, put them after the interrupt, or isolate them in separate nodes/tasks.
+LangGraph's `interrupt()` pauses graph execution, saves state through the configured checkpointer, and resumes when the caller invokes the graph with `Command(resume=...)`. This pause is durable across a process restart only when the graph uses a persistent/durable checkpointer; `InMemorySaver` keeps checkpoints only in the live process and loses them on restart. On resume, the containing node starts again from the beginning; code before the interrupt can therefore run again. The official guidance is to make preceding side effects idempotent, put them after the interrupt, or isolate them in separate nodes/tasks.
 
-This is a deliberate durable pause point. It should not be generalized into “arbitrary cancellation resumes from a checkpoint.”
+This is a deliberate checkpointed pause point, with durability determined by its checkpointer. It should not be generalized into “arbitrary cancellation resumes from a checkpoint.”
 
 ### Temporal: message passing, cancellation, replay, and Reset are separate
 
@@ -119,7 +119,8 @@ Therefore “interrupt accepted” must never be treated as “nothing happened.
 - [Claude Code — Interactive mode: queue messages while Claude works](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)
 - [Claude Code Issue #36326 — CLI 2.1.79 queueing report](https://github.com/anthropics/claude-code/issues/36326)
 - [Claude Code Issue #50246 — interrupt-current / queue-proposed report](https://github.com/anthropics/claude-code/issues/50246)
-- [Claude Agent SDK Python — interrupt control request source](https://github.com/anthropics/claude-agent-sdk-python/blob/3379406f18fcea64617d25663d811dfdde8cd171/src/claude_agent_sdk/_internal/query.py#L684-L686)
+- [Claude Agent SDK Python — public `interrupt()` wrapper](https://github.com/anthropics/claude-agent-sdk-python/blob/3379406f18fcea64617d25663d811dfdde8cd171/src/claude_agent_sdk/client.py#L278-L282)
+- [Claude Agent SDK Python — internal interrupt control request](https://github.com/anthropics/claude-agent-sdk-python/blob/3379406f18fcea64617d25663d811dfdde8cd171/src/claude_agent_sdk/_internal/query.py#L684-L686)
 - [OpenAI Agents SDK — `RunResultStreaming.cancel`](https://openai.github.io/openai-agents-python/ref/result/#agents.result.RunResultStreaming.cancel)
 - [OpenAI Agents SDK — running agents and resumable run state](https://openai.github.io/openai-agents-python/running_agents/)
 - [LangGraph — interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
