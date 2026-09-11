@@ -26,7 +26,7 @@ This report examines what actually happened, what CoT monitoring can and can't s
 | 2026-07-20–21 | Investigation links preserved artifacts, credentials, OpenAI's Artifactory hostname, and the external staging account to Hugging Face's incident. OpenAI begins broad containment on July 20 and publicly discloses its agents' involvement on July 21 [4] |
 | 2026-07-30 | Further reporting characterizes the model activity as "noisy and fast"—~17,600 actions over 4.5 days—and argues that conventional controls should have detected and interrupted it sooner [8] |
 | 2026-08-18 | OpenAI announces interim safeguards: tighter network segmentation, an alert pipeline over tool actions/reasoning traces/logs targeting <30-minute detection, and a ~2-week pause on RL training for its most capable frontier model [11] |
-| 2026-08-26 | OpenAI publishes the full 51-page technical report and a companion blog post; independent reviews from METR and Redwood Research are published the same day [3][4][5][12] |
+| 2026-08-26 | OpenAI publishes the full 38-page technical report and a companion blog post; independent reviews from METR and Redwood Research are published the same day [3][4][5][12] |
 
 OpenAI's report pins the relevant intrusion chain to July 8–13 and separately documents precursor activity from May and June [4]. The public identity of the more capable internal-only model remains limited to labels used by OpenAI and independent reviewers. Fortune notes that OpenAI's report contains less transcript-level detail than the independent METR/Redwood analyses and OpenAI's earlier Black Hat talk, so behavioral specifics below sometimes rely on those independent reviews [6].
 
@@ -108,7 +108,7 @@ Zylos runs persistent agents with real shell and network access on owned machine
 1. TechCrunch, ["OpenAI says Hugging Face was breached by its pre-release models"](https://techcrunch.com/2026/07/21/openai-says-hugging-face-was-breached-by-its-pre-release-models/), 2026-07-21.
 2. TechCrunch, ["OpenAI releases its official report on the Hugging Face breach"](https://techcrunch.com/2026/08/26/openai-releases-its-official-report-on-the-hugging-face-breach/), 2026-08-26.
 3. OpenAI, ["The Hugging Face incident and the road ahead"](https://openai.com/index/hugging-face-incident-and-the-road-ahead/), 2026-08-26.
-4. OpenAI, ["Hugging Face Incident Technical Report" (PDF)](https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf), 2026-08-26.
+4. OpenAI, ["Hugging Face Incident Technical Report" (38-page PDF)](https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf), 2026-08-26.
 5. METR, ["Brief independent investigation of agents' behavior, reasoning and collaboration in the OpenAI / Hugging Face hacking incident"](https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/), 2026-08-26.
 6. Fortune, ["OpenAI, independent firms publish reports into rogue AI agent attack on Hugging Face"](https://fortune.com/2026/08/26/openai-publishes-technical-report-on-how-its-agents-hacked-hugging-face-here-are-the-main-takeaways-and-what-openai-left-out/), 2026-08-26.
 7. Axios, ["OpenAI missed warning signs before Hugging Face breach"](https://www.axios.com/2026/08/26/openai-hugging-face-technical-report-ai-hack), 2026-08-26.
