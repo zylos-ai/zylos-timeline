@@ -11,12 +11,12 @@ An always-on agent can serve several chat channels through one identity while ru
 
 The tempting answer is an "awareness board": a short-lived shared log with tags, cursors, expiry rules, and urgent notifications. In the target system studied here, that answer is unnecessary. The existing substrate already provides two complete paths:
 
-- **Immediate coordination:** an authenticated, point-to-point internal message addressed to the specific session that must know now.
+- **Immediate coordination:** a point-to-point internal message addressed to the known destination `channel_key`; the Router alone resolves that stable key to the active, resumable, or newly started session.
 - **Durable later recall:** an authoritative per-channel conversation ledger, consolidated through a slower memory path for future session starts and rotations.
 
 Once those primitives are inventoried, the proposed board has no irreducible job. Its cursor, relevance tags, archival state, active-session roster, and broadcast control path duplicate existing machinery while adding data-loss and trust-boundary failures. The correct design is therefore a usage protocol over the existing substrate, not a new subsystem.
 
-This conclusion is specific to a deployment that already has durable channel-keyed messages, targeted internal delivery, and consolidation. Systems without those primitives may still need a shared store, but they must define its producers, readers, authorization, ordering, and lifecycle explicitly.
+This conclusion is specific to a deployment that already has durable channel-keyed messages, targeted internal delivery, and consolidation, and whose governing design assumes one identity and one owner's memory across isolated attention threads. Systems without those primitives or assumptions may still need a shared store, but they must define its producers, readers, authorization, ordering, and lifecycle explicitly.
 
 ## 1. Why the Board Analogy Is Attractive
 
@@ -28,33 +28,33 @@ Blackboard systems such as Hearsay-II let independent knowledge sources coordina
 | **CrewAI** | Unified memory with shallow and deep recall | Shallow recall is direct vector search without an LLM call; deep recall may analyze and expand longer queries [4] |
 | **AG2** | Group chat history and orchestration | Multiple agents can coordinate inside an explicitly constructed group-chat workflow [5] |
 | **OpenAI Agents SDK** | Sessions, manager-style orchestration, and handoffs | Sessions preserve a conversation; handoffs transfer a run to a selected specialist rather than synchronizing unrelated live sessions [6][7][8] |
-| **Letta** | Memory blocks attachable to multiple agents | Attached blocks remain visible in each agent's context and can be shared or detached deliberately [9] |
+| **Letta** | A shared-memory repository in the current model; attachable blocks in the legacy model | Current shared memory lets multiple agents access one repository. The legacy block API can place an attached block in multiple agents' context and exposes explicit attach/detach operations [9][10][11][12] |
 
 These are useful comparisons, not proof that every multi-session agent needs a board. They show several different products combining storage, routing, and visibility in different ways. The design question is not "which named pattern resembles the problem?" It is "which capability is missing after the target system's existing primitives are enumerated?"
 
-One open Codex issue requests a shared workspace or message bus for subagents within a multi-agent workflow [10]. It is evidence of one user's concrete workflow need, not industry-wide consensus and not evidence about unrelated external sessions sharing one identity.
+One open Codex issue requests a shared workspace or message bus for subagents within a multi-agent workflow [13]. It is evidence of one user's concrete workflow need, not industry-wide consensus and not evidence about unrelated external sessions sharing one identity.
 
 ## 2. Start With the Actual Substrate
 
 The target deployment already has four properties:
 
-1. **Every inbound and outbound conversation event is durably recorded** in an authoritative ledger and partitioned by a normalized channel key.
-2. **Internal messages use the same durable delivery path** as user messages, but name exactly one destination channel key.
-3. **Delivery has one wake rule:** if a message is worth sending now, routing it to that destination may start or resume that one session. There is no "broadcast but do not wake" category.
-4. **A slow consolidation path reads the ledger** and promotes durable facts into shared long-term memory. Each consolidating reader owns progress per source channel and advances only after its checkpoint is committed.
+1. **Inbound, internal, and outbound events accepted into the C4 delivery path are durably recorded** in an authoritative ledger and partitioned by a normalized `channel_key`. Non-mention group traffic is an explicit exception: it remains in component logs and does not enter C4 or channel memory.
+2. **Internal messages use the same durable delivery path** as user messages, but name exactly one destination `channel_key`.
+3. **The Router owns session resolution and wake behavior:** it maps the stable destination key to the active session, resumes prior context, or starts a new session as required. The sender never addresses a transient session identity.
+4. **A slow consolidation path reads the ledger** and promotes durable facts into shared long-term memory. Channel Sync separately produces a checkpoint and coverage chain for its own channel. Origin and other readers each own an independent `sync_cursors(reader, channel_key, last_id)` position and advance it only after that reader's outputs commit; a dormant Channel Sync does not control another reader's progress.
 
 Those properties divide the problem cleanly:
 
 | Need | Existing primitive | Required behavior |
 |---|---|---|
-| Another live session must know now | Targeted internal message | Address one known destination; enqueue durably; surface delivery failure |
+| Another channel must know now | Targeted internal message | Address its known `channel_key`; enqueue durably; let the Router resolve the runtime session |
 | A fact may matter after sessions rotate | Conversation ledger + consolidation | Leave it in the authoritative history; consolidate it through the normal slow path |
-| A session needs an answer from another context | Targeted question and reply | Ask the owning session instead of reading its private working context |
-| No specific session needs the fact now | No fast-path action | Do not wake or inject anything merely "for awareness" |
+| A channel needs an answer from another context | Targeted question and reply | Ask the owning channel instead of reading its full working context |
+| No specific channel needs the fact now | No fast-path action | Do not wake or inject anything merely "for awareness" |
 
-The distinction is semantic and operational: **a commitment another live session must act on is a message; a fact that may be useful later is ledger history.** A board entry that is neither is just duplicated state.
+The distinction is semantic and operational: **a commitment another channel must act on now is a message; a fact that may be useful later is ledger history.** A board entry that is neither is just duplicated state.
 
-This reduction also respects context budgets. "Lost in the Middle" found that model performance varies substantially with the position of relevant information and can degrade when relevant evidence is buried in longer contexts [11]. Anthropic's applied guidance likewise recommends treating context as a limited resource and retrieving high-signal information just in time [12]. Neither source studies awareness boards specifically; they support the narrower claim that indiscriminate context injection is unsafe, not a particular coordination architecture.
+This reduction also respects context budgets. "Lost in the Middle" found that model performance varies substantially with the position of relevant information and can degrade when relevant evidence is buried in longer contexts [14]. Anthropic's applied guidance likewise recommends treating context as a limited resource and retrieving high-signal information just in time [15]. Neither source studies awareness boards specifically; they support the narrower claim that indiscriminate context injection is unsafe, not a particular coordination architecture.
 
 ## 3. The Irreducibility Test
 
@@ -62,7 +62,7 @@ Before adding a coordination subsystem, ask whether it can express something the
 
 ### Candidate capability A: immediate contradiction prevention
 
-A board does not prevent a contradiction merely by containing a row. A session still has to read the row, interpret it correctly, and act on it. A targeted message is stronger: the producer identifies the session that must know, the transport durably addresses it, and the receiver processes it through the same wake and delivery semantics as any other message.
+A board does not prevent a contradiction merely by containing a row. A session still has to read the row, interpret it correctly, and act on it. A targeted message is stronger: the producer names the stable destination `channel_key`, the transport durably records that address, and the Router alone resolves it to the session that should process it. Rotation does not invalidate the address.
 
 ### Candidate capability B: asynchronous recall
 
@@ -70,7 +70,7 @@ The authoritative ledger already preserves messages while consumers are offline.
 
 ### Candidate capability C: discovery by unknown future consumers
 
-This is the board's strongest apparent advantage, but it does not survive a trust and relevance audit. A producer cannot safely broadcast an internal commitment to every present and future external-facing context. If the future consumer is unknown, the fact belongs in the ledger and slow consolidation, where existing projection and scope rules can decide whether it is later visible. If a consumer becomes known and needs an immediate answer, it can ask the owning session point to point.
+This is the board's strongest apparent advantage. Under the target design's explicit same-owner, single-identity assumption, it still does not require a board: accepted C4 events remain in the channel-keyed ledger, and independent readers can consume them later through consolidation. The design does not promise pre-consolidation discovery by an unknown consumer. If a different system requires that property across identities or external audiences, it needs a separate security and discovery design rather than an unscoped board. Once a destination becomes known and needs an immediate answer, it can ask the owning channel point to point.
 
 No candidate remains irreducible. The awareness board is therefore rejected for this deployment.
 
@@ -85,7 +85,7 @@ The original board design read every row after one session cursor, filtered rows
 3. The global cursor advances to 1043.
 4. A later project-B turn can never retrieve that row.
 
-The reduced design has no query-dependent board cursor. Slow consolidation progress is scoped to **reader × source channel** and advances only across the exact channel range committed into a checkpoint. Relevance filtering may shape what is projected into a later prompt, but it never destructively advances over unmatched records in the authoritative ledger.
+The reduced design has no query-dependent board cursor. Slow-consolidation progress is scoped to **reader × source channel** in `sync_cursors`, and each reader advances only after its own derived outputs commit. This is independent of the Channel Sync checkpoint/coverage chain, which is an artifact produced by that channel's Sync process rather than a gate on other readers. Relevance filtering may shape later retrieval, but it never destructively advances another reader over unmatched records in the authoritative ledger.
 
 ### 4.2 Undefined fields are not a protocol
 
@@ -95,35 +95,34 @@ The reduced fast path uses one existing message contract:
 
 | Field | Authority |
 |---|---|
-| Source identity | Authenticated transport, not model-authored text |
-| Destination | Explicit channel key selected by the sender |
+| Source channel metadata | Existing delivery record; not an authorization boundary |
+| Destination | Explicit `channel_key` selected by the sender |
 | Ordering ID and timestamp | Assigned transactionally by the ledger |
-| Content | Sender session |
-| Delivery state | Router / transport |
+| Content | Producing turn |
+| Delivery attempts and recovery state | Router / transport; not necessarily visible to the sender |
 
-There is no TTL, read marker, tag normalizer, supersession graph, archive move, or eviction policy to implement. Durable history remains in one store; consolidation checkpoints are projections, not competing truth.
+There is no TTL, read marker, tag normalizer, supersession graph, archive move, or eviction policy to implement. Durable history remains in one store. Channel Sync checkpoints record channel coverage; other derived consolidation outputs remain projections rather than competing truth.
 
 ### 4.3 Broadcast requires a roster and creates wake ambiguity
 
 `notify_all_active_sessions` sounds small until "active" must be made executable. Is it every historical channel, every live process, every recently used session, or every session with a matching inferred project? Each answer requires a roster, liveness rules, and different wake semantics. The set grows over the lifetime of the system.
 
-The reduced design never enumerates a roster. A sender names one destination, or at most a small number of independently justified destinations. Each addressed message follows the normal wake path. Dormant, unaddressed sessions stay dormant.
+The reduced design never enumerates a roster. A sender names one destination `channel_key`, or at most a small number of independently justified keys. The Router alone resolves each key and applies the normal wake, resume, or new-start path. Dormant, unaddressed channels stay dormant.
 
-There is also no rate limiter that silently downgrades the sixth urgent incident into eventual polling. Under overload, the transport must apply backpressure or report failure. The sender must not claim that safety-critical coordination succeeded until durable enqueue—and, where the workflow requires it, an acknowledgement—has been observed.
+There is also no rate limiter that silently downgrades the sixth urgent incident into eventual polling. The existing substrate establishes durable enqueue/store-and-forward, Router delivery/wake behavior, and bounded at-least-once recovery windows. Sender-visible failure, overload backpressure, and end-to-end acknowledgement are **additional contracts to implement and verify** for workflows that require stronger safety. Until those contracts exist, the sender may claim durable enqueue, not confirmed downstream handling.
 
-### 4.4 Human-readable tags are not an authorization boundary
+### 4.4 State the identity boundary honestly
 
-`person: howard`, `project: release`, and `global: true` are routing hints, not security principals. Allowing model-written tags to decide visibility can leak an internal fact into an external-facing conversation.
+`person: howard`, `project: release`, and `global: true` would be routing hints, not security principals. Removing them avoids pretending that model-written metadata provides isolation. It does not, however, create a new security boundary.
 
-The reduced pattern is **default deny across trust domains**:
+The governing target design assumes **one identity and one owner's memory** across context-isolated attention threads. Reads across those threads are intentionally unrestricted. Multi-personality sandboxing, data classification, trust-domain enforcement, and context projection are outside its scope. The reduced protocol therefore relies on that explicit deployment assumption, not on security guarantees the substrate does not provide:
 
-- Internal messages are accepted only from authenticated producers.
-- The destination is a structural transport field, not a tag embedded in prose.
-- Automatic cross-session delivery is allowed only when source and destination belong to the same pre-authorized trust domain.
-- Internal-to-external cross-scope sharing is excluded from this pattern. It must pass through the system's existing projection or explicit human disclosure policy.
-- If the transport cannot enforce those conditions, cross-session A2A is disabled rather than approximated with prompt instructions.
+- The destination is a structural `channel_key`, not a tag embedded in prose.
+- The Router, not the producing session, resolves that key to runtime session state.
+- The message carries only the fact and action needed for coordination, not the source channel's full working context. This is a relevance and minimization rule, not an authorization control.
+- Cross-identity or internal-to-external sharing is a separate design problem. It requires data classification, audience authorization, and projection mechanisms that this target substrate does not currently claim.
 
-This is deliberately narrower than a general shared memory. It prevents the coordination mechanism from becoming an accidental disclosure mechanism.
+This is deliberately narrower than a general shared memory, and its boundary must not be extrapolated beyond the single-owner deployment.
 
 ## 5. Executable Usage Protocol
 
@@ -132,20 +131,20 @@ The remaining design is small enough to state as rules.
 ### Producer rules
 
 1. The session that makes an externally meaningful commitment records it in its normal conversation flow; that ledger record is authoritative.
-2. Before the turn completes, it sends a point-to-point internal message only to a known same-domain session that must change behavior immediately.
+2. Before the turn completes, it sends a point-to-point internal message to the known destination `channel_key` that must change behavior immediately. It does not select or retain a runtime session identity.
 3. The message states the observed fact, its provenance, and the requested action. It does not copy the sender's full private context.
 4. If no current destination is known, it sends nothing fast-path. The fact remains available to consolidation.
 
 ### Consumer rules
 
 1. The receiving session treats the message as context, not as authority to execute work owned by another channel.
-2. If the message conflicts with its current plan, it asks the source session or the human for resolution.
-3. When a topic explicitly depends on another channel's current commitment and no message has arrived, it asks that owning session point to point before making a contradictory commitment.
+2. If the message conflicts with its current plan, it asks the source channel or the human for resolution.
+3. When a topic explicitly depends on another channel's current commitment and no message has arrived, it asks that owning channel point to point before making a contradictory commitment.
 4. It never scans or injects other channels' working histories wholesale.
 
 ### Lifecycle rules
 
-There is no fast-path object lifecycle beyond normal message delivery. Retention, checkpointing, consolidation, and audit remain properties of the authoritative ledger. A fact changes through a new message or later consolidated memory; the original record is not rewritten or expired to simulate truth.
+There is no fast-path object lifecycle beyond normal message delivery. Retention and audit remain properties of the authoritative ledger. Channel Sync checkpoints/coverage and each consolidating reader's independent cursor are separate slow-path records. A fact changes through a new message or later consolidated memory; the original record is not rewritten or expired to simulate truth.
 
 ## 6. Boundary Conditions
 
@@ -154,7 +153,7 @@ This reduction is not universal. A new shared store may be justified when all of
 - producers cannot address the consumers that need the information;
 - the information must be discoverable before the next consolidation;
 - the existing ledger cannot support that discovery without exposing unrelated history; and
-- the system can define authenticated producers, structural audience scope, ordering, per-reader progress, retention, supersession, and overload behavior.
+- the system can define producer identity, structural audience scope, ordering, per-reader progress, retention, supersession, overload behavior, and any required acknowledgement contract.
 
 That is a high bar because a new store is a new authority. If it is met, progress must be scoped to a stable consumption dimension—never a single cursor advanced after turn-dependent filtering—and every derived field must have an identified producer and state transition.
 
@@ -170,7 +169,10 @@ For the target deployment, the bar is not met. Targeted A2A messaging covers imm
 6. [Agent orchestration — OpenAI Agents SDK](https://openai.github.io/openai-agents-python/multi_agent/)
 7. [Sessions — OpenAI Agents SDK](https://openai.github.io/openai-agents-python/sessions/)
 8. [Handoffs — OpenAI Agents SDK](https://openai.github.io/openai-agents-python/handoffs/)
-9. [Multi-agent shared memory — Letta Python SDK documentation](https://docs.letta.com/api/python)
-10. [Shared workspace/message bus for Codex subagents — openai/codex issue #21027](https://github.com/openai/codex/issues/21027)
-11. [Lost in the Middle: How Language Models Use Long Contexts — TACL 2024](https://aclanthology.org/2024.tacl-1.9/)
-12. [Effective context engineering for AI agents — Anthropic Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+9. [Shared memory — Letta documentation](https://docs.letta.com/concepts/shared-memory/)
+10. [Memory — Letta Agent SDK documentation](https://docs.letta.com/agent-sdk/memory/)
+11. [Attach a block to an agent — Letta Python API](https://docs.letta.com/api/python/resources/agents/subresources/blocks/methods/attach/)
+12. [Detach a block from an agent — Letta Python API](https://docs.letta.com/api/python/resources/agents/subresources/blocks/methods/detach/)
+13. [Shared workspace/message bus for Codex subagents — openai/codex issue #21027](https://github.com/openai/codex/issues/21027)
+14. [Lost in the Middle: How Language Models Use Long Contexts — TACL 2024](https://aclanthology.org/2024.tacl-1.9/)
+15. [Effective context engineering for AI agents — Anthropic Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
