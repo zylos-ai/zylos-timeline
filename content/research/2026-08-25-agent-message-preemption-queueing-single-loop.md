@@ -1,120 +1,134 @@
 ---
 date: "2026-08-25"
 title: "Message Preemption, Queueing, and Interrupt Semantics for Single-Threaded Agent Loops"
-description: "How autonomous agents that run one attention thread should handle new inbound messages while busy — interrupt vs queue vs merge, priority lanes, cancellation, and fairness, surveyed across LangGraph, Temporal, Erlang/Akka, and Claude Code."
+description: "How an agent with one foreground reasoning loop can separate steering, deferred work, cancellation, and parallel execution without corrupting in-flight side effects."
 tags: ["ai-agents", "concurrency", "scheduling", "dispatcher", "human-in-the-loop", "actor-model"]
 ---
 
 ## Executive Summary
 
-An autonomous agent built on a single conversation loop — one Claude Code or Codex process driven by a dispatcher — has exactly one attention thread but an unbounded number of things that can happen while it is busy: an owner DM, a group @mention, a scheduled task firing, a webhook. The agent cannot think about two things at once, yet it must not become unresponsive, must not silently drop urgent input, and must not corrupt in-flight work by interleaving unrelated instructions into it. This is a scheduling problem wearing conversational clothes, already solved with different trade-offs by OS schedulers, actor-model mailboxes, and workflow engines — and now by every LLM agent SDK that ships a "queue vs interrupt" decision. This piece surveys those solutions (LangGraph interrupts, Temporal signals/updates/queries, Erlang/Akka mailboxes, OS preemption, Claude Code's own queued-message behavior, and gateways like Multica and OpenClaw) and derives recommendations for a Zylos-style dispatcher: a lane-classified queue (interrupt-worthy vs merge-worthy), idle-gating, checkpoint-based cancellation instead of mid-token kill, and aging-based fairness so low-priority channels don't starve.
+An agent may have background tools and subagents, yet still expose one foreground reasoning loop. When a new message arrives during that loop, four different actions are possible: steer the active turn, defer a later turn, cancel the active work, or route the message to another session. Those actions are not interchangeable. Each has different guarantees for latency, durability, ordering, and side effects.
 
-The central finding: there is no single correct answer to "interrupt or queue" — it is a per-message classification problem, and the systems that get this right (Temporal, actor frameworks) separate the *decision of when to yield control* from the *decision of what to do with the waiting message*. Systems that conflate the two end up either losing messages or corrupting turns.
+The survey does not support a universal rule such as “owner DMs always interrupt” or “webhooks may be dropped.” The safer design is two-stage: ingress records the message and its delivery contract; the runtime then chooses an action using urgency, latency target, durability and redelivery guarantees, side-effect state, idempotency, and available isolation. The lane table below is therefore a design hypothesis, not a property inherited from Temporal, actor systems, or any SDK.
 
-## Problem framing
+## Scope and vocabulary
 
-A single-loop agent has three properties that jointly create the problem:
+This article concerns one **foreground reasoning loop**, not a process that can do literally only one thing. Tool calls, background commands, and subagents may run concurrently. The scheduling problem is which input may change the foreground loop and when.
 
-1. **One attention thread.** The model can only be "thinking" about one context at a time. Everything that looks parallel (subagents, background tool calls) is delegation, not shared attention.
-2. **Unbounded inbound sources.** Messages arrive from channels the agent does not control the timing of — humans typing, cron tasks, other agents, webhooks — none of which know whether the loop is idle or mid-turn.
-3. **Turns are not atomic at arbitrary granularity.** A turn involves multi-step tool use — file edits, shell commands, API calls with side effects. Cutting it off at an arbitrary point can leave external state (a half-written file, a partial git operation, an in-flight payment call) inconsistent, unlike killing a pure-compute thread.
+- **Steer:** expose new input to the active run at a supported reasoning or tool boundary without starting a new run.
+- **Follow up:** retain the input for a later turn after the active run settles.
+- **Cancel:** ask the active run to stop. Cancellation does not imply rollback, checkpoint restore, or confirmed reversal of external effects.
+- **Parallelize:** route work to another isolated session or worker and reconcile its result later.
 
-The design question: when a new message M arrives while turn T is executing, what happens to M, and to T? There are exactly four answers, and most real systems blend them depending on M's classification.
+These terms describe control-flow choices. Queue durability, acknowledgement, ordering, retry, and deduplication are separate delivery properties.
 
-## Design space (interrupt / queue / merge / parallel)
+## What current systems actually provide
 
-**Interrupt.** Stop T (cleanly or abruptly), respond to M immediately, optionally resume T afterward. This is the only option giving M sub-turn latency, and it requires either T's side effects be safely abortable at arbitrary points, or a checkpoint that lets T resume from the last safe point. True mid-instruction interruption is rare in production — most "interrupt" implementations mean "abort cleanly at the next safe boundary," not literal preemption mid-tool-execution. The Claude Agent SDK models this exactly: `interrupt()` is "a thin wrapper around calling `abort()` on an `AbortController`," and every downstream consumer — API client, tools, child agents — listens to the same signal, so cancellation propagates but the actual stop point is wherever the executing tool call checks the signal, not literally mid-token ([Claude Agent SDK hooks docs](https://code.claude.com/docs/en/agent-sdk/hooks); [kenhuangus.substack.com on propagation design](https://kenhuangus.substack.com/p/chapter-2-cancellation-and-abort)).
+### Claude Code: current behavior is boundary-aware queueing, not a timeless default
 
-**Queue.** M waits until T completes; the loop processes M as its own turn afterward, with no visibility into M until then. Safe (no interleaving corruption) but can produce unbounded latency, and risks feeling "unheard." This is Claude Code's default: typing while it's working doesn't interrupt — the message is silently queued and delivered after the current turn, and users must press Esc or Ctrl+C to actually abort and redirect ([issue #36326](https://github.com/anthropics/claude-code/issues/36326), [issue #50246](https://github.com/anthropics/claude-code/issues/50246)). The community friction is instructive: open issues ask for visible queue management — view/reorder/delete queued messages (issue #36817) — and for messages not to be silently lost on disconnect (issue #73118). "Just queue it" is necessary but not sufficient; the queue must be a first-class, inspectable object.
+Current Claude Code interactive-mode documentation says that a message submitted while Claude is working is queued rather than immediately interrupting the turn. If tool calls are running, the message is passed to Claude after those calls finish, within the same turn; remaining entries can become later turns. `Esc` interrupts and immediately supplies queued input. Queued entries can also be taken back with `Up`.
 
-**Merge-into-next-turn.** Instead of treating M as an independent future turn, fold it into the *context* of T's next reasoning step — "meanwhile, X also came in" — so the model decides in-band whether to change course, without a hard stop. This preserves atomicity of T's side effects while surfacing urgency as early as the next tool-call boundary. It is the most LLM-native option, treating interruption as information to reason about rather than a control-flow event — but it only works if turns are broken into many small tool calls, so "next boundary" arrives quickly.
+Historical issue reports conflict because they describe different versions and clients. Issue #36326 reported queueing in CLI 2.1.79 while the documentation then promised Enter-to-interrupt. Issue #50246 later described interrupt as the current behavior and proposed queue mode. These reports are useful evidence of product evolution, not a basis for claiming one invariant “Claude Code default” across releases, the terminal, Desktop, and SDK surfaces. A dispatcher integrating Claude Code must pin the client/version it tested and treat the current official interaction reference as the authority for that surface.
 
-**Parallel session.** Spawn a separate attention thread — new session, subagent, or process — to handle M concurrently, rather than making T yield. This denies the problem's premise at the cost of coordination: the threads must reconcile shared state, and the human now tracks two output streams. Consensus is that this trade only pays off when work is "genuinely parallel, multi-role, or larger than one context window" — for the common case of two conversations merely overlapping in time, parallel sessions add coordination overhead that "usually costs more than it returns" ([Redis: single-agent vs multi-agent](https://redis.io/blog/single-agent-vs-multi-agent-systems/)). Claude Code's own background-subagent model reflects this: subagents are spawned for delegable, boundable sub-tasks with fresh isolated context, not as a general answer to "someone else is talking to me" ([Claude Code subagents docs](https://code.claude.com/docs/en/agent-sdk/subagents), [claude.com blog](https://claude.com/blog/subagents-in-claude-code)).
+### Claude Agent SDK and OpenAI Agents SDK: two different control models
 
-## Concrete systems surveyed
+Claude Agent SDK's Python source implements `interrupt()` by sending an SDK control request with subtype `interrupt` to the Claude Code process. That is not documented as a shared `AbortController` propagated by the SDK through every API call, tool, and child agent. Consumers should treat the control response and subsequent result stream as the observable contract, and should verify external state after interruption when a tool may already have run.
 
-**LangGraph interrupts.** `interrupt()` raises a `GraphInterrupt` inside a node, halting execution and surfacing a value to the client; resuming requires a `Command` with a resume value, and — critically — the interrupted node re-executes from its top on resume, so code before `interrupt()` must be idempotent and side effects placed after it ([LangGraph interrupt reference](https://reference.langchain.com/python/langgraph/types/interrupt); [LangChain blog on human-in-the-loop](https://www.langchain.com/blog/making-it-easier-to-build-human-in-the-loop-agents-with-interrupt)). This is checkpoint-based: state is durably persisted at every graph step, so "interrupt" really means "pause at a known-good boundary," not "kill mid-flight" — the cleanest of the surveyed designs, because the graph model forces every pause point to be a serialization boundary by construction.
+OpenAI Agents SDK exposes a different API. `cancel(mode="immediate")` cancels running tasks and clears internal queues; `cancel(mode="after_turn")` sets a flag so the current turn, pending tools, session writes, and usage accounting can finish before the next turn is prevented. The caller should continue consuming `stream_events()` until cancellation settles. These are task cancellation and a turn-boundary stop flag respectively, not proof that one abort signal reached every external API or side effect.
 
-**Temporal signals, queries, and updates.** Temporal cleanly separates three semantics dispatchers usually blur into one: **Queries** are synchronous, read-only, never persisted to history, and can run even against completed workflows — "check status without disturbing anything." **Signals** are fire-and-forget async writes — the caller gets an ACK but no confirmation the workflow processed it — a mailbox drop. **Updates** are synchronous *and* tracked: the caller blocks until the handler actually processes it and returns a result or error, requiring the worker to be online ([Temporal message-passing docs](https://docs.temporal.io/encyclopedia/workflow-message-passing); [sending messages](https://docs.temporal.io/sending-messages)). Mapped onto agent dispatch: a monitoring status check is a Query; a scheduled task firing in the background is a Signal; an owner DM needing acknowledged response is an Update. Most single-loop dispatchers only implement the Signal case and lack the Query/Update distinction — exactly why "is it actually working on my request or did it drop it" is a recurring complaint.
+### LangGraph: durable human-in-the-loop pause with node re-entry
 
-**Erlang/Akka actor mailboxes.** The oldest production answer to "one thread, many senders." Erlang processes support **selective receive**: pattern-match against the mailbox and pull out a message matching a priority pattern even if lower-priority messages arrived earlier and remain queued, unprocessed, until a matching clause or timeout picks them up ([EEP 76 priority messages](https://www.erlang.org/eeps/eep-0076); [dalnefre.com on selective receive](https://dalnefre.com/wp/2011/10/erlang-style-mailboxes/)). Akka's `UnboundedPriorityMailbox` generalizes this with an explicit `PriorityGenerator`, but the ecosystem hits a real wall combining priority with **stashing** (holding a message aside to replay later): stashed messages fall out of the priority ordering entirely, since stash requires deque semantics off-the-shelf priority mailboxes don't provide ([Akka mailboxes docs](https://doc.akka.io/docs/akka/current/mailboxes.html); [akka.net issue #2649](https://github.com/akkadotnet/akka.net/issues/2649)). Direct analogue for a dispatcher: "owner DM jumps the queue" and "set a message aside without losing its position" need two different data structures, not one clever comparator.
+LangGraph's `interrupt()` pauses graph execution, saves state through a checkpointer, and resumes when the caller invokes the graph with `Command(resume=...)`. On resume, the containing node starts again from the beginning; code before the interrupt can therefore run again. The official guidance is to make preceding side effects idempotent, put them after the interrupt, or isolate them in separate nodes/tasks.
 
-**Claude Code's queued-message UX.** Silent queue by default, explicit Esc/Ctrl+C to actually interrupt, up-arrow to recall and edit a queued message — a reasonable compromise for a human-paced interactive tool, but it degrades for long or headless turns: "when a turn runs for minutes, the user effectively cannot interrupt or be heard," and disconnected clients lose queued messages never persisted server-side ([issue #73118](https://github.com/anthropics/claude-code/issues/73118)). The lesson for a dispatcher with no human at a terminal ready to hit Esc: the queue itself must be durable and inspectable, not an in-memory buffer.
+This is a deliberate durable pause point. It should not be generalized into “arbitrary cancellation resumes from a checkpoint.”
 
-**Message coalescing / debounce.** Discord-style bots use burst-debounce to coalesce rapid messages from the same sender into one LLM turn rather than replying per message, typically exempting DMs since latency matters more there ([protoAgent ADR-0015](https://github.com/protoLabsAI/protoAgent/blob/main/docs/adr/0015-discord-ingress-surface.md)). This is pre-merging at the ingress layer, before the message reaches the loop.
+### Temporal: message passing, cancellation, replay, and Reset are separate
 
-**Gateways: Multica, OpenClaw.** Multica treats coding agents as task-queue workers: a shared `agent_task_queue` with a JSONB `context` column assembled fresh at dispatch time, so the database stays cold during inference and each task carries its own snapshot ([Multica deep dive](https://dev.to/truongpx396/multica-deep-dive-how-to-build-a-managed-agents-platform-54l2)). Queue-not-interrupt by construction — tasks are claimed, not preempted, fitting a model where each task maps to its own process rather than one shared thread. OpenClaw is oriented around cross-gateway agent-to-agent routing (A2A protocol, rule-based routing by tag/skill) — it solves "which agent should get this" more than "what happens to the agent already busy" ([openclaw-a2a-gateway](https://github.com/win4r/openclaw-a2a-gateway)). Neither publishes an explicit priority-lane or fairness model — a gap the operator has to fill.
+Temporal distinguishes three Workflow message types:
 
-## Priority & fairness
+- **Query:** a synchronous read request whose handler cannot block; it does not add an Event History entry and can inspect a completed Workflow.
+- **Signal:** an asynchronous write; the sender does not await a handler result or error.
+- **Update:** a tracked synchronous write. With a start-style API, a client may wait until the Worker is contacted and the Update is persisted (`Accepted`), or until the handler returns (`Completed`).
 
-Every system above eventually needs some notion of "whose message goes first," and the same two failure modes recur regardless of substrate:
+Cancellation is a separate request to stop a Workflow gracefully; exact propagation and waiting behavior depend on Workflow and Activity cancellation handling. **Replay** reconstructs Workflow state by re-running deterministic Workflow code against recorded Event History. **Reset** terminates the current execution, copies history up to a chosen point into a new execution, and resumes from there; progress after that point is discarded. None of these facts makes Cancel equivalent to “pause now and later resume from the last checkpoint.”
 
-- **Priority inversion**: a low-priority item (a routine scheduled task) holds the attention thread that a high-priority item (owner DM) needs, with no mechanism to bump it. RTOS designs mitigate this with priority inheritance — temporarily boosting the blocker's priority — but that only helps when the blocking task can be accelerated; an LLM turn cannot be "sped up," so the real mitigation is bounding turn length or making turns interruptible at fine granularity.
-- **Starvation**: a low-priority lane never gets served because higher-priority items keep arriving. The standard fix is **aging** — priority increases the longer an item waits, until it crosses the threshold to run ([GeeksforGeeks: starvation and aging](https://www.geeksforgeeks.org/starvation-and-aging-in-operating-systems/); [taxonomy of schedulers](https://arxiv.org/pdf/2511.01860)). Maps directly onto a group-chat lane: if owner DMs always preempt, a busy group chat can starve indefinitely unless its effective priority climbs with wait time.
+### Erlang and Akka: selection and priority are different mechanisms
 
-A workable lane model for a single-loop dispatcher, borrowing from both actor mailboxes and OS scheduling:
+An Erlang `receive` selects the first queued message that matches its clauses; unmatched earlier messages remain in the mailbox. That is **selective receive**, not automatic priority. OTP 28 added a distinct opt-in priority-message mechanism (EEP 76): accepted priority messages are inserted ahead of ordinary messages while preserving order within the priority and ordinary regions. The feature uses priority aliases/options and is intended for specific cases, not as a general mailbox policy.
 
-| Lane | Analogue | Default behavior | Aging |
-|---|---|---|---|
-| Owner DM | RTOS hard interrupt | Interrupt-worthy; abort-and-resume T at next safe boundary | N/A (already top) |
-| Group @mention | Normal priority process | Merge-into-next-turn; visible in context by next tool boundary | Escalates to interrupt after N minutes waiting |
-| Scheduled/background task | Batch job | Queue; runs after current turn or in an idle slot | Escalates only if deadline-bound |
-| Webhook/system event | Signal (Temporal sense) | Fire-and-forget merge; loop decides relevance | None — designed to be droppable or replayable from source |
+Akka differs again: an actor handles the next dequeued message and does not scan the mailbox for a matching one. A stable priority mailbox uses an explicit `PriorityGenerator` to choose dequeue order while preserving FIFO among equal priorities. This is enough to show that “single consumer” does not dictate one scheduling policy; it does not imply that Erlang selective receive and Akka priority mailboxes offer the same semantics.
 
-The key discipline, echoing the Akka stash lesson: don't let one data structure try to be both the priority queue and the "set this aside for later, in order" stash. Keep the priority classification (which lane) separate from the ordering within a lane (FIFO, aged).
+### OpenClaw: a documented queue policy, not just routing
 
-## Cancellation & in-flight state
+OpenClaw's official queue documentation defines four active-run modes: `steer`, `followup`, `collect`, and `interrupt`. The default `steer` mode injects pending input at runtime boundaries when supported; it does not abort an already running tool. `followup` waits for a later turn, `collect` coalesces compatible queued input after a debounce window, and `interrupt` aborts the active run before starting the newest message.
 
-The hardest sub-problem is what happens to T's *already-executed side effects* when M preempts it. Three regimes, cleanest to messiest:
+The same documentation defines session overrides, global and per-channel configuration, lane-aware concurrency, debounce, a queue cap, and `summarize`/`old`/`new` overflow policies. This makes OpenClaw direct evidence that an agent gateway can expose queue behavior as explicit policy. It does not prove those defaults fit another dispatcher's workloads.
 
-1. **Checkpoint-and-resume** (LangGraph, Temporal). State is durably serialized at defined boundaries; "cancel" means "stop advancing, optionally resume later from the last checkpoint." Side effects before the checkpoint are committed; anything after is simply not yet attempted. Requires nodes/activities to be idempotent on replay, since LangGraph re-executes an interrupted node's code from the top.
-2. **Signal-propagated abort** (Claude Agent SDK / OpenAI Agents SDK). A single cancellation signal (`AbortController`/`abort()`, or `result.cancel()`) propagates to every listener — API client, tool executors, child agents — but the actual stop point is wherever a listener next checks the signal, not a guaranteed instant halt. The OpenAI SDK is explicit that a canceled stream isn't immediately "done": callers must keep draining `stream_events()` so the SDK can finish persisting session items and finalize approval state, and a mid-approval cancellation should resume from `result.to_state()` rather than be treated as a fresh turn ([OpenAI Agents SDK streaming docs](https://openai.github.io/openai-agents-python/streaming/)). Rule of thumb: never treat "I called cancel" as "side effects are frozen" — drain to the terminal event before assuming a clean stop.
-3. **Uncontrolled kill** (killing the process/container). Simplest to implement, but any tool call with external side effects — a shell command, a partial git operation, an API call with no idempotency key — is left undefined. Last resort, not a design; a dispatcher relying on it needs an explicit next-turn reconciliation check rather than assuming clean state.
+## Proposed dispatcher model (design hypothesis)
 
-For a single-loop agent doing real file/shell/API work (not a pure-conversation chatbot), regime 1 or 2 is required — regime 3 accumulates silent corruption over time.
+The following is an illustrative policy for a dispatcher feeding one foreground session. It is not a surveyed standard, and source channel alone is insufficient to assign a lane.
 
-## Recommendations for Zylos-style dispatchers
+| Proposed lane | Candidate action | Preconditions to validate |
+|---|---|---|
+| Urgent control | Cancel or steer at the next supported boundary | Human intent is unambiguous; latency SLA cannot tolerate a later turn; interrupted side effects are known or reconcilable |
+| Active-work guidance | Steer the current run | Runtime accepts steering; input concerns the active work; current tool boundary is safe |
+| Deferred work | Follow up as its own turn | Durable queue and acknowledgement exist; deadline and maximum wait are explicit |
+| Independent work | Parallel session/worker | State ownership is isolated; output contract and reconciliation owner are defined |
 
-A C4-style dispatcher — one queued-and-delivered channel bus feeding one live agent session — sits closest to the actor-mailbox model, and should borrow deliberately from it rather than reinventing ad hoc rules:
+Before choosing among them, record these decision inputs:
 
-1. **Classify at ingress, not at delivery.** Assign each inbound message a lane (owner DM / group / scheduled / system) the moment it's queued, using metadata already available (channel, sender, `reply via` path) — don't defer the interrupt-or-queue decision to whenever the loop happens to notice it. This mirrors Temporal's signal/query/update split: the *type* of message determines its handling contract before it's ever processed.
-2. **Default to merge-into-next-turn over hard interrupt.** Hard interrupts are only safe when turns checkpoint cleanly; a bash-heavy loop doing multi-step file edits usually lacks fine-enough boundaries to interrupt safely mid-turn. Surfacing "meanwhile, X arrived" at the next tool-call boundary gets most of the responsiveness benefit without the corruption risk — effectively what Claude Code's own default is doing, made more visible to the model in-band.
-3. **Make the queue durable and inspectable, not an in-memory buffer.** The Claude Code community's loudest complaints (#36817, #73118) are about queued work being invisible and losable — persisting the queue (e.g., to the same DB backing comm-bridge) and exposing it to `/tasks`-style introspection avoids both failure modes cheaply.
-4. **Apply aging, not fixed priority.** A pure fixed-priority lane model (owner always wins) will starve group channels under sustained owner traffic. Escalate a waiting item's effective priority with wait time, the OS-scheduler-standard fix, so no lane is *structurally* unable to get served.
-5. **Reserve parallel sessions for genuinely delegable work, not concurrency pressure.** Spawning a second live session because two conversations overlap in time trades a scheduling problem for a state-reconciliation problem. Use subagents/background tasks for boundable, single-purpose work with a clear return value — not as a release valve for "someone else is talking to me right now."
-6. **Treat cancellation as "stop advancing," never as "undo."** Any in-flight external side effect that gets interrupted needs an explicit next-turn reconciliation check, because no signal-propagation mechanism guarantees the side effect didn't already commit.
+1. **Urgency and SLA:** how late is too late, and is that deadline measured to acknowledgement, start, or completion?
+2. **Source delivery contract:** is the input durably stored, redelivered, at-most-once, or potentially duplicated? A webhook is not inherently droppable or replayable; that depends on the sender and receiver protocol.
+3. **In-flight side-effect state:** which API calls, files, commands, or child tasks may already have committed?
+4. **Idempotency and reconciliation:** can retry repeat an effect, and who verifies ambiguous outcomes?
+5. **Workload and latency:** expected turn length, tool duration, burst shape, queue depth, and concurrency determine whether steering or parallelism pays.
+6. **Scope and isolation:** does ordering apply per session, per user, per channel, or globally, and which state can concurrent workers mutate?
+
+The classifier should persist both the message and these contract fields before attempting delivery. Policy can then evolve without rewriting the authoritative ingress record.
+
+## Cancellation and side effects
+
+Stopping computation and repairing effects are separate obligations:
+
+1. **Before a side effect starts:** cancellation can prevent the operation.
+2. **While an external operation is in flight:** the caller may not know whether it committed. Timeout or cancellation is an ambiguous outcome until the target system is read back or reconciled.
+3. **After commit:** cancellation cannot undo the effect; compensation or an idempotent follow-up is required.
+
+Therefore “interrupt accepted” must never be treated as “nothing happened.” A safe dispatcher records the active operation, its idempotency key where available, the last durable local state, and the reconciliation action for an unknown outcome. Checkpoint/resume mechanisms help only at boundaries they actually own.
+
+## Recommendations, with assumptions made explicit
+
+1. **Persist first, then schedule.** Acceptance into a durable ledger is separate from when the foreground loop sees the message.
+2. **Prefer steering only for related guidance.** Same-turn injection is useful when the runtime supports a clear boundary and the message concerns the active task; unrelated work remains a later turn.
+3. **Make cancellation observable.** Record requested, applied, settled, and reconciled separately rather than using one “interrupted” flag.
+4. **Use priority only with a starvation rule.** Aging, quotas, or deadlines are candidate mechanisms, but the choice requires workload measurements and an explicit maximum wait.
+5. **Parallelize only behind an ownership boundary.** Separate sessions are appropriate when mutable state, output, and reconciliation can be isolated. “Two messages overlapped” is not by itself enough evidence.
+6. **Test the full scheduling matrix.** Cover source × urgency × active operation × runtime capability × failure outcome, including duplicate delivery, lost acknowledgement, cancellation during a side effect, and a worker that never reaches the next boundary.
 
 ## Open questions
 
-- **Idle-gating thresholds.** How long should the loop wait for "more of the same burst" before processing a merged message set — too short reintroduces per-message thrashing, too long reintroduces the "unheard" complaint behind Claude Code's own feature requests. No surveyed system publishes a principled answer; most (protoAgent) use a fixed empirical debounce window (~1.5s).
-- **Cross-channel deduplication.** If the same request arrives via two channels (owner pings both Telegram and web console), is that two independent lane-1 items or one item with two delivery targets? None of the surveyed frameworks address multi-channel identity collapse.
-- **Bounded staleness for merged context.** "Meanwhile, X arrived" injection only helps if the model re-evaluates it — if the plan is already committed past the point where X would matter, the merge was theater. Unmeasured in the literature surveyed here.
-- **Formal verification of interrupt safety.** Mailbox type systems (arXiv:2306.12935, arXiv:1801.04167) statically verify that an actor's message-handling protocol can't deadlock or misorder — nothing comparable exists for LLM tool-call sequences, where "was this a safe point to interrupt" is currently a runtime, not a type-level, guarantee.
+- What are the measured acknowledgement/start/completion SLAs for each class of input?
+- Which ingress sources redeliver, and what identifiers make deduplication possible?
+- Which tool operations expose idempotency keys or authoritative read-back?
+- What is the longest observed interval between safe steering boundaries?
+- Does the queue require per-session ordering only, or any cross-session/global constraint?
+- At what measured queue depth or latency does an isolated parallel worker become cheaper than waiting?
 
 ## Sources
 
-- [Claude Code Issue #36326 — Docs say Enter interrupts mid-task, but it only queues](https://github.com/anthropics/claude-code/issues/36326)
-- [Claude Code Issue #50246 — Message queue mode feature request](https://github.com/anthropics/claude-code/issues/50246)
-- [Claude Code Issue #36817 — TUI queue management for messages sent during active task](https://github.com/anthropics/claude-code/issues/36817)
-- [Claude Code Issue #73118 — long turns block queued messages; pending messages lost on disconnect](https://github.com/anthropics/claude-code/issues/73118)
-- [Claude Agent SDK — hooks and interrupt/AbortController design](https://code.claude.com/docs/en/agent-sdk/hooks)
-- [Claude Agent SDK — subagents](https://code.claude.com/docs/en/agent-sdk/subagents)
-- [Cancellation & Abort Propagation, Claude Code vs Hermes Agent](https://kenhuangus.substack.com/p/chapter-2-cancellation-and-abort)
-- [claude.com — How and when to use subagents in Claude Code](https://claude.com/blog/subagents-in-claude-code)
-- [OpenAI Agents SDK — Streaming and cancellation](https://openai.github.io/openai-agents-python/streaming/)
-- [LangGraph — interrupt() reference](https://reference.langchain.com/python/langgraph/types/interrupt)
-- [LangChain blog — Making it easier to build human-in-the-loop agents with interrupt](https://www.langchain.com/blog/making-it-easier-to-build-human-in-the-loop-agents-with-interrupt)
-- [Temporal — Workflow message passing: signals, queries, updates](https://docs.temporal.io/encyclopedia/workflow-message-passing)
-- [Temporal — Sending signals, queries, updates](https://docs.temporal.io/sending-messages)
+- [Claude Code — Interactive mode: queue messages while Claude works](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)
+- [Claude Code Issue #36326 — CLI 2.1.79 queueing report](https://github.com/anthropics/claude-code/issues/36326)
+- [Claude Code Issue #50246 — interrupt-current / queue-proposed report](https://github.com/anthropics/claude-code/issues/50246)
+- [Claude Agent SDK Python — interrupt control request source](https://github.com/anthropics/claude-agent-sdk-python/blob/3379406f18fcea64617d25663d811dfdde8cd171/src/claude_agent_sdk/_internal/query.py#L684-L686)
+- [OpenAI Agents SDK — `RunResultStreaming.cancel`](https://openai.github.io/openai-agents-python/ref/result/#agents.result.RunResultStreaming.cancel)
+- [OpenAI Agents SDK — running agents and resumable run state](https://openai.github.io/openai-agents-python/running_agents/)
+- [LangGraph — interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+- [Temporal — Workflow message passing](https://docs.temporal.io/encyclopedia/workflow-message-passing)
+- [Temporal documentation source — cancellation and Reset](https://github.com/temporalio/documentation/blob/main/docs/develop/dotnet/workflows/cancellation.mdx)
+- [Temporal documentation source — Event History and replay](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/event-history/python.mdx)
+- [Erlang — `receive` expressions](https://www.erlang.org/doc/system/expressions.html#receive)
 - [Erlang EEP 76 — Priority Messages](https://www.erlang.org/eeps/eep-0076)
-- [Erlang-style mailboxes and selective receive](https://dalnefre.com/wp/2011/10/erlang-style-mailboxes/)
-- [Akka — Mailboxes documentation (priority mailbox)](https://doc.akka.io/docs/akka/current/mailboxes.html)
-- [akka.net Issue #2649 — priority mailbox + stashing conflict](https://github.com/akkadotnet/akka.net/issues/2649)
-- [Mailbox Types for Unordered Interactions (arXiv:1801.04167)](https://arxiv.org/pdf/1801.04167)
-- [Special Delivery: Programming with Mailbox Types (arXiv:2306.12935)](https://arxiv.org/pdf/2306.12935)
-- [GeeksforGeeks — Starvation and Aging in Operating Systems](https://www.geeksforgeeks.org/starvation-and-aging-in-operating-systems/)
-- [A Taxonomy of Schedulers (arXiv:2511.01860)](https://arxiv.org/pdf/2511.01860)
-- [Redis blog — Single-agent vs multi-agent AI: how to choose](https://redis.io/blog/single-agent-vs-multi-agent-systems/)
-- [Multica deep dive — building a managed-agents platform](https://dev.to/truongpx396/multica-deep-dive-how-to-build-a-managed-agents-platform-54l2)
-- [OpenClaw A2A Gateway — cross-gateway agent communication](https://github.com/win4r/openclaw-a2a-gateway)
-- [protoAgent ADR-0015 — Discord ingress surface (burst debounce)](https://github.com/protoLabsAI/protoAgent/blob/main/docs/adr/0015-discord-ingress-surface.md)
+- [Akka — actors and mailbox dequeue behavior](https://doc.akka.io/libraries/akka-core/current/general/actors.html)
+- [Akka — stable priority mailbox](https://doc.akka.io/libraries/akka-core/current/mailboxes.html#mailbox-configuration-examples)
+- [OpenClaw — command queue](https://docs.openclaw.ai/queue)
+- [OpenClaw — steering queue](https://docs.openclaw.ai/concepts/queue-steering)
