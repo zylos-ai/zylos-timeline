@@ -32,7 +32,7 @@ Two public Multica issues describe real historical gaps, but their issue bodies 
 - Issue #2120 described coordinator workflows that depended on a sub-agent remembering to notify the parent. PR #3055, merged May 22, added a platform-generated parent notification for child completion; the issue closed July 24.
 - Issue #1290 described member-only checks blocking agent-driven backlog activation. PR #3270, merged May 26, allowed that transition while retaining a self-promotion guard; the issue closed May 29.
 
-At commit `3adc0061a967e0cbdbd30e645bd6730235c64c9d` on August 21, Multica's invocation path had these properties:
+At commit [`3adc0061`](https://github.com/multica-ai/multica/commit/3adc0061a967e0cbdbd30e645bd6730235c64c9d) on August 21, Multica's invocation path had these properties:
 
 - **The receiver owns the decision.** A private agent admits its owner only. A `public_to` agent evaluates its invocation targets.
 - **Workspace scope is deliberately broader than member scope.** A workspace target admits workspace-internal agent and system principals even when no human originator resolves. A member target requires a matching human; team targets were reserved and inert in this revision.
@@ -48,7 +48,7 @@ The remaining failure is therefore not “Multica blocks all agent-originated wo
 | System | What the reviewed mechanism governs | What it establishes | What it does **not** establish |
 |---|---|---|---|
 | Multica | Whether a receiving agent may be invoked | Receiver policy, trusted originator lineage, per-hop checks, generic caller denial | A universal member-only gate or a requirement that every accepted chain contain a human |
-| GitHub Actions | Events caused by a workflow's repository `GITHUB_TOKEN` | Most such events do not start another workflow run; dispatch events are exceptions | A general rule for all bots, GitHub Apps, PR authors, or agent-to-agent calls |
+| GitHub Actions | Events caused by a workflow's repository `GITHUB_TOKEN` | Most such events do not start another workflow run; dispatch events always create runs, while three pull-request activity types create approval-required runs | A general rule for all bots, GitHub Apps, PR authors, or agent-to-agent calls |
 | Google A2A | Requests between an A2A client and server | The server authenticates each request and applies its own authorization policy | A protocol-wide human-origin requirement |
 | Microsoft Copilot Studio / Entra Agent ID | Agent sharing, identity, tenant policy, and delegated authorization | Agents can be governed as identities and can participate in on-behalf-of flows | A verified product-wide peer-invocation rule comparable to Multica's |
 | OpenAI Agents SDK | Handoffs and agents-as-tools inside an application run | The host application supplies the starting agent and input; a handoff is exposed as a tool | Structural proof that the input or top-level caller was human |
@@ -58,7 +58,7 @@ The remaining failure is therefore not “Multica blocks all agent-originated wo
 
 ### GitHub's rule is event- and credential-scoped
 
-GitHub documents a recursion guard for events caused by the repository's `GITHUB_TOKEN`: except for `workflow_dispatch` and `repository_dispatch`, those events do not create a new workflow run. This is a precise rule about one ambient credential and one automation system. A personal access token or GitHub App token has different consequences, and approval rules for untrusted pull requests or specific coding-agent workflows are separate controls. Treating all of these as one bot-origin gate obscures the actual boundary.
+GitHub documents a recursion guard for events caused by the repository's `GITHUB_TOKEN`, with two kinds of exception. `workflow_dispatch` and `repository_dispatch` events always create workflow runs. When a workflow using `GITHUB_TOKEN` creates or updates a pull request, the resulting `pull_request` events with the `opened`, `synchronize`, or `reopened` activity types create workflow runs in an approval-required state; other pull-request activity types do not. Other events caused by `GITHUB_TOKEN` do not create a new workflow run. This is a precise rule about one ambient credential and one automation system. A personal access token or GitHub App token has different consequences, and approval rules for untrusted pull requests or specific coding-agent workflows are separate controls. Treating all of these as one bot-origin gate obscures the actual boundary.
 
 ### A2A makes the receiver the authorization authority
 
