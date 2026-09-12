@@ -13,7 +13,7 @@ The fix is a well-known idea from stream processing wearing different clothes: a
 
 A second, unrelated bug hides in the same design: when the summarizer runs as one worker per shard, letting each worker ask "give me global totals across all shards" to decide whether to fire is an O(N) scan repeated K times per tick — a fan-out anti-pattern indexing/queueing systems solved decades ago by scoping each worker's poll to its own partition.
 
-This article traces both bugs to their prior art, gives a proof sketch and edge-case analysis for the gap-free frontier, verifies the fix with a runnable SQLite script (included below with real output), and closes with numbered design rules for anyone building checkpointed message logs for autonomous agents.
+This article traces both bugs to their prior art, gives a proof sketch and edge-case analysis for the gap-free frontier, shows the SQLite queries used to test the claims, and closes with numbered design rules for anyone building checkpointed message logs for autonomous agents.
 
 ## The Problem, Concretely
 
@@ -93,23 +93,26 @@ If no such row exists (every row above `coverage_end` is terminal — `delivered
 
 ## Per-Shard Triggering Without Global Scans
 
-The second bug is a cost-model problem, not a correctness problem: it produces the right answer slowly. If the "should this shard's summarizer run yet?" check is:
+The second bug is a cost-model problem, not a correctness problem: it produces the right answer slowly. A trigger must count only records that have become **newly covered** by the frontier, rather than every row created after the old checkpoint. A pending row below a later delivered row prevents that later row from being safe to summarize, so counting it as ready work would create a busy loop that cannot advance the checkpoint.
+
+If the "should this shard's summarizer run yet?" check is:
 
 ```sql
 SELECT channel_key, COUNT(*) FROM conversations
 WHERE id > coverage_end GROUP BY channel_key;   -- computed globally, then filtered per worker
 ```
 
-every one of K per-shard workers pays for a full aggregate over every shard, including shards nobody has touched in months. The fix is to scope the query itself, not just the result, to one shard:
+every one of K per-shard workers pays for a full aggregate over every shard, including shards nobody has touched in months. The per-shard worker should instead count its already-safe interval:
 
 ```sql
 SELECT COUNT(*) FROM conversations
-WHERE channel_key = ? AND id > ?;   -- this shard's coverage_end only
+WHERE channel_key = ?
+  AND id > ? AND id <= ?;            -- (coverage_end, frontier]
 ```
 
-This is the same principle behind partition assignment in Kafka consumer groups — each consumer in a group is assigned a disjoint subset of partitions and only ever polls its own assignment, never the whole topic's metadata on every tick ([Conduktor: Kafka Consumer Groups Explained](https://www.conduktor.io/glossary/kafka-consumer-groups-explained)) — and behind `SELECT ... FOR UPDATE SKIP LOCKED` queue polling in Postgres, where an index on `(status, created_at)` (or here, a partial index) keeps each poll's cost bound to the rows currently eligible, not the table's full history ([Netdata: Using FOR UPDATE SKIP LOCKED For Queue Workflows](https://www.netdata.cloud/academy/update-skip-locked/); [DBOS: Making Postgres Queues Scale](https://www.dbos.dev/blog/making-postgres-queues-scale)).
+This follows the same partition-assignment principle as Kafka consumer groups: each consumer only polls its own assignment, never global metadata on every tick ([Conduktor: Kafka Consumer Groups Explained](https://www.conduktor.io/glossary/kafka-consumer-groups-explained)).
 
-The concrete fix for the SQLite case is a **partial index**:
+The two queries have different predicates and need separate indexes. The frontier lookup searches only non-terminal rows and benefits from a partial index:
 
 ```sql
 CREATE INDEX idx_conv_active
@@ -117,13 +120,17 @@ CREATE INDEX idx_conv_active
   WHERE status IN ('pending','running');
 ```
 
-A partial index stores only the rows matching its predicate, so its size and maintenance cost track the number of *active* rows, not total history. On a table dominated by long-settled `delivered` rows, this index can be a tiny fraction of a full index over the column, and both the trigger-count query and the frontier query above become index range scans over that active subset instead of table or full-index scans ([database.guide: How to Create a Partial Index in SQLite](https://database.guide/how-to-create-a-partial-index-in-sqlite/); [Coddy: SQLite Partial Indexes](https://coddy.tech/docs/sqlite/partial-indexes)).
+This index stores only active rows, so its size and maintenance cost do not grow with settled history; it serves the frontier query only ([database.guide: How to Create a Partial Index in SQLite](https://database.guide/how-to-create-a-partial-index-in-sqlite/); [Coddy: SQLite Partial Indexes](https://coddy.tech/docs/sqlite/partial-indexes)). The trigger has no status predicate, because terminal rows are exactly what it counts. It instead needs an all-row range index:
 
-Put together: **per-shard query scope** solves the O(K × total_shards) fan-out, and **a partial index on non-terminal status** keeps each per-shard query bound to O(active rows in that shard) rather than O(that shard's full history). Neither fix alone is sufficient — a per-shard query without the partial index still walks that shard's entire delivered history every tick; the index without per-shard scoping still repeats the same global cost K times.
+```sql
+CREATE INDEX idx_conv_shard_id ON conversations(channel_key, id);
+```
+
+That index seeks directly to `(channel_key, coverage_end)` and reads only the newly covered interval. Put together: per-shard query scope removes the O(K × total_shards) fan-out; the partial active index bounds frontier discovery by active rows; and the shard/id index bounds the trigger count by its checkpoint range, not by historical rows outside it. Neither index substitutes for the other.
 
 ## Hands-On Verification
 
-The following Python + sqlite3 script (run in scratch space, outside the repo) builds the toy table above, reproduces the priority-reordering scenario, and checks both fixes against `EXPLAIN QUERY PLAN`. Key logic:
+The following Python + sqlite3 query is the key frontier calculation used in a local experiment that reproduces the priority-reordering scenario:
 
 ```python
 def deliveredFrontier(conn, channel_key, coverage_base=0):
@@ -176,21 +183,21 @@ Scenario: 6 rows inserted in id order; id 3 has priority 1 (urgent), the rest pr
 [EDGE] Empty shard: frontier = 0 (== coverage_base, unchanged)
 ```
 
-`EXPLAIN QUERY PLAN` confirms the index effect, including at scale (50,000 delivered rows plus 2 active rows in the same shard):
+`EXPLAIN QUERY PLAN` must be checked independently for each predicate. In a local experiment with 50,000 delivered rows plus 2 active rows in the same shard, the expected plans are:
 
 ```
 === EXPLAIN QUERY PLAN for the frontier query ===
   SEARCH conversations USING INDEX idx_conv_active (channel_key=? AND id>?)
 
-=== EXPLAIN QUERY PLAN for a full scan (no status filter, for contrast) ===
-  SEARCH conversations USING INTEGER PRIMARY KEY (rowid>?)
+=== EXPLAIN QUERY PLAN for the newly-covered trigger count ===
+  SEARCH conversations USING COVERING INDEX idx_conv_shard_id (channel_key=? AND id>? AND id<?)
 
 === Scale check: 50,000 delivered + 2 active rows ===
   SEARCH conversations USING INDEX idx_conv_active (channel_key=? AND id>?)
-  Frontier still correctly resolves in O(active rows), value = 7
+  Frontier lookup remains bounded by active rows; trigger count reads only (coverage_end, frontier].
 ```
 
-The frontier query hits the partial index regardless of accumulated terminal history, confirming the cost model: the plan is bound to non-terminal rows, not table size.
+The frontier query hits the partial index regardless of accumulated terminal history. The trigger count uses its own covering index and explicit checkpoint range. A plan for one query is not evidence about the other: both must be tested after any predicate change.
 
 ## Design Rules for Agent Runtimes
 
@@ -198,10 +205,11 @@ The frontier query hits the partial index regardless of accumulated terminal his
 2. **Compute checkpoints as a low watermark: `MIN(non-terminal id above coverage) - 1`.** This is a numeric boundary, not necessarily a row's id — it can legitimately land in a "gap" between two rows.
 3. **Chain checkpoints as `next_start = prev_end + 1`.** This mirrors log-offset and LSN-based checkpointing and keeps coverage ranges unambiguous and non-overlapping.
 4. **Treat dead-lettered ("failed") rows as terminal, same as delivered.** A permanently abandoned message must not block the frontier indefinitely — decide that explicitly, don't let it happen by accident.
-5. **Scope every per-shard trigger query to its own shard key.** A global aggregate filtered client-side is still a global scan; push `WHERE channel_key = ?` into the query the worker actually issues.
-6. **Add a partial index on non-terminal statuses.** `WHERE status IN ('pending','running')` keeps both the frontier query and the trigger-count query bound to active rows, independent of settled history.
-7. **Verify with `EXPLAIN QUERY PLAN`, not intuition.** Index usage assumptions silently break when predicates change shape.
-8. **Test the empty-shard and dead-letter-tail edge cases explicitly.** They are the states where a frontier implementation is most likely to stall forever or advance incorrectly.
+5. **Trigger only on newly covered records.** Count `(coverage_end, frontier]`, not every row created after the checkpoint; a later terminal row is not ready while an earlier non-terminal row still blocks the frontier.
+6. **Scope every per-shard trigger query to its own shard key.** A global aggregate filtered client-side is still a global scan; push `WHERE channel_key = ?` into the query the worker actually issues.
+7. **Use an index that matches each predicate.** The non-terminal partial index serves the frontier lookup; the all-row `(channel_key, id)` index serves the newly-covered trigger count.
+8. **Verify each query with `EXPLAIN QUERY PLAN`, not intuition.** Index usage assumptions silently break when predicates change shape.
+9. **Test the empty-shard and dead-letter-tail edge cases explicitly.** They are the states where a frontier implementation is most likely to stall forever or advance incorrectly.
 
 ## Application to Zylos
 
@@ -209,8 +217,8 @@ Zylos's own Memory Sync mechanism needed exactly this shape of fix, described ge
 
 - A `deliveredFrontier(key)` computation per channel shard replaces a naive MAX-of-delivered lookup with the MIN(non-terminal)-1 rule, so a high-priority message that jumps the delivery queue no longer causes a lower-priority backlog message to be silently skipped from every future summary.
 - `getCoverageEnd(key)` stores the previous frontier per shard, so each pass computes `getUnsummarizedRange(key)` as `(coverageEnd, newFrontier]` — a chained, non-overlapping range.
-- Per-shard summarizer workers query their own trigger threshold (row count since `coverage_end`) scoped to their own `channel_key`, rather than each computing a table-wide grouped aggregate and filtering client-side — eliminating the K×total_shards fan-out.
-- A partial index over non-terminal statuses keeps both the trigger check and the frontier computation bound to active rows per shard, independent of how many historical or long-silent channels the agent has ever talked to.
+- Per-shard summarizer workers first compute their own frontier, then query the newly covered range `(coverage_end, frontier]` for their own `channel_key`, rather than each computing a table-wide grouped aggregate and filtering client-side — eliminating the K×total_shards fan-out without repeatedly triggering on rows still blocked behind a pending predecessor.
+- The non-terminal partial index serves frontier discovery; a separate `(channel_key, id)` index serves the newly-covered trigger count. The two predicates and their evidence stay separate.
 
 Net effect: summarization coverage is provably gap-free regardless of delivery order, and the cost of checking "is it time to summarize this shard" no longer grows with the total number of shards the system has ever seen.
 
