@@ -1,153 +1,295 @@
 ---
 date: "2026-09-05"
-title: "Agent-Emitted Shell Commands: Quoting, Command Substitution, and Template-as-Data Discipline"
-description: "Why an AI agent that prints a shell command containing untrusted text must treat that text as data through a proper quoter, not string interpolation, and how to prove it with an executing end-to-end test rather than a regex."
+title: "Agent-Emitted POSIX Shell Commands: Preserve Data Across the Parse Boundary"
+description: "How to keep untrusted text literal when an agent must emit a POSIX shell command, where quoting stops helping, and how to test the real parser boundary with byte-framed argv checks."
 tags: ["research", "shell", "security", "agent-tooling", "testing", "command-injection", "quoting"]
 ---
 
 ## Executive Summary
 
-An agent that *prints* a shell command is, functionally, a code generator. If the text it splices in came from an untrusted or semi-trusted source — a user prompt, a fetched document, a prior tool output — then printing it inside double quotes is not quoting at all: double quotes in POSIX shells still perform parameter expansion (`$`), command substitution (`` ` `` and `$()`), and backslash escaping [1][2][3]. A prompt that happens to contain a backtick span looks, to bash, exactly like an instruction to run a command and inline its output. This is not a bash bug; it is bash working as specified, applied by an author who modeled the string as "text to display" when the executor treats it as "code with one literal region."
+An agent that emits a command for a POSIX-like shell is generating code. If it places externally influenced text inside double quotes, that text is not necessarily literal: `$()`, backticks, parameter expansion, and some backslash sequences remain active in double quotes [1][2]. A prompt containing a command example can therefore change the command that eventually runs.
 
-This document reconstructs a real failure of that kind in a scheduling component, surveys shell word-expansion mechanics, the threat model when a command's *author* is an LLM and its *executor* is a human or another agent pasting it verbatim, the design patterns that eliminate the bug class, and why only an executing test proves correctness. The throughline: untrusted text bound for a shell must be treated as *data*, carried through one point of quoting discipline, and verified by execution — not by pattern-matching printed characters.
+The safest design is to avoid shell text: call a process API with an argument array, or pass the payload through stdin or a file. When POSIX/Bash source is the required output, encode each data argument for that exact shell parse boundary. Once bytes have reached a non-interactive POSIX shell parser, a portable single-quote encoder can represent every non-NUL string supported by the generator's runtime encoding: surround the value with single quotes and replace each embedded `'` with `'\''`.
 
-## Case Study
+That guarantee is deliberately narrow. It does not validate options, executable names, or nested commands; it does not carry automatically across a second `eval`, `sh -c`, SSH hop, or YAML-to-shell expansion; and it is not a Windows command-line quoting rule. Test the boundary that will actually parse the emitted text, with a fake target that records argv and a known-bad positive control that proves the test can fail.
 
-A scheduling component accepted a natural-language description of a recurring job and generated a registration command for a scheduler CLI, of the shape:
+## The Failure Shape
+
+Consider a scheduler that prints a registration command:
 
 ```bash
 node cli.js add "<prompt>" --cron "0 9 * * *" --task daily
 ```
 
-The `<prompt>` field was free text from an upstream agent step and, in the failing run, contained two backtick spans: `` `node extract.js fetch <url>` `` (a fetch instruction quoted as an example) and `` `--task daily` `` further along. The component built the line with ordinary double-quote interpolation — the shape a developer writes by hand constantly: `"add \"${prompt}\" --cron \"${cron}\""`.
+The prompt is ordinary text to the scheduler, but it becomes shell source when someone pastes the line. If the generator substitutes this value:
 
-Because the prompt sat inside a *double-quoted* shell string, none of `$`, backtick substitution, or backslash escapes were suppressed [1][2]. When the line was executed at registration time, three things happened silently: the first backtick span ran as command substitution — bash executed `node extract.js fetch <url>` **immediately, during argument construction**, replacing the span with its stdout, a private conversation transcript spliced into the persisted task prompt (exfiltration-by-substitution, structurally identical to a deliberate attack); the second span, `` `--task daily` ``, was *also* executed, failed silently since `--task` isn't a command, and the flag vanished from the persisted argv with no error surfaced; and inner double quotes were consumed by the shell's quote-removal pass instead of preserved literally.
-
-None of this was visible to a reviewer reading the *printed* text, and no regex could detect it. The string `` `node extract.js fetch ...` `` reads, to a human or static matcher, as an inert quoted example — its danger is a property of the *shell that will later parse it*, not the string's static content: the same bytes are inert as a JSON value, inert inside single quotes, and live inside double quotes. Only executing the printed line — against a fake CLI recording its argv, and a trap that must never fire — revealed the substitution, the vanished flag, and the stripped quotes.
-
-The fix single-quoted the prompt as literal data via the POSIX escaping transform (`'` → `'\''`), so the printed line became:
-
-```bash
-node cli.js add 'It'\''s a `node extract.js fetch ...` example with "quotes"' --cron '0 9 * * *' --task daily
+```text
+Summarize the output of `node extract.js fetch <url>`.
 ```
 
-Inside single quotes, POSIX guarantees no character retains special meaning except the single quote itself [2][4]. The team also added an end-to-end test running the printed command in `bash -c`, capturing argv from a fake `cli.js`, asserting byte-for-byte equality with the source prompt, and confirming an embedded trap never fires.
+the backtick span is command substitution inside double quotes. Bash tries to run it while constructing argv. In addition, `<url>` is parsed as redirection syntax inside that substitution, so the exact failure depends on the filesystem and stderr handling. A later backtick span such as `` `--task daily` `` normally emits a `command not found` diagnostic and substitutes an empty string; it is not the scheduler's outer `--task daily` option. If the surrounding caller hides stderr or ignores the substitution's status, the generated command can still continue with mutated prompt content.
 
-## Mechanics of Shell Quoting
+The important distinction is not whether a string *looks* like prose. It is whether a parser will consume those bytes as code. The same backticks are inert in a JSON string, inert inside POSIX single quotes, and active inside shell double quotes.
 
-**Word expansion order.** POSIX defines shell word expansion as an ordered pipeline per word: (1) tilde, parameter, command, and arithmetic expansion, in the order they appear; (2) field splitting of those results; (3) pathname expansion (globbing); (4) quote removal, always last [4][5]. Quoting marks spans so steps 1–2 skip them; quote removal then strips the quote characters. This is why quoting must be decided at *generation* time — by the time a human reads the printed string, expansion hasn't happened, but it has already been decided which characters sit inside which quotes.
+This is an instance of OS command injection, classified as CWE-78 [14]. It is not hypothetical in agent tooling: GitHub's advisory for CVE-2025-53107 documents an MCP server that passed unsanitized tool parameters to Node's `child_process.exec`, allowing injected commands to run, including through an indirect-prompt-injection path [15].
 
-**What double quotes suppress, and don't.** Double quotes suppress word splitting, pathname expansion, and most punctuation's special meaning — but `$` (parameter expansion, `$(...)` substitution, arithmetic), the backtick (legacy substitution), and `\` before `$`, `` ` ``, `"`, `\`, or newline retain full meaning [1][2][4]. `!` also retains history-expansion meaning interactively [1]. Double quotes are the wrong tool for untrusted or arbitrary content, which will eventually contain a `$` or a backtick.
-
-**What single quotes do.** Single quotes suppress every character's special meaning, no exceptions — not even backslash [2][4]. The only complication: a single quote cannot appear literally inside one. The standard technique ends the quoted region, inserts an escaped literal quote outside quoting, and resumes: `'` becomes `'\''`. Wrapped around a whole string, this yields a token a POSIX shell parses back to the original bytes for *any* input — the guarantee regex-based "danger character" filtering can never offer.
-
-**`$'...'` ANSI-C quoting**, a `ksh93`-derived extension, interprets C-style escapes (`\n`, `\t`, `\xHH`) inside single-quote-like semantics [6]. It is a *generation*, not *escaping*, tool — safe only if the generator itself escapes every needed byte.
-
-**Heredocs** split the same way: `<<EOF` expands its body like double quotes; `<<'EOF'` suppresses all expansion [7]. An agent building a heredoc from untrusted text that forgets to quote the delimiter recreates the double-quote hazard.
-
-**Built-in quoters.** Bash's `printf '%q'` prints an argument shell-quoted for reuse [8], and (≥4.4) `${var@Q}` does the same via expansion [9] — appropriate only when the generator itself is bash.
-
-## Threat Model for Agent-Emitted Commands
-
-The classical vulnerability class is CWE-78, OS Command Injection: constructing an OS command from externally-influenced input without neutralizing shell metacharacters [10]. Its canonical shape assumes a deliberate human attacker; the agent case generalizes it in two ways that make it easier to trigger by accident.
-
-**The author is a generator, not a hand-typed script.** An LLM-driven component emits the *same textual shape* every time regardless of content; danger is a function of that content at one invocation — benign in every run a developer inspects, manifesting only once a prompt contains a backtick or `$(`. This mirrors GitHub Actions script injection: a `run:` step interpolating `${{ github.event.issue.title }}` directly is safe for ordinary titles and exploitable the moment one contains `"; malicious_command #` — GitHub's proof-of-concept title is `a"; ls $GITHUB_WORKSPACE"` [11][12]. Their fix — an intermediate environment variable, then reference `$VAR`, never interpolating directly — is the same "keep data out of code generation" move as single-quoting the prompt here, at a different layer [12].
-
-**The executor may be a distinct entity.** In "prompt-in-shell" patterns, the vulnerable step is a downstream one treating the LLM's *text output* as shell code. Several MCP (Model Context Protocol) tool servers built shell commands by concatenating tool arguments into `child_process.exec()` calls, letting untrusted content the agent had read (e.g., a git commit message) smuggle `` $(id>/tmp/TEST) `` through a field that looked like ordinary data. CVE-2025-53107 (`git-mcp-server`) is concrete: `git_add`/`git_init`/`git_logs` built commands like `` git -C "${targetPath}" add -- ${filesArg} `` via `exec`, so any metacharacter — reachable via indirect prompt injection — was shell-interpreted; the fix was `execFile()`, which never invokes a shell [13]. Trail of Bits documents an adjacent pattern where allowlisting is defeated by *argument* injection — a "safe" command like `git show` or `rg` accepting a flag (`--output`, `--pre`) that itself causes execution — showing quoting the data is necessary but not sufficient [14].
-
-**Prior art.** The same shape appears in npm `package.json` scripts, where contributor-controlled fields become `npm_package_*` environment variables — safe only if scripts consume them as variables, not by re-interpolating into shell text [15]. A string is code in one context and data in another; the boundary is decided by whoever writes the interpolation.
-
-## Design Patterns
-
-**Treat the payload as data.** The strongest fix is architectural — never print a shell line whose correctness depends on quoting untrusted text right, if there's an alternative:
-
-1. **Skip the shell entirely.** Node's `execFile()`/`spawn()` (no `shell: true`) and Go's `os/exec.Command` pass argv as an array to the OS directly — no shell grammar, no quoting step to get wrong [16][17]; Go's docs call this a deliberate safety property [17]. Right whenever the agent itself executes the command.
-2. **When a shell line must be displayed or persisted**, pass the payload through one well-tested quoting function (see Ecosystem Comparison below) and never re-touch it.
-3. **Sidestep quoting entirely**: stdin via a heredoc with a *quoted* delimiter, a temp file whose path (not content) is interpolated, or a JSON/argument file the target reads.
-
-**"Never re-wrap in double quotes."** Because the failure recurs when code re-interpolates an already-quoted token into a *new* double-quoted string "for readability," teams adopt a rule: the quoter's output is terminal, never re-wrapped — mirroring GitHub's guidance to route through one intermediate variable and stop [12].
-
-**Prefer structured APIs over printed shell lines.** If a CLI can accept `--file config.json`, read stdin, or expose an RPC call, the bug class disappears entirely. A copy-pasteable command should be a convenience layered on an argv-safe path, not the primary mechanism.
-
-**Agent CLIs face this in reverse.** Tools exposing a "run a shell command" tool execute the model's proposed string through one shell invocation they control, while independently allow-listing the command and flags — addressing CWE-78 on the input side while leaving the string's own shell semantics to the model, exactly why the case study needed its own fix.
-
-## Testing Discipline
-
-**Why text-level assertions are insufficient.** A regex or substring check over the *printed* text ("reject if it contains a backtick") tests a proxy for safety, not safety itself. It cannot tell an inert backtick (inside single quotes) from a live one (inside double quotes), and cannot see interactions between adjacent expansions. The only way to know what a shell will do with a string is to give it to that shell and observe — a check inferring behavior from static shape rather than execution can be green while the property is false.
-
-**The fake-shell end-to-end pattern.** The technique that caught and fixed the case-study bug generalizes:
+For a POSIX shell token, encode the prompt as data:
 
 ```bash
-# fake cli.js: records argv instead of running anything
-printf '%s\0' "$@" > "$RECORD_FILE"
-
-# trap.sh: a canary that must never execute
-echo "TRAP FIRED" >> "$TRAP_LOG"; exit 1
-
-# harness
-export PATH="$tmp/bin:$PATH"   # fake cli.js/extract.js shadow the real ones
-export HOME="$tmp/home"        # isolate from real dotfiles
-printed=$(node generate_registration_command.js "$malicious_prompt")
-bash -c "$printed"
-diff <(cat "$RECORD_FILE") <(expected_argv_bytes)   # byte-for-byte argv
-[ ! -f "$TRAP_LOG" ]                                 # trap never fired
+node cli.js add 'It'\''s a `node extract.js fetch <url>` example with "quotes"' \
+  --cron '0 9 * * *' --task daily
 ```
 
-Essential elements: a fake target CLI on `PATH` that *records* rather than acts; a trapped script whose invocation unambiguously proves injection; `HOME`/`PATH` redirection for a hermetic shell; and byte-for-byte argv equality rather than "contains," since subtle truncation (the vanished `--task daily` flag) is exactly what a loose assertion misses.
+The four-character shell source sequence `'\''` works by ending the single-quoted region, adding one escaped quote, and reopening the region. After one POSIX/Bash parse, the target receives the original apostrophe as data [1][2].
 
-**Property-based round-trip tests.** A quoter's correctness claim is universal — for *any* string, quote-then-parse returns the original — a natural fit for generative testing: generate arbitrary strings (empty, all-quotes, control characters, `$`, `` ` ``, `\`), quote each, feed the result through `bash -c 'printf "%s\n" "$1"' -- "$quoted"`, and assert equality. Failures shrink to a minimal reproducer, the same discipline used to find shell-parser bugs in interpreters [24].
+## What the Shell Actually Does
 
-**Negative controls.** A suite should include a deliberately *broken* quoter (the original double-quote interpolation) and confirm the harness detects injection — proof the test can fail. A suite never observed failing cannot be trusted to catch a regression.
+POSIX describes token recognition, expansions, field splitting, pathname expansion, and quote removal as distinct parts of shell processing [2]. The practical consequences are:
 
-## Ecosystem Comparison
+- **Unquoted text** may undergo parameter, command, and arithmetic expansion, field splitting, and pathname expansion.
+- **Double-quoted text** suppresses field splitting and pathname expansion but still permits `$`-based expansions and backtick command substitution [1][2].
+- **Single-quoted text** preserves the literal value of every character between the quotes; a literal single quote must be represented outside that region [1][2].
+- **Quote characters are syntax**, removed before the program receives argv. The target process never sees the protective outer quotes.
 
-| Language/tool | Safe argv-array API (no shell) | Built-in/stdlib quoter for shell text | Notable third-party quoter |
-|---|---|---|---|
-| Bash / POSIX sh | N/A (is the shell) | `printf '%q'`; `${var@Q}` (bash ≥4.4) [8][9] | — |
-| Python | `subprocess.run([...])` (no `shell=True`) | `shlex.quote()`, `shlex.join()` (3.8+) [18] | — |
-| Node.js | `child_process.execFile()`/`spawn()` without `shell: true` [16] | none in core | `shell-quote` [19], `shescape` (multi-shell) [20] |
-| Rust | `std::process::Command` (argv array) | none in std | `shlex` crate [21], `shell-words` crate [22] |
-| Go | `os/exec.Command(name, args...)` (deliberately shell-free) [17] | none in std, by design [17] | `github.com/alessio/shellescape` [23] |
-| GitHub Actions | pass untrusted value via `env:` then reference `$VAR`, not `${{ }}` inline in `run:` [12] | n/a (YAML → shell boundary) | — |
+Bash also provides `$'...'`, `printf %q`, and `${value@Q}`. `$'...'` is part of POSIX.1-2024, while `printf %q` and the `@Q` parameter transformation are Bash-specific output formats [1][3][4]. A generator may use them only when the eventual consumer is known to parse the matching dialect. A command advertised as portable `sh` should use a POSIX-compatible representation instead.
 
-Every ecosystem's mature answer is the same: the preferred fix is avoiding shell text generation via an argv-array API, not a better quoter. Quoting libraries are the second line of defense for when a shell string is genuinely the deliverable.
+One more boundary matters: Unix argv elements cannot contain NUL bytes. A quoter must reject NUL rather than claim to preserve it. The executable test below covers JavaScript strings encoded to UTF-8 and passed through non-interactive Bash on Unix; it is not a proof for arbitrary invalid UTF-8 byte sequences. An interactive terminal and its line editor add another input boundary: control characters may become signals, end-of-file, or editing actions before Bash parses them. A tool that promises human copy-paste should reject such characters or use stdin, a file, or a structured API instead.
 
-## Checklist
+## One Parse Boundary, One Encoding Decision
 
-- **Default to argv arrays** — `execFile`/`spawn` (no `shell: true`), `subprocess.run([...])`, `os/exec.Command` — when the agent itself executes the command.
-- **Quote at one point of construction** with a real POSIX quoter, and treat that output as terminal — never re-wrap it in double quotes "for readability."
-- **Never trust double quotes to neutralize untrusted text** — they still evaluate `$`, `` ` ``, `$()`, backslash escapes.
-- **Quote heredoc delimiters** (`<<'EOF'`) whenever the body holds untrusted content.
-- **Prefer structured channels**: argument files, JSON, stdin, or a native API over shell text.
-- **Validate the command's argument surface, not just the data** — a "safe" command can become an execution primitive via `-exec`, `--pre`, `-oProxyCommand`.
-- **Test by execution, not pattern-matching** — real shell, fake target recording argv, a trap that must never fire, byte-for-byte assertions.
-- **Include a negative control**: the harness must fail on the known-bad version before it's trusted to pass the fixed one.
-- **Property-test the quoter**: round-trip arbitrary strings through quote → shell-parse → compare.
-- **Route untrusted values through one indirection and stop**, never a direct interpolation.
+Quoting is not a property permanently attached to a value. It is an encoding for one grammar at one syntactic position.
+
+Suppose a generator quotes a prompt correctly, but the result is later inserted into another shell string:
+
+```bash
+inner="node cli.js add 'literal payload'"
+ssh host "sh -c \"$inner\""
+```
+
+The value now crosses several parsers: the local shell, SSH's remote command construction, and the remote shell. Each boundary has its own grammar and quoting context. The first correct encoding does not make later interpolation safe. The same warning applies to `eval`, nested `sh -c`, Make recipes, CI YAML expressions, and templating systems.
+
+The useful rule is therefore:
+
+> Keep values structured for as long as possible. If text must cross a shell parse boundary, encode each value exactly once for that boundary and syntax position, then do not parse the resulting command again.
+
+This is why an argv-array API is stronger than a shell quoter. It removes the shell grammar from that boundary rather than trying to escape it perfectly.
+
+## Safer Design Patterns
+
+### 1. Skip the shell
+
+Use APIs that take the executable and arguments separately:
+
+```js
+import { spawn } from 'node:child_process';
+
+spawn(process.execPath, ['cli.js', 'add', prompt, '--cron', cron, '--task', 'daily'], {
+  shell: false,
+  stdio: 'inherit',
+});
+```
+
+Node's `execFile()` and `spawn()` run a program without a shell unless shell use is explicitly requested [5]. Python's `subprocess.run([...], shell=False)`, Go's `exec.Command`, and Rust's `std::process::Command` follow the same structured-argv model [6][7][8].
+
+This removes shell metacharacter interpretation, but it does **not** make every call safe. An attacker-controlled executable name is still dangerous, and a data value beginning with `-` can become an option unless the target supports and receives an end-of-options marker such as `--`. Some legitimate options themselves invoke programs. Validate the command and its argument surface separately from quoting.
+
+### 2. Use stdin or a file for large payloads
+
+If the target supports stdin, stream the prompt directly. Otherwise, write it to a file and pass only the safely constructed path. JSON or an argument file is often easier to audit than a long copy-paste command.
+
+Do not treat a quoted heredoc delimiter as a universal arbitrary-data channel. `<<'EOF'` suppresses expansion in the body, but a payload line exactly equal to `EOF` still terminates the heredoc [2]. Prefer direct process stdin or a file. If generated heredoc source is unavoidable, generate a delimiter, verify that it does not occur as a complete body line, and test a deliberate collision case.
+
+### 3. Quote for the declared shell
+
+For a command explicitly targeting POSIX sh or Bash, a small encoder is enough:
+
+```js
+function quotePosix(value) {
+  if (value.includes('\0')) {
+    throw new TypeError('POSIX argv cannot contain NUL');
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+```
+
+Apply it independently to every data argument. Do not quote the entire command as one token, and do not use the result as an option validator.
+
+### 4. Keep CI expressions out of generated scripts
+
+GitHub recommends assigning potentially untrusted expression values to an intermediate environment variable instead of expanding `${{ ... }}` directly into a `run:` script [9]. The shell-specific read still matters:
+
+```yaml
+- env:
+    TITLE: ${{ github.event.issue.title }}
+  run: printf '%s\n' "$TITLE"       # Bash runner
+```
+
+In PowerShell, the corresponding reference is `$env:TITLE`, not `$TITLE` [10]. This indirection prevents the workflow expression from generating new script source. It does not prevent option injection if the script later passes the value into a command's option position.
+
+## Executing End-to-End Test
+
+A useful test must exercise the emitted command with the real parser and observe the target's argv. The following self-contained Bash harness creates a fake Node CLI, generates a command file, runs it, and compares NUL-framed bytes. NUL framing preserves empty arguments and embedded or trailing newlines without relying on command substitution.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export RECORD_FILE="$tmp/argv.bin"
+export TRAP_LOG="$tmp/trap.log"
+
+cat >"$tmp/fake-cli.js" <<'JAVASCRIPT'
+const fs = require('node:fs');
+const chunks = process.argv.slice(2).flatMap(value => [
+  Buffer.from(value, 'utf8'),
+  Buffer.from([0]),
+]);
+fs.writeFileSync(process.env.RECORD_FILE, Buffer.concat(chunks));
+JAVASCRIPT
+
+cat >"$tmp/generate.js" <<'JAVASCRIPT'
+const fs = require('node:fs');
+
+function quotePosix(value) {
+  if (value.includes('\0')) throw new TypeError('NUL is not representable in argv');
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+const [target, promptFile, outputFile] = process.argv.slice(2);
+const prompt = fs.readFileSync(promptFile, 'utf8');
+const args = [target, 'add', prompt, '--cron', '0 9 * * *', '--task', 'daily'];
+fs.writeFileSync(outputFile, ['node', ...args.map(quotePosix)].join(' ') + '\n');
+JAVASCRIPT
+
+cat >"$tmp/expected.js" <<'JAVASCRIPT'
+const fs = require('node:fs');
+const [promptFile, outputFile] = process.argv.slice(2);
+const args = ['add', fs.readFileSync(promptFile, 'utf8'),
+  '--cron', '0 9 * * *', '--task', 'daily'];
+fs.writeFileSync(outputFile, Buffer.concat(args.flatMap(value => [
+  Buffer.from(value, 'utf8'), Buffer.from([0]),
+])));
+JAVASCRIPT
+
+printf '%s' 'literal $(touch "$TRAP_LOG"), `touch "$TRAP_LOG"`, "double", ' \
+  >"$tmp/prompt"
+printf "'single', glob *, newline\nand trailing newline\n" >>"$tmp/prompt"
+
+node "$tmp/generate.js" "$tmp/fake-cli.js" "$tmp/prompt" "$tmp/command.sh"
+node "$tmp/expected.js" "$tmp/prompt" "$tmp/expected.bin"
+bash --noprofile --norc "$tmp/command.sh"
+cmp "$tmp/expected.bin" "$RECORD_FILE"
+test ! -e "$TRAP_LOG"
+printf 'PASS: argv preserved; injected commands did not run\n'
+```
+
+The heredocs above contain fixed, author-controlled JavaScript source. They are not a transport for the untrusted prompt; the prompt travels in a file. The test would be weaker if it captured argv in newline-delimited text, because empty values and trailing newlines would become ambiguous.
+
+## Property Test and Known-Bad Positive Control
+
+The next test repeatedly feeds a quoter's output back into Bash source and compares the raw stdout buffer, including its NUL terminator. It covers empty input, newlines, trailing newlines, shell metacharacters, Unicode, control characters other than NUL, and generated ASCII strings. Save it as `quote-test.mjs` and run `node quote-test.mjs` with a Node version that supports `String.prototype.replaceAll`.
+
+```js
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+function quotePosix(value) {
+  if (value.includes('\0')) throw new TypeError('NUL is not representable in argv');
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+const cases = [
+  '', '\n', 'trailing\n', "'", '"', '$HOME', '$(false)', '`false`',
+  'space tab\tglob * ? [x]', 'line 1\nline 2', '你好, shell',
+];
+
+let seed = 0x513;
+for (let i = 0; i < 1000; i += 1) {
+  seed = (seed * 1664525 + 1013904223) >>> 0;
+  const length = seed % 80;
+  let value = '';
+  for (let j = 0; j < length; j += 1) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    value += String.fromCharCode(1 + (seed % 127)); // excludes NUL
+  }
+  cases.push(value);
+}
+
+for (const value of cases) {
+  const result = spawnSync('/bin/bash', [
+    '--noprofile', '--norc', '-c', `printf '%s\\0' ${quotePosix(value)}`,
+  ]);
+  assert.equal(result.status, 0, result.stderr.toString());
+  assert.deepEqual(result.stdout, Buffer.concat([
+    Buffer.from(value, 'utf8'), Buffer.from([0]),
+  ]));
+}
+
+assert.throws(() => quotePosix('a\0b'), /NUL/);
+
+// Positive control: the original double-quote mutant must trigger the canary.
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-quote-control-'));
+const marker = path.join(dir, 'fired');
+const payload = `$(printf fired > ${quotePosix(marker)})`;
+const mutant = `"${payload}"`; // deliberately broken
+const control = spawnSync('/bin/bash', [
+  '--noprofile', '--norc', '-c', `printf '%s\\0' ${mutant}`,
+]);
+assert.equal(control.status, 0, control.stderr.toString());
+assert.equal(fs.readFileSync(marker, 'utf8'), 'fired');
+assert.notDeepEqual(control.stdout, Buffer.concat([
+  Buffer.from(payload, 'utf8'), Buffer.from([0]),
+]));
+fs.rmSync(dir, { recursive: true, force: true });
+
+console.log(`PASS: ${cases.length} round trips; known-bad mutant detected`);
+```
+
+This is behavioral evidence for the tested Bash/runtime boundary, not a proof about every shell or every byte sequence. Static parsers, linters, and taint analysis can also find suspicious code construction; they remain useful. Execution adds evidence about the exact parser and end-to-end argv behavior that text inspection alone may miss.
+
+## Ecosystem Boundaries
+
+| Runtime | Structured process API | Shell-text support and scope |
+|---|---|---|
+| POSIX sh / Bash | The shell itself operates on words | Portable single-quote encoding for one POSIX shell token; Bash also has `printf %q` and `${value@Q}` [1][3][4] |
+| Python | `subprocess.run([...], shell=False)` [6] | `shlex.quote()` / `shlex.join()` are documented for Unix shells only [11] |
+| Node.js | `spawn()` / `execFile()` without `shell: true` [5] | No cross-shell quoter in core; on Windows, `.bat` and `.cmd` require a terminal, `shell: true`, or `cmd.exe` [5] |
+| Rust | `std::process::Command` [8] | No stdlib shell quoter; `shlex` and `shell-words` document Unix/POSIX-oriented parsing [12][13] |
+| Go | `os/exec.Command` [7] | `os/exec` deliberately does not invoke a shell or expand glob patterns [7] |
+
+Windows is not another row in a universal quoting table. PowerShell, `cmd.exe`, the Microsoft C runtime's argv decoding, and application-specific parsers have different rules. Even APIs that normally avoid a shell can have batch-file exceptions on Windows; use the platform/runtime documentation and test the exact consumer [5][6].
+
+## Review Checklist
+
+- Prefer a structured process API, stdin, or a file over generated shell source.
+- Name the actual parser and every parse boundary; do not say “shell-safe” without a dialect and syntax position.
+- Reject NUL and state the runtime encoding covered by the quoter and tests.
+- Encode each data argument independently for the immediate POSIX/Bash boundary.
+- Validate executable names, options, and end-of-options handling separately from quoting.
+- Treat GitHub Actions `env:` indirection as protection against direct script generation, not as option validation.
+- Do not use a fixed heredoc delimiter for arbitrary untrusted body data.
+- Compare NUL-framed argv bytes so empty values and trailing newlines remain observable.
+- Run the emitted command against a fake target, and include a known-bad positive control that must trigger the harness.
+- Scope conclusions to the tested shell, platform, runtime encoding, number of parse boundaries, and non-interactive or interactive transport.
 
 ## References
 
-1. [Quotes - Greg's Wiki](https://mywiki.wooledge.org/Quotes)
-2. [GNU Bash Reference Manual](https://www.gnu.org/software/bash/manual/bash.html)
-3. [UNIX Shell Quotes tutorial](https://www.grymoire.com/Unix/Quote.html)
-4. [POSIX.1-2024, Shell Command Language ch.2](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html)
-5. [POSIX Shell Tutorial (Grymoire)](https://www.grymoire.com/Unix/Sh.html)
-6. [Advanced Quoting in Shell Scripts – Scripting OS X](https://scriptingosx.com/2020/04/advanced-quoting-in-shell-scripts/)
-7. [Bash Heredoc Guide | Linuxize](https://linuxize.com/post/bash-heredoc/)
-8. [Bash printf Command | Linuxize](https://linuxize.com/post/bash-printf-command/)
-9. [Bash Parameter Transformation ("@Q")](https://s0ands0.github.io/100-days-of-code/r000/048-bash-parameter-transformation/)
-10. [CWE-78: OS Command Injection](https://cwe.mitre.org/data/definitions/78.html)
-11. [GitHub Actions: Untrusted input | GitHub Security Lab](https://securitylab.github.com/resources/github-actions-untrusted-input/)
-12. [Script injections - GitHub Docs](https://docs.github.com/en/actions/concepts/security/script-injections)
-13. [git-mcp-server command injection, CVE-2025-53107](https://github.com/advisories/GHSA-3q26-f695-pp76)
-14. [Prompt injection to RCE in AI agents - Trail of Bits](https://blog.trailofbits.com/2025/10/22/prompt-injection-to-rce-in-ai-agents/)
-15. [Command Injection in package.json | Medium](https://medium.com/lift-security/bypassing-npm-ignore-scripts-with-command-injection-in-package-json-2c08ad7515ca)
-16. [Child process | Node.js Documentation](https://nodejs.org/api/child_process.html)
-17. [os/exec package - Go Packages](https://pkg.go.dev/os/exec)
-18. [shlex — Python 3 documentation](https://docs.python.org/3/library/shlex.html)
-19. [shell-quote - npm](https://www.npmjs.com/package/shell-quote)
-20. [shescape - npm](https://www.npmjs.com/package/shescape)
-21. [shlex - crates.io](https://crates.io/crates/shlex)
-22. [shell-words - crates.io](https://crates.io/crates/shell-words)
-23. [shellescape - Go Packages](https://pkg.go.dev/github.com/alessio/shellescape)
-24. [ShellFuzzer: Grammar-based Fuzzing (arXiv)](https://arxiv.org/html/2408.00433v1)
+1. [GNU Bash Reference Manual: Quoting](https://git.savannah.gnu.org/cgit/bash.git/plain/doc/bashref.html#Quoting)
+2. [POSIX.1-2024: Shell Command Language](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html)
+3. [GNU Bash Reference Manual: Bash Builtins (`printf %q`)](https://git.savannah.gnu.org/cgit/bash.git/plain/doc/bashref.html#Bash-Builtins)
+4. [GNU Bash Reference Manual: Shell Parameter Expansion (`@Q`)](https://git.savannah.gnu.org/cgit/bash.git/plain/doc/bashref.html#Shell-Parameter-Expansion)
+5. [Node.js documentation: Child processes](https://nodejs.org/api/child_process.html)
+6. [Python documentation: `subprocess`](https://docs.python.org/3/library/subprocess.html)
+7. [Go documentation: `os/exec`](https://pkg.go.dev/os/exec)
+8. [Rust documentation: `std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html)
+9. [GitHub Docs: Script injections](https://docs.github.com/en/actions/concepts/security/script-injections)
+10. [Microsoft Learn: About environment variables in PowerShell](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables)
+11. [Python documentation: `shlex`](https://docs.python.org/3/library/shlex.html)
+12. [`shlex` crate documentation](https://docs.rs/shlex/latest/shlex/)
+13. [`shell-words` crate documentation](https://docs.rs/shell-words/latest/shell_words/)
+14. [CWE-78: Improper Neutralization of Special Elements used in an OS Command](https://cwe.mitre.org/data/definitions/78.html)
+15. [GitHub Advisory GHSA-3q26-f695-pp76](https://github.com/advisories/GHSA-3q26-f695-pp76)
