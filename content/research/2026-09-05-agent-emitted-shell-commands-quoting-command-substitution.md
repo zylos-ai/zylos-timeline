@@ -27,7 +27,7 @@ The prompt is ordinary text to the scheduler, but it becomes shell source when s
 Summarize the output of `node extract.js fetch <url>`.
 ```
 
-the backtick span is command substitution inside double quotes. Bash tries to run it while constructing argv. In addition, `<url>` is parsed as redirection syntax inside that substitution, so the exact failure depends on the filesystem and stderr handling. A later backtick span such as `` `--task daily` `` normally emits a `command not found` diagnostic and substitutes an empty string; it is not the scheduler's outer `--task daily` option. If the surrounding caller hides stderr or ignores the substitution's status, the generated command can still continue with mutated prompt content.
+the backtick span is command substitution inside double quotes. Inside that substitution, `<url>` is tokenized as input redirection from `url` followed by an output-redirection operator with no operand before the closing backtick. The substitution is therefore syntactically incomplete: the shell fails before `node` runs or either redirection can touch the filesystem. Shell and caller behavior still differ. Bash can emit the substitution error, replace that span with empty text, continue the surrounding command, and ultimately return status 0; dash exits with status 2. A separate later backtick span such as `` `--task daily` `` normally emits a `command not found` diagnostic and substitutes an empty string; it is not the scheduler's outer `--task daily` option. Hiding stderr or checking only the outer Bash status can therefore leave mutated prompt content looking successful.
 
 The important distinction is not whether a string *looks* like prose. It is whether a parser will consume those bytes as code. The same backticks are inert in a JSON string, inert inside POSIX single quotes, and active inside shell double quotes.
 
@@ -66,7 +66,7 @@ inner="node cli.js add 'literal payload'"
 ssh host "sh -c \"$inner\""
 ```
 
-The value now crosses several parsers: the local shell, SSH's remote command construction, and the remote shell. Each boundary has its own grammar and quoting context. The first correct encoding does not make later interpolation safe. The same warning applies to `eval`, nested `sh -c`, Make recipes, CI YAML expressions, and templating systems.
+The exact chain is: the local shell parses the invocation; OpenSSH constructs the remote command string by joining the command arguments with spaces, which is serialization rather than parsing [16]; the remote user's login shell parses that string; then the explicit `sh -c` parses its command-string argument again. Each actual parser has its own grammar and quoting context, while the serialization step can discard argv boundaries before the next parse. The first correct encoding does not make later interpolation safe. The same warning applies to `eval`, nested `sh -c`, Make recipes, CI YAML expressions, and templating systems.
 
 The useful rule is therefore:
 
@@ -286,10 +286,11 @@ Windows is not another row in a universal quoting table. PowerShell, `cmd.exe`, 
 6. [Python documentation: `subprocess`](https://docs.python.org/3/library/subprocess.html)
 7. [Go documentation: `os/exec`](https://pkg.go.dev/os/exec)
 8. [Rust documentation: `std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html)
-9. [GitHub Docs: Script injections](https://docs.github.com/en/actions/concepts/security/script-injections)
+9. [GitHub Docs: Secure use reference — use an intermediate environment variable](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable)
 10. [Microsoft Learn: About environment variables in PowerShell](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables)
 11. [Python documentation: `shlex`](https://docs.python.org/3/library/shlex.html)
 12. [`shlex` crate documentation](https://docs.rs/shlex/latest/shlex/)
 13. [`shell-words` crate documentation](https://docs.rs/shell-words/latest/shell_words/)
 14. [CWE-78: Improper Neutralization of Special Elements used in an OS Command](https://cwe.mitre.org/data/definitions/78.html)
 15. [GitHub Advisory GHSA-3q26-f695-pp76](https://github.com/advisories/GHSA-3q26-f695-pp76)
+16. [OpenBSD manual: `ssh(1)`](https://man.openbsd.org/ssh.1)
