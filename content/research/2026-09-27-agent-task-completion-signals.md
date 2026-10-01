@@ -28,8 +28,8 @@ The core confusion is that "the model stopped generating text" and "the task is 
 | Claude Agent SDK | `ResultMessage.subtype` | `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, `error_max_structured_output_retries` — this is the field that actually tells you how the *loop*, not just the last turn, ended. |
 | Claude Opus 5.5 | progress-update `thinking` blocks | Narration between tool calls now arrives as `thinking` blocks (empty by default; opt in with `display: "updates"`), not `text` blocks — a second, independent reason a naive "read the text block" client goes quiet. |
 | OpenAI Agents SDK | `final_output` / `output_type` | The run loop ends when a response has no tool calls and (if configured) matches the declared output type; handoffs and pending approvals mean "not yet." |
-| OpenAI Responses API | `status: "completed" | "incomplete"` | Explicit status field; `incomplete_details.reason` (e.g. `max_output_tokens`) tells you why it wasn't `completed`. No `finish_reason` field exists here, unlike the legacy Chat Completions API. |
-| LangGraph | `recursion_limit` (default 25) / graph reaching `END` | A hard step ceiling, not a completion judgment. Hitting it raises `GraphRecursionError` regardless of whether the task was actually done. |
+| OpenAI Responses API | `status` / `incomplete_details` | Explicit status field (`completed`, `incomplete`, `failed`, `cancelled`, plus `queued`/`in_progress` while a background response runs); `incomplete_details.reason` (e.g. `max_output_tokens`) tells you why it wasn't `completed`. No `finish_reason` field exists here, unlike the legacy Chat Completions API. |
+| LangGraph | `recursion_limit` / graph reaching `END` | A hard step ceiling, not a completion judgment. Hitting it raises `GraphRecursionError` regardless of whether the task was actually done. The default is no longer small in Python: 10007 super-steps as of `langgraph` 1.2.12 (it was 25 until 1.0.6 raised it in January 2026); LangGraph.js still defaults to 25. |
 | AutoGen | `is_termination_msg` callback / keyword match (e.g. `"TERMINATE"`) | A model-emitted keyword the harness pattern-matches on — brittle to case and phrasing, but explicit and auditable. |
 | SWE-bench-style harnesses | Repository diff at container teardown, or a dedicated `submit` tool | Completion is defined structurally (a patch exists, a submit command ran) rather than semantically (the model said it was done). The evaluator reads the diff, not the model's prose. |
 
@@ -57,7 +57,7 @@ Anthropic's migration guide additionally lists **task budgets** (beta, `task_bud
 | Infinite continuation loop | Naive "if not done, send 'continue'" with no retry cap | Cost blowup, and a genuinely stuck task never surfaces for human review |
 | Continuation that repeats work | Resumed run has no memory of exactly what was already done (no idempotency key, no checklist state persisted outside the context window) | Duplicate side effects (double-sent emails, duplicate commits, double-charged actions) |
 | Server-tool loop mistaken for client stall | `pause_turn` treated the same as `tool_use`, or ignored entirely | Response silently truncated; the pydantic-ai and anthropic-sdk-python issue trackers both have open reports of runners exiting early on unhandled `pause_turn` |
-| Cost blowup from unbounded loops | No `max_turns` / `recursion_limit` / budget set | Runaway spend before anyone notices; LangGraph's default recursion limit (25) exists specifically to catch this class of bug |
+| Cost blowup from unbounded loops | No `max_turns` / `recursion_limit` / budget set | Runaway spend before anyone notices. Do not count on a framework default to cap it: Python LangGraph raised its default from 25 to 10000 in 1.0.6 (10007 since 1.1.4), with the change note that the "burden really should be on the user to enforce this based on their application" — so set an explicit per-run ceiling |
 
 Published research backs the general shape of this problem, though quantitative results are model- and benchmark-specific and should not be read as universal rates:
 
@@ -68,11 +68,11 @@ Published research backs the general shape of this problem, though quantitative 
 
 ## Design patterns that address it
 
-**1. Explicit completion signal, not inferred from prose.** The most robust pattern across frameworks is to make "done" a structural fact: a dedicated `submit`/`mark_complete` tool call, a response that validates against a declared output schema, or (as in SWE-bench-style harnesses) reading the actual artifact state (a diff, a file, a database row) rather than the model's claim about it. If the model must speak in free text, treat every text-only turn as a report by default, not a conclusion — which is precisely Anthropic's own recommended framing for Opus 5.5.
+**1. Explicit completion signal, not inferred from prose.** The most robust pattern across frameworks is to make "done" a structural fact: a dedicated `submit`/`mark_complete` tool call, a response that validates against a declared output schema, or (as in SWE-bench-style harnesses) reading the actual artifact state (a diff, a file, a database row) rather than the model's claim about it. If the model must speak in free text, treat every text-only turn as a report by default, not a conclusion — which is precisely Anthropic's own recommended framing for Opus 5.5. Note what each signal settles: a `submit` call or a schema-valid response tells you the model *means* it is done; only the artifact check (or the evidence in pattern 3) tells you it *is* done.
 
-**2. External checklist/todo state as the source of truth.** Keep the task's subtasks in state that lives outside the model's context window — a to-do tool, a row in a database, a file — and check it, not the model's last sentence, before closing the task. This also solves resumability: after a compaction, a crash, or a process restart, the checklist (not the transcript) tells you what's left.
+**2. External checklist/todo state as the record of progress.** Keep the task's subtasks in state that lives outside the model's context window — a to-do tool, a row in a database, a file — and check it, not the model's last sentence, before closing the task. This also solves resumability: after a compaction, a crash, or a process restart, the checklist (not the transcript) tells you what's left. One limit: in Anthropic's pattern the *model* updates the checklist, so an empty checklist is still the model's account of its progress. It catches a model that stops while knowingly leaving items open; it does not catch one that ticks items it never did.
 
-**3. A verifier separate from the worker.** A smaller/cheaper model (or a deterministic check — tests pass, schema validates, exit code zero) evaluates the stated completion condition independently of the agent that did the work. This catches false "done" claims that a same-model self-report would rubber-stamp, and it is cheap relative to the worker turn it's checking.
+**3. A verifier separate from the worker, fed evidence the worker didn't write.** A separate model evaluates the stated completion condition, but a different model only adds independence if it sees something other than the worker's own account. Anthropic's guidance has the smaller model check *the conversation* — which includes the tool results — not just the final message; a verifier handed only the closing "all done, tests pass" text cannot tell a run that executed from one that fabricated the same sentence, because both give it identical input. So feed it what the harness itself observed (the tool calls it executed and their raw outputs), and where the condition can be checked mechanically — tests pass, schema validates, exit code zero, the file or row exists — have the harness run that check itself. The deterministic checks are the structural part; the model verifier catches claims the recorded evidence doesn't support, and it is cheap relative to the worker turn it's checking.
 
 **4. Bounded continuation, not indefinite nudging.** When the checklist or verifier says work remains, send a short, specific continuation message — Anthropic's example: name the open items, ask the model to continue or state the blocker. Cap this at a small fixed number of automatic retries (Anthropic and the Sina report agree: 2–3) before escalating, rather than looping forever or giving up after one try.
 
@@ -92,6 +92,7 @@ The shape below fits an agent that receives tasks from a dispatcher/message queu
 # task_state.py
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Callable
 import time
 
 class TaskStatus(Enum):
@@ -110,6 +111,11 @@ class TaskRecord:
     max_continuations: int = 3
     last_stop_reason: str | None = None
     completion_condition: str = ""   # stated up front, checked by the verifier
+    # Recorded by the harness as it executes tools -- never written by the model.
+    evidence: list[dict] = field(default_factory=list)
+    # Deterministic checks the harness runs itself against the world (run the
+    # tests, stat the artifact, query the row); each returns (passed, detail).
+    acceptance_checks: list[Callable[[], tuple[bool, str]]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
 
     def open_items(self) -> list[str]:
@@ -127,7 +133,8 @@ def run_task(agent_client, verifier_client, record: TaskRecord, dispatcher):
 
         if response.stop_reason == "tool_use":
             # normal tool loop; not a completion signal either way
-            agent_client.run_tools_and_continue(response)
+            results = agent_client.run_tools_and_continue(response)
+            record.evidence.extend(results)            # harness-observed calls + raw outputs
             continue
 
         if response.stop_reason == "pause_turn":
@@ -140,8 +147,13 @@ def run_task(agent_client, verifier_client, record: TaskRecord, dispatcher):
             continue
 
         # Text-only end of turn: NEVER treat as completion on its own.
-        verdict = verifier_client.check(record.completion_condition, response.text)
-        if verdict.complete and not record.open_items():
+        # Gate 1: deterministic checks the harness runs itself, not the model's account.
+        failed = [detail for ok, detail in (check() for check in record.acceptance_checks) if not ok]
+        # Gate 2: a separate model compares the claim with harness-recorded evidence.
+        verdict = verifier_client.check(
+            record.completion_condition, claim=response.text, evidence=record.evidence
+        )
+        if not failed and verdict.complete and not record.open_items():
             record.status = TaskStatus.DONE
             dispatcher.mark_done(record.task_id)        # scheduler CLI call, idempotent
             return record
@@ -149,29 +161,30 @@ def run_task(agent_client, verifier_client, record: TaskRecord, dispatcher):
         record.continuation_count += 1
         if record.continuation_count > record.max_continuations:
             record.status = TaskStatus.ESCALATED
-            dispatcher.escalate(record.task_id, reason=verdict.reason, state=record)
+            dispatcher.escalate(record.task_id, reason="; ".join(failed) or verdict.reason, state=record)
             return record
 
-        nudge = f"Open items: {', '.join(record.open_items()) or verdict.reason}. Continue, or state the blocker."
+        gaps = record.open_items() + failed or [verdict.reason]
+        nudge = f"Not done yet: {'; '.join(gaps)}. Continue, or state the blocker."
         agent_client.send_user_message(nudge)
 ```
 
-**Recording "done" on the scheduler side should be idempotent and structural**, not "the model said so":
+**Recording "done" on the scheduler side should be idempotent and carry the evidence**, not "the model said so". The command below is illustrative — a hypothetical CLI standing in for whatever completion call your scheduler exposes:
 
 ```bash
-# Called by dispatcher.mark_done(), never by the model directly
-zylos-scheduler task complete <task_id> \
-  --evidence-file /path/to/diff-or-report.json \
+# Illustrative only (hypothetical CLI). Called by dispatcher.mark_done(), never by the model directly.
+scheduler-cli task complete <task_id> \
+  --evidence-file /path/to/acceptance-check-results.json \
   --idempotency-key "<task_id>:final"
 ```
 
-Keeping the `mark_done` / `escalate` calls in the harness rather than exposing them as tools the model can call directly is a deliberate choice: it keeps the structural completion check (checklist empty, verifier agrees) as a gate the model cannot talk its way past by simply calling a "mark complete" tool on its own say-so. Where a completion tool *is* exposed to the model (a common and reasonable pattern), the harness should still re-validate its preconditions before honoring the call, rather than trusting the call itself as proof.
+Keeping the `mark_done` / `escalate` calls in the harness rather than exposing them as tools the model can call directly is a deliberate choice: it keeps the completion gate in code the model cannot talk its way past by simply calling a "mark complete" tool on its own say-so. But the gate is only as structural as its inputs. The acceptance checks are structural — the harness runs them against the repository, filesystem, or database, not against anything the model wrote. The verifier is a cross-check of the model's claim against the tool log the harness recorded. The checklist is the model's own progress account. Drop the acceptance checks and what remains is a self-report consistency check: useful for catching a model that stops early while admitting open work, not for catching one that confidently reports work it never did. A task type with no mechanical acceptance check should say so in its record, or route closure to a human. Where a completion tool *is* exposed to the model (a common and reasonable pattern), the harness should still re-validate its preconditions before honoring the call, rather than trusting the call itself as proof.
 
 ## What's verified vs. inferred
 
-**Verified against primary sources, with dates:** the full `stop_reason` taxonomy and its handling rules; the Claude Agent SDK's `ResultMessage.subtype` values; the exact "Unattended agentic runs" guidance for Opus 5.5, including the checklist / smaller-model verifier / 2-3-retries recommendation; the move of progress narration into `thinking` blocks on Opus 5.5; task budgets as advisory, not enforced; OpenAI Agents SDK's `final_output`/handoff semantics; the Responses API's `status`/`incomplete_details` fields; LangGraph's default recursion limit of 25; AutoGen's `is_termination_msg` mechanism; the Claude Code `Stop` hook's `decision: "block"` and `stop_hook_active` loop-guard.
+**Verified against primary sources, with dates:** the full `stop_reason` taxonomy and its handling rules; the Claude Agent SDK's `ResultMessage.subtype` values; the exact "Unattended agentic runs" guidance for Opus 5.5, including the checklist / smaller-model verifier / 2-3-retries recommendation; the move of progress narration into `thinking` blocks on Opus 5.5; task budgets as advisory, not enforced; OpenAI Agents SDK's `final_output`/handoff semantics; the Responses API's `status`/`incomplete_details` fields; LangGraph's default recursion limit (Python `langgraph` 1.2.12 source: 10007, raised from 25 in 1.0.6 and to 10007 in 1.1.4; LangGraph.js source as of 2026-09-25: 25 — note the Python Graph API docs page says "1000", as did the 1.0.6 change note, but the shipped code says 10000 and then 10007); AutoGen's `is_termination_msg` mechanism; the Claude Code `Stop` hook's `decision: "block"` and `stop_hook_active` loop-guard.
 
-**Reasonable inference, not directly sourced:** the specific harness code sketches above (task record shape, loop driver, idempotency-key convention) are a synthesis applying the documented patterns to a queue-driven agent, not a quotation from any vendor's reference architecture. The claim that DeployBench's "self-stop dominant" finding generalizes beyond its own benchmark is not asserted — it is reported as that paper's specific result.
+**Reasonable inference, not directly sourced:** the specific harness code sketches above (task record shape, harness-recorded evidence and acceptance checks as the completion gate, loop driver, idempotency-key convention, and the illustrative scheduler command) are a synthesis applying the documented patterns to a queue-driven agent, not a quotation from any vendor's reference architecture. The claim that DeployBench's "self-stop dominant" finding generalizes beyond its own benchmark is not asserted — it is reported as that paper's specific result.
 
 **Unverifiable / could not confirm:** the Sina Tech article's Chinese-language paraphrase of Anthropic's internal reasoning for *why* progress updates end in `end_turn` (as opposed to what the docs state about the mechanism) could not be checked against an Anthropic engineering explanation, because none was found; the docs describe the behavior and the fix but not the internal design rationale. The New Stack's 2026-09-23 article ("Anthropic made Opus 5.5 cheaper. Then it broke four things your agent depends on") could not be fully retrieved past its navigation chrome, so its specific enumeration of "four things" is not independently confirmed here beyond what the Opus 5.5 migration guide itself documents as breaking changes (forced tool-use removed, thinking-disable removed, sampling parameters fixed, prefill removed, computer-use toolset changed).
 
@@ -188,8 +201,14 @@ Keeping the `mark_done` / `escalate` calls in the harness rather than exposing t
 - [The New Stack: "Anthropic made Opus 5.5 cheaper. Then it broke four things your agent depends on," Amanda Caswell, 2026-09-23](https://thenewstack.io/claude-opus-agent-migration/)
 - [OpenAI Agents SDK: Results (final_output, is_complete)](https://openai.github.io/openai-agents-python/results/)
 - [OpenAI Agents SDK: Running agents (run loop, max_turns)](https://openai.github.io/openai-agents-python/running_agents/)
-- [OpenAI Developer docs: Responses API status / incomplete_details discussion](https://community.openai.com/t/responses-api-dont-have-finish-reason/1361347)
+- [OpenAI API reference: Create a model response (Responses API `status`, `incomplete_details`)](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- [openai-python: `ResponseStatus` type (generated from the OpenAPI spec), as of 2026-09-27](https://github.com/openai/openai-python/blob/4ef4129e85e81a285905755e57b392aa9e77f9bd/src/openai/types/responses/response_status.py)
 - [LangGraph: GRAPH_RECURSION_LIMIT reference](https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT)
+- [LangGraph: Graph API — Recursion limit](https://docs.langchain.com/oss/python/langgraph/graph-api#recursion-limit)
+- [langgraph (Python) 1.2.12, released 2026-09-21: `DEFAULT_RECURSION_LIMIT` = 10007](https://github.com/langchain-ai/langgraph/blob/49cce0ca852be4cfb567a1cbe0e511ff325a1682/libs/langgraph/langgraph/_internal/_config.py#L32)
+- [langgraph PR #6676, "fix: change default recursion limit" (25 → 10000, shipped in 1.0.6)](https://github.com/langchain-ai/langgraph/commit/a5827c5c6193669d3063897e1845a45cfb90d732)
+- [langgraph PR #7355, "avoid recursion limit default sentinel collision" (10000 → 10007, shipped in 1.1.4)](https://github.com/langchain-ai/langgraph/commit/2fb367e90c9b49d37f2ae17a73a169270ea85ac8)
+- [LangGraph.js `DEFAULT_RECURSION_LIMIT` = 25, as of 2026-09-25](https://github.com/langchain-ai/langgraphjs/blob/2478e098ae1c2f7f353dfd8d6ff32ae7c20444a8/libs/langgraph-core/src/pregel/utils/config.ts#L45)
 - [AutoGen: Terminating Conversations Between Agents](https://microsoft.github.io/autogen/0.2/docs/tutorial/chat-termination/)
 - [AutoGen: Termination (stable docs)](https://microsoft.github.io/autogen/stable//user-guide/agentchat-user-guide/tutorial/termination.html)
 - [SWE-bench: The Harness reference](https://www.swebench.com/SWE-bench/reference/harness/)
