@@ -13,7 +13,7 @@ An autonomous agent runtime spawns shell commands, dev servers, headless browser
 This article traces why, with primary sources (man7.org, kernel docs, systemd docs, Node/Python docs, and real GitHub issues from OpenHands and Codex CLI), and then proves it with small experiments run on this machine (Linux 6.17, aarch64, cgroup v2, unprivileged user session):
 
 - A process that double-forks and calls `setsid()` leaves its parent's process group and session entirely. `killpg()` on the original group provably does not reach it — we reproduced this directly.
-- `PR_SET_CHILD_SUBREAPER` reparents that escaped orphan to a designated ancestor instead of to init, letting the harness find and kill it even after it changed pgid and session — we reproduced this too, and watched the reparenting happen in under a second.
+- `PR_SET_CHILD_SUBREAPER` reparents that escaped orphan to a designated ancestor instead of to init, letting the harness find and kill it even after it changed pgid and session — we reproduced this too, and watched the reparenting happen in under a second. Finding it is still a point-in-time `/proc` scan, though, so a subreaper alone does not close the race against a descendant that forks during cleanup.
 - An unprivileged, delegated **cgroup v2** subtree survives `setsid()` entirely (cgroup membership is orthogonal to process groups and sessions), and `cgroup.kill` kills the whole tree with one write, no root required. It stops *accidental* escape; a same-user process that deliberately migrates itself to another cgroup in the same delegated subtree is a separate threat, covered in Section 3.5.
 - `systemd-run --user --scope` gets you the same cgroup-backed guarantee for free, plus a name you can `systemctl stop`.
 - `pidfd_open`/`pidfd_send_signal` close the PID-reuse race: signaling a pidfd after the target has been reaped fails with `ESRCH` instead of silently hitting an unrelated process that inherited the recycled number.
@@ -77,15 +77,17 @@ A process group is a signaling unit (`kill(-pgid, sig)` reaches every member); a
 
 ### 3.2 `PR_SET_PDEATHSIG`
 
-`prctl(2)`'s `PR_SET_PDEATHSIG` arms a signal to be delivered to a child automatically "upon subsequent termination of the parent thread." We verified the basic case directly (Section 5.4): a child armed with `PR_SET_PDEATHSIG(SIGTERM)` received the signal well under a millisecond after its parent called `exit()`, with no explicit kill from anyone.
+`prctl(2)`'s `PR_SET_PDEATHSIG` arms a signal that the calling process receives "upon subsequent termination of the parent thread and also upon termination of each subreaper process (see PR_SET_CHILD_SUBREAPER(2const)) to which the caller is subsequently reparented." It is set by the child, on itself. We verified the basic case directly (Section 5.4): a child armed with `PR_SET_PDEATHSIG(SIGTERM)` received the signal well under a millisecond after its parent called `exit()`, with no explicit kill from anyone.
 
-The documented gotchas, straight from the man page: the "parent" is the specific *thread* that made the `prctl()` call, and the signal fires "when that thread terminates ... rather than after all of the threads in the parent process terminate." The setting is cleared across `fork()` (each child must re-arm it) and cleared on `execve()` of a set-UID/set-GID binary or one with file capabilities, or on any change to effective/filesystem UID or GID. This thread-vs-process distinction is not theoretical. `golang/go#27505` reports a child that kept dying because it was started on one thread and waited on from another, and asks Go to fix its misleading `Pdeathsig` documentation. `tetratelabs/func-e#173` describes the fix in a Go runtime, which moves goroutines between OS threads: start the child from a goroutine locked to its OS thread, and keep that goroutine alive until the child exits. `PR_SET_PDEATHSIG` also only fires on the parent's own death — it does nothing for a grandchild already re-parented away.
+The documented gotchas, straight from the man page: the "parent" is "the thread that created this process" — the parent-side thread that called `fork()`/`clone()`, not the child that calls `prctl()` — and the signal fires "when that thread terminates ... rather than after all of the threads in the parent process terminate." It is also not a one-shot: if the child is later reparented to a subreaper, the signal fires again when that subreaper dies, and again for each subreaper after it. If the creating thread and every ancestor subreaper are already gone when `prctl()` runs, nothing is ever sent. The setting is cleared for the child of a `fork()` (each child must arm its own) and cleared on `execve()` of a set-UID/set-GID binary or one with file capabilities, or on any change to effective/filesystem UID or GID. This thread-vs-process distinction is not theoretical. `golang/go#27505` reports a child that kept dying because it was started on one thread and waited on from another, and asks Go to fix its misleading `Pdeathsig` documentation. `tetratelabs/func-e#173` describes the fix in a Go runtime, which moves goroutines between OS threads: start the child from a goroutine locked to its OS thread, and keep that goroutine alive until the child exits. And because the setting is per-process and cleared across `fork()`, it covers only the process that armed it: a grandchild that daemonizes and never arms its own gets no signal from anyone's death.
 
 ### 3.3 `PR_SET_CHILD_SUBREAPER`
 
-Also a `prctl(2)` operation, available since Linux 3.4. It makes the calling process the reparenting target for any of its descendants that would otherwise be orphaned up to init: "a subreaper fulfills the role of `init(1)` for its descendant processes," and orphan search walks up the ancestry from the dying parent, stopping at the nearest ancestor that has set this flag (or at the namespace's init if none has). This is real, load-bearing infrastructure — it's exactly what `tini`'s `-s`/`TINI_SUBREAPER` flag and Docker's own init process rely on for zombie reaping in containers.
+Also a `prctl(2)` operation, available since Linux 3.4. It makes the calling process the reparenting target for any of its descendants that would otherwise be orphaned up to init: "a subreaper fulfills the role of `init(1)` for its descendant processes," and orphan search walks up the ancestry from the dying parent, stopping at the nearest ancestor that has set this flag (or at the namespace's init if none has). This is real, load-bearing infrastructure — it's exactly what `tini`'s `-s`/`TINI_SUBREAPER` flag turns on, and what containerd's per-container shim registers itself as (`reaper.SetSubreaper(1)`) so it can reap the container's processes.
 
-It does **not**, by itself, stop the orphan from doing anything — it only makes sure the harness *finds out about it* (it becomes a direct child, discoverable via `/proc/<harness_pid>/task` or a `PPid` scan, or eventually reapable via `wait()`). The harness still has to notice and act. Our experiment shows this working end to end: the escaped grandchild's `PPid` became the subreaper's PID before the harness even sent its first signal, letting the harness walk `/proc`, find it, and `SIGKILL` it directly — something plain `killpg()` on the original group could never do, because the escapee's PGID and SID had both changed.
+It does **not**, by itself, stop the orphan from doing anything — it only makes sure the harness *finds out about it* (it becomes a direct child, discoverable via `/proc/<harness_pid>/task/<tid>/children` or a `PPid` scan, or eventually reapable via `wait()`). The harness still has to notice and act. Our experiment shows this working end to end: the escaped grandchild's `PPid` became the subreaper's PID before the harness even sent its first signal, letting the harness walk `/proc`, find it, and `SIGKILL` it directly — something plain `killpg()` on the original group could never do, because the escapee's PGID and SID had both changed.
+
+What a subreaper does not do is make that cleanup atomic. It changes where orphans are reparented; it does not stop anyone from forking. Killing them is still enumerate-then-signal, so a descendant that forks after the scan has read it but before the kill lands leaves a new child the scan never saw. A harness that relies on a subreaper needs a drain loop (re-scan and re-kill until no live children remain) or a confinement boundary underneath. `cgroup.kill` (Section 3.5) is documented to handle concurrent forks, and a PID namespace whose init has died refuses new forks (Section 3.7); a subreaper offers neither.
 
 ### 3.4 `pidfd_open` / `pidfd_send_signal` / `waitid(P_PIDFD)`
 
@@ -113,7 +115,12 @@ Killing the init process of a PID namespace is the heaviest hammer available: pe
 
 ### 3.8 `tini` / `dumb-init`
 
-Both run as PID 1 in a container to solve two problems: reaping zombies (inheriting orphans as the namespace's init and `wait()`-ing on them) and correct default signal delivery (PID 1 doesn't get default `SIGTERM` handling, so an unhandled `CMD` can become unkillable via the friendly path). `tini`'s README documents an explicit opt-in, `-s`/`TINI_SUBREAPER`, to register as a `PR_SET_CHILD_SUBREAPER` even when not PID 1, and a separate `-g`/`TINI_KILL_PROCESS_GROUP` to forward signals to the whole foreground group instead of just the immediate child — by default even `tini` only forwards to one process.
+Both run as PID 1 in a container to solve two problems: reaping zombies (inheriting orphans as the namespace's init and `wait()`-ing on them) and correct default signal delivery (PID 1 doesn't get default `SIGTERM` handling, so an unhandled `CMD` can become unkillable via the friendly path). Their signal-forwarding defaults differ, so the two should not be described with one set of flags:
+
+- **`tini`**: per its README, "By default, Tini only kills its immediate child process." `-g`/`TINI_KILL_PROCESS_GROUP` opts into signaling the child's process group instead, and a separate opt-in, `-s`/`TINI_SUBREAPER`, registers it as a `PR_SET_CHILD_SUBREAPER` when it cannot run as PID 1.
+- **`dumb-init`**: the opposite default. Per its README, "In its default mode, `dumb-init` establishes a session rooted at the child, and sends signals to the entire process group." `--single-child` or `DUMB_INIT_SETSID=0` narrows forwarding to the direct child only. It has no subreaper option (its source never calls `prctl()`), so it collects orphans only when it is PID 1.
+
+Neither reaches past a process group: even in group mode (`tini -g`, or `dumb-init`'s default), a descendant that calls `setsid()` or `setpgid()` has left the group being signaled, exactly as in Section 2.1.
 
 ## 4. How real agent tooling actually handles this
 
@@ -122,8 +129,8 @@ Scoped to what is verifiable from documentation and public source/issues:
 - **Node.js `child_process`**: the official docs confirm `detached: true` makes the child "the leader of a new process group and session," citing `setsid(2)` directly. The commonly used follow-up, `process.kill(-child.pid)` to signal the whole group via a negative PID, is standard POSIX `kill(2)` behavior, but it isn't itself spelled out in the Node docs we checked — community convention layered on a documented primitive, not a documented Node.js guarantee.
 - **Python `subprocess`**: `start_new_session=True` is documented to call `setsid()` in the child before `exec`; a newer `process_group` parameter (Python 3.11+) wraps `setpgid(0, value)` directly. The docs don't discuss zombies, orphaned grandchildren, or `os.killpg()` usage — that's left to the caller.
 - **OpenHands** (`OpenHands/software-agent-sdk`): issue #4910 is a filed, first-party bug report describing exactly the failure mode in Section 2.1/2.3 — an ACP-managed subprocess tree (`npx` → `sh -c` → `node` → the actual tool) was being shut down by signaling only the top-level PID, without `start_new_session=True`, so descendants survived as orphans of init. The tracked fix is precisely: spawn with `start_new_session=True`, terminate via `os.killpg(pgid, signal.SIGTERM)`. That confirms, from OpenHands' own tracker rather than our inference, both the baseline process-group approach and its exact gap for anything that changes its own group or session.
-- **OpenAI Codex CLI**: issue #7932, an open, unresolved user report, describes background processes (a web-scraping tool spawning Chrome) surviving session interruption (Esc/Ctrl-C), with the reporter's diagnosis matching Section 2 almost verbatim: "child processes not attached to a process group," "interrupt signals not forwarded," "no centralized job tracking." We could not verify Codex CLI's internal job-control implementation from source, so we report this as a documented user-facing issue, not a verified architectural claim.
-- **PM2**: shipped a "treekill" system (`Unitech/pm2#1036`) using `ps --ppid` traversal to find descendants and signal each one, rather than relying solely on process-group signaling. Valid for the "different PGID" case, but a `ps`-based tree walk is a point-in-time snapshot — it can still race against a process forking after the walk but before the kill, which cgroup- or subreaper-based approaches don't.
+- **OpenAI Codex CLI**: issue #7932, a user report filed on 2025-12-12 and closed by its own reporter as completed on 2025-12-13 with no linked fix (so the closure does not show the defect was fixed), describes background processes (a web-scraping tool spawning Chrome) surviving session interruption (Esc/Ctrl-C), with the reporter's diagnosis matching Section 2 almost verbatim: "child processes not attached to a process group," "interrupt signals not forwarded," "no centralized job tracking." We could not verify Codex CLI's internal job-control implementation from source, so we report this as a documented user-facing issue, not a verified architectural claim.
+- **PM2**: shipped a "treekill" system (`Unitech/pm2#1036`) using `ps --ppid` traversal to find descendants and signal each one, rather than relying solely on process-group signaling. Valid for the "different PGID" case, but a `ps`-based tree walk is a point-in-time snapshot — it can still race against a process forking after the walk but before the kill. A subreaper does not remove that race either, since its cleanup is also a scan followed by signals (Section 3.3); `cgroup.kill` does, because per the kernel docs killing a cgroup tree "will deal with concurrent forks appropriately and is protected against migrations."
 
 ## 5. Hands-on verification
 
@@ -167,7 +174,7 @@ $ python3 harness.py subreaper
 [harness] FINAL: child0 alive=False  sleeper alive=False
 ```
 
-Note the sleeper's `ppid` is already `1981896` (the harness) *before* `killpg` even runs — reparenting to the subreaper happened as soon as the double-fork's first intermediate process exited, not lazily. This is what let the harness find it via a `/proc` scan on `PPid` and kill it directly, even though its PGID/SID never matched the tracked group.
+Note the sleeper's `ppid` is already `1981896` (the harness) *before* `killpg` even runs — reparenting to the subreaper happened as soon as the double-fork's first intermediate process exited, not lazily. This is what let the harness find it via a `/proc` scan on `PPid` and kill it directly, even though its PGID/SID never matched the tracked group. The scan is one-shot, which was enough for a sleeper that never forks again; a descendant that forked between the scan and the kill would have left a child behind (Section 3.3).
 
 (A stray run where the harness itself crashed mid-experiment left the sleeper briefly re-parented to `1`/init instead — confirming that a subreaper only protects descendants while it's alive; if it dies too, orphans fall through to whatever the next subreaper up the chain is, or to init.)
 
@@ -224,7 +231,27 @@ $ cat pdeathsig_result.txt
 signaled=True elapsed=0.0003644069656729698
 ```
 
-0.36 ms from parent exit to the child's own `SIGTERM` handler firing — confirming the man page's guarantee, and showing it's fast enough to rely on for immediate child cleanup when the parent is a single, un-threaded process. We did not attempt to reproduce the multi-threaded footgun from `golang/go#27505` (it requires a specific parent-thread-exits-independently setup); we report it here as a documented, filed issue rather than as something we verified locally.
+0.36 ms from parent exit to the child's own `SIGTERM` handler firing — confirming the man page's guarantee, and showing it's fast enough to rely on for immediate child cleanup when the parent is a single, un-threaded process. Two follow-up runs checked the lifecycle rules from Section 3.2. In the first, a worker thread forks the child, waits until the child has armed the signal, and returns, while the parent process keeps running:
+
+```
+$ python3 -W ignore::DeprecationWarning pdeathsig_thread.py   # silence Python 3.12's fork-in-threaded-process warning
+worker thread forked child, thread returns at t=0.00s
+child got SIGUSR1 at t=0.00s
+parent process still running at t=1.50s
+```
+
+The signal followed the creating thread, not the process — the same mechanism behind `golang/go#27505`. (An earlier version that let the thread return before the child had armed the signal got no signal at all, so the order matters.) In the second, process `B` arms the signal under parent `A`, inside a subreaper `S`; `A` exits, then `S` exits:
+
+```
+$ python3 pdeathsig_subreaper.py
+B armed PR_SET_PDEATHSIG(SIGUSR1), parent A=2643056
+A 2643056 exits
+B got SIGUSR1, ppid now 2643055
+subreaper S 2643055 exits
+B got SIGUSR1, ppid now 1
+```
+
+One arming, two deliveries: once for the original parent and once more for the subreaper `B` had been reparented to.
 
 ### 5.5 pidfd avoids the PID-reuse race
 
@@ -246,7 +273,7 @@ With the default `pid_max` of 4,194,304 on this machine, 4,000 forks were nowher
 
 1. **Give every tool call its own confinement boundary at spawn time**, not as an afterthought at kill time. A cgroup v2 leaf (via `systemd-run --user --scope` where a user session/lingering is available, or a manually delegated cgroup subtree otherwise) beats a bare new session/process group, because daemonizing does not take a process out of it. If tool calls are untrusted, also make sure they cannot write to the delegated subtree (see Section 3.5).
 2. **Still call `setsid()`/`start_new_session=True`** even with cgroup confinement — it's free, stops stray terminal `SIGINT`/`SIGHUP` from reaching the tool call, and keeps `killpg()` a valid fast path when nothing escapes.
-3. **Set `PR_SET_CHILD_SUBREAPER`** on the process that owns tool-call lifecycles (or run under `tini -s`/`dumb-init`), so anything that does escape its process group is at least reparented somewhere the harness can enumerate, instead of vanishing into init.
+3. **Set `PR_SET_CHILD_SUBREAPER`** on the process that owns tool-call lifecycles (or run under `tini -s`), so anything that does escape its process group is at least reparented somewhere the harness can enumerate, instead of vanishing into init. Enumeration is a snapshot, so re-scan and re-kill until nothing live is left; this is a fallback, not a replacement for the cgroup boundary in step 1. (`dumb-init` has no subreaper option; it reaps orphans only when it runs as PID 1.)
 4. **Track children by pidfd, not raw PID**, once your runtime supports it; treat `ESRCH` on signal-by-pidfd as authoritative proof the process is gone, not `kill(pid, 0)`.
 5. **Escalate TERM → KILL on a deadline.** SIGTERM can be caught or ignored; SIGKILL cannot.
 6. **Verify emptiness at the confinement boundary**, not by re-checking remembered PIDs: poll `cgroup.events`'s `populated` field after triggering `cgroup.kill` / stopping the scope. A remembered PID may already have been reused by something else.
@@ -258,13 +285,14 @@ With the default `pid_max` of 4,194,304 on this machine, 4,000 forks were nowher
 | Mechanism | Escape-proof? | Needs root? | Min. kernel | Race-free addressing? | Notes |
 |---|---|---|---|---|---|
 | Process group / session (`setsid`, `killpg`) | No — defeated by `setsid()`/`setpgid()` in a descendant | No | Any | No (numeric PID/PGID) | Default in Node `detached`, Python `start_new_session` |
-| `PR_SET_PDEATHSIG` | No — only covers direct parent-thread death, cleared on `fork()`/setuid exec | No | Any (long-standing) | N/A (signal, not addressing) | Per-thread, not per-process; Go footgun (`golang/go#27505`) |
-| `PR_SET_CHILD_SUBREAPER` | No — makes escapees *discoverable*, doesn't kill them | No | 3.4+ | N/A | Must still enumerate + act; what `tini -s` uses |
+| `PR_SET_PDEATHSIG` | No — fires when the creating thread dies and again when each subreaper it is later reparented to dies; covers only the process that armed it (cleared for `fork()` children and on setuid/setgid/file-capability exec) | No | Any (long-standing) | N/A (signal, not addressing) | Tied to the thread that forked the child, not the whole parent process; Go footgun (`golang/go#27505`) |
+| `PR_SET_CHILD_SUBREAPER` | No — makes escapees *discoverable*, doesn't kill them | No | 3.4+ | N/A | Must still enumerate + act, and that scan races with concurrent `fork()` (re-scan until empty); what `tini -s` uses |
 | `pidfd_open`/`pidfd_send_signal` | N/A — addressing mechanism, not confinement | No | 5.1–5.4 (open 5.3, send 5.1, waitid P_PIDFD 5.4) | Yes — fails `ESRCH` instead of hitting a reused PID | Combine with a confinement mechanism, doesn't stop trees alone |
 | cgroup v2 `cgroup.kill` | **Yes** against daemonizing; a same-UID process with write access to the delegated subtree can migrate out | No (with delegation) | 5.14+ | Yes (kills by cgroup membership, not PID) | Membership survives `setsid()`/`setpgid()`; needs a delegated subtree |
 | `systemd-run --user --scope` + stop | **Yes** against daemonizing (cgroup-backed, same caveat) | No (needs user session/lingering) | cgroup v2 (systemd kills every member of the unit's cgroup on stop) | Yes | Gets you naming, `systemctl status`, and automatic cgroup cleanup for free |
 | PID namespace (kill ns init) | **Yes**, absolutely | Usually (or user namespaces) | Namespaces widely available; heavier setup | Yes | Heaviest option; whole namespace dies with its init |
-| `tini`/`dumb-init` (default) | No — forwards to one child only | No | N/A (userspace) | N/A | Needs `-g`/`TINI_KILL_PROCESS_GROUP` for group-wide forwarding, `-s` for subreaper |
+| `tini` (default) | No — forwards to its immediate child only | No | N/A (userspace) | N/A | `-g`/`TINI_KILL_PROCESS_GROUP` signals the child's process group; `-s`/`TINI_SUBREAPER` registers a subreaper when not PID 1 |
+| `dumb-init` (default) | No — forwards to the child's whole process group, which still misses descendants that `setsid()`/`setpgid()` away | No | N/A (userspace) | N/A | `--single-child`/`DUMB_INIT_SETSID=0` narrows forwarding to the direct child; no subreaper option, reaps orphans only as PID 1 |
 
 The practical takeaway from this table: nothing that is merely a *signaling* trick (process groups, PDEATHSIG, pidfd) survives a daemonizing descendant, because all of them address processes through ancestry or group membership that the descendant can leave. The two mechanisms that do survive it, cgroups and PID namespaces, work by *confinement* rather than addressing. They ignore which session or process group a task claims and look only at the container it belongs to. A PID namespace cannot be left from inside. A cgroup can be left only by a process with write access to the surrounding subtree, so for untrusted tool calls that write access must be removed as well.
 
@@ -281,6 +309,10 @@ The practical takeaway from this table: nothing that is merely a *signaling* tri
 - [systemd-run(1) — man.archlinux.org mirror](https://man.archlinux.org/man/systemd-run.1)
 - [GNU coreutils manual: timeout invocation](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html)
 - [tini README (krallin/tini)](https://github.com/krallin/tini#readme)
+- [dumb-init README — Session behavior (Yelp/dumb-init)](https://github.com/Yelp/dumb-init#session-behavior)
+- [dumb-init source — dumb-init.c](https://github.com/Yelp/dumb-init/blob/master/dumb-init.c)
+- [PR_SET_CHILD_SUBREAPER — man7.org](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)
+- [containerd shim — pkg/shim/shim_linux.go](https://github.com/containerd/containerd/blob/main/pkg/shim/shim_linux.go)
 - [Node.js child_process documentation](https://nodejs.org/api/child_process.html)
 - [Python subprocess documentation](https://docs.python.org/3/library/subprocess.html)
 - [opencontainers/runc issue #3135 — adopt cgroup.kill](https://github.com/opencontainers/runc/issues/3135)
