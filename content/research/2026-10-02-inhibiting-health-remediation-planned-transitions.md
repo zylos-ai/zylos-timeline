@@ -1,0 +1,172 @@
+---
+date: "2026-10-02"
+title: "Keeping Watchdogs From Fighting Planned Transitions"
+description: "A survey of how Kubernetes, systemd, OTP, Nomad, Consul, AWS, Alertmanager, PagerDuty, and database failover managers stop automated health remediation from fighting planned maintenance, and what that means for persistent agent session supervisors."
+tags: ["agent-infrastructure", "reliability", "health-checks", "supervision", "kubernetes", "distributed-systems", "site-reliability"]
+---
+
+## Executive Summary
+
+Every self-healing system faces the same trap: the mechanism that keeps it alive during real failures is also the mechanism most likely to sabotage a *planned* change. A liveness probe that correctly kills a wedged process will, with equal enthusiasm, kill a process that is deliberately taking its time to drain connections and flush state. A watchdog timer that correctly reboots a hung daemon will, with equal enthusiasm, reboot one that an operator just told to stop. The failure is not that the health check lied — it detected exactly what it was built to detect, an absence of liveness signal. The failure is that detecting absence and detecting *fault* were never the same thing, and most supervisors conflate them.
+
+This article surveys how mature infrastructure systems — Kubernetes, systemd, Erlang/OTP, Nomad, Consul, AWS Auto Scaling, Prometheus Alertmanager, PagerDuty, and the Patroni/Orchestrator database-failover tooling — draw the line between "not responding because it's broken" and "not responding because it's supposed to be doing something else right now." It then extracts the recurring design patterns (single lifecycle owner, explicit intentional-vs-failed state, epoch fencing, checking state at action time rather than schedule time, queuing instead of rejecting) and applies them to a concrete and under-discussed case: supervisors that keep persistent LLM agent sessions alive via heartbeats, and must not let that supervision fight a planned migration, mode switch, or maintenance window.
+
+The central finding, repeated across every system surveyed, is that **disabling new monitoring is not enough**. Work that was already in flight before a transition began — a probe scheduled a few seconds earlier, a timer already armed, a health check already dispatched — must also be fenced off, and the fence has to be checked at the moment the remediation *action* is about to happen, not only at the moment the check was scheduled. Kubernetes' own bug history shows how easy this is to get wrong even when the intent is documented in the code.
+
+## The Core Problem: Health Signals vs. Lifecycle Intent
+
+A health signal answers one question: "did I hear from you recently?" It cannot, by itself, distinguish between:
+
+- a process that is dead or wedged (a fault — remediate)
+- a process that is intentionally not responding because it is mid-shutdown, mid-drain, or deliberately paused (not a fault — leave alone)
+- a process that *will* resume responding once a planned operation completes (temporary, not a fault — wait)
+
+Systems that only reason about signal absence will act on all three identically. Systems that survive planned operations gracefully all add a second axis: an explicit, queryable record of *intent* — "this thing is stopped by design" — that the remediation path must consult before it acts, not just before it schedules a check.
+
+## Prior Art Survey
+
+### Kubernetes: Probes, Termination, and Disruption Budgets
+
+Kubernetes separates liveness, readiness, and startup probes by the *action* each one triggers, not just by what it measures. Per the [official probes documentation](https://kubernetes.io/docs/concepts/workloads/pods/probes/): a startup probe failure causes the kubelet to kill the container and apply the restart policy; a liveness probe failure restarts the container; a readiness probe failure only removes the pod's IP from the EndpointSlice — it never kills anything. This is a deliberate decoupling of "should traffic route here" from "should this process be destroyed," and it means the cheapest, most reversible signal (readiness) is the one allowed to fire constantly, while the destructive signal (liveness) is deliberately harder to trigger and explicitly documented as not waiting on readiness.
+
+The more interesting history is in how the kubelet treats probes *during termination*, because Kubernetes got this wrong before it got it right — and the failure mode is exactly the one this article is about. Before Kubernetes v1.23, pod termination did not stop in-flight liveness probes: a pod already marked for deletion, running its graceful-shutdown sequence, could still fail a liveness probe and be hard-killed out from under its own shutdown logic. This was fixed in [kubernetes/kubernetes#105215](https://github.com/kubernetes/kubernetes/pull/105215), which made node graceful shutdown terminate a pod's probes along with everything else.
+
+That fix did not fully close the gap. The kubelet's prober worker contains an explicit guard — when a pod's `DeletionTimestamp` is set, liveness and startup probe results are supposed to be forced to "success" rather than trusted, logged as "Pod deletion requested, setting probe result to success." But [kubernetes/kubernetes#107473](https://github.com/kubernetes/kubernetes/issues/107473) documents users on EKS and Minikube (versions 1.20–1.22) observing liveness probes still failing and killing containers during the termination window — the guard existed in code but did not reliably fire at the exact point the probe result was evaluated. A second issue, [kubernetes/kubernetes#122824](https://github.com/kubernetes/kubernetes/issues/122824), found that the original fix only covered liveness and startup probes — readiness probes were never included in the `DeletionTimestamp` check at all, so readiness failure warnings kept firing throughout the `preStop` window until that was separately fixed. In other words: Kubernetes had the right idea (check an explicit "intentionally terminating" flag before trusting a probe result) and still shipped it inconsistently across probe types for several releases. That is strong evidence that this class of bug is easy to introduce and easy to miss in review, not a hypothetical edge case.
+
+Above the single-pod level, [PodDisruptionBudgets](https://kubernetes.io/docs/tasks/run-application/configure-pdb/) formalize the planned/unplanned distinction at the fleet level: they bound how many pods of a set can be down *due to voluntary disruption* (evictions, drains, rolling upgrades) and explicitly do not apply to involuntary disruption (node hardware failure, kernel panic). `kubectl drain`, per the [safely drain a node guide](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/), evicts pods through a path that respects PDBs and graceful termination periods — a different code path from the one the scheduler uses to react to crashes. `kubectl cordon` only marks a node unschedulable for new work; it is a separate, reversible step from actually removing existing work via drain. The two-step cordon-then-drain sequence is itself a lifecycle-ownership pattern: "stop admitting new work" and "remove existing work" are deliberately split so that planned removal cannot be mistaken for, or race with, failure-triggered removal.
+
+### systemd: Watchdog Timers and the Stop-Job Exemption
+
+systemd's software watchdog (`WatchdogSec=`) requires the service to call `sd_notify(WATCHDOG=1)` at roughly half the configured interval; miss enough pings and systemd marks the unit failed and sends `SIGABRT` ([systemd.service(5)](https://man7.org/linux/man-pages/man5/systemd.service.5.html), [sd_notify(3)](https://www.freedesktop.org/software/systemd/man/latest/sd_notify.html)). Critically, the restart policy (`Restart=always`, `on-failure`, etc.) is explicitly suspended for operator-initiated stops: systemd will not restart a unit if it was stopped via `systemctl stop` or an equivalent operation, or if its exit status matches `RestartPreventExitStatus=`. The watchdog and the restart policy both key off of *how* the unit ended, not merely *that* it ended — an intentional stop and a crash are different states as far as systemd's remediation logic is concerned, and that distinction is checked at the moment systemd decides whether to restart, not only at the moment the stop was requested.
+
+### Erlang/OTP: Supervisors and the Shutdown/Crash Distinction
+
+OTP's supervisor behaviour makes the same distinction a first-class part of the restart contract. Per the [Supervisor Behaviour design principles](https://www.erlang.org/doc/system/sup_princ.html) and the [supervisor module reference](https://www.erlang.org/doc/apps/stdlib/supervisor.html), a child's restart type (`permanent`, `transient`, `temporary`) governs whether it is restarted based on *why* it exited: a `transient` child is restarted only on an abnormal exit — any reason other than `normal`, `shutdown`, or `{shutdown, Term}` — while a `temporary` child is never restarted regardless of exit reason. Calling `supervisor:terminate_child/2` to deliberately stop a child does not trigger the supervisor's automatic-restart machinery; the supervisor is the single authority that distinguishes "I told it to stop" from "it died." OTP also bounds remediation itself: `intensity`/`period` (by default 1 restart per 5 seconds) caps how many times a supervisor will attempt to resurrect its children before giving up, terminating everything, and escalating failure upward with its own `shutdown` exit — a deliberate circuit breaker against a restart loop fighting a problem it cannot fix.
+
+### Nomad and Consul: Drain and Maintenance Mode
+
+HashiCorp Nomad's `node drain` marks a node ineligible for new scheduling and migrates its existing allocations according to the job's `migrate` block. The [reschedule block documentation](https://developer.hashicorp.com/nomad/docs/job-specification/reschedule) states plainly that "when a node is drained, Nomad migrates the allocations instead and ignores the reschedule block" — a drain-triggered move is explicitly carved out of the failure-triggered reschedule/backoff path, so planned evacuation never looks like, or competes with, failure recovery (see also the [`node drain` command reference](https://developer.hashicorp.com/nomad/commands/node/drain) and HashiCorp's [Advanced Node Draining](https://www.hashicorp.com/en/blog/advanced-node-draining-in-hashicorp-nomad) post).
+
+Consul's maintenance mode works by reusing its own health-check machinery rather than inventing a parallel signal: `consul maint -enable -reason "..."` registers a synthetic health check in critical status against the service, and `-disable` deregisters it ([`consul maint` command reference](https://developer.hashicorp.com/consul/commands/maint)). This durably removes the service from DNS/API "healthy" results — including surviving agent restarts — without requiring every downstream consumer of Consul health data to understand a second, separate "maintenance" concept. The tradeoff is that it is an explicit, durable marker an operator must set and clear; nothing infers it from a missed check.
+
+### AWS Auto Scaling: Standby, Suspended Processes, and Lifecycle Hooks
+
+AWS Auto Scaling groups give an operator three distinct levers, all aimed at the same goal — keep an instance alive and off the chopping block while someone works on it:
+
+- **Suspended processes**: `SuspendProcesses` can target the `HealthCheck` and `ReplaceUnhealthy` processes independently of `Launch`/`Terminate`/others, letting an operator patch or reboot instances without the ASG treating the resulting unresponsiveness as a failure to remediate ([Suspend and resume processes](https://docs.aws.amazon.com/autoscaling/ec2/userguide/suspend-processes.html), [considerations](https://docs.aws.amazon.com/autoscaling/ec2/userguide/suspend-resume-considerations.html)).
+- **Standby state**: `EnterStandby`/`ExitStandby` pulls an in-service instance out of load-balancer rotation and out of health-check jeopardy while it remains a group member, specifically so it can be rebooted or inspected without the ASG terminating it ([Temporarily remove instances from your Auto Scaling group](https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-enter-exit-standby.html)).
+- **Lifecycle hooks**: `autoscaling:EC2_INSTANCE_TERMINATING`/`LAUNCHING` hold an instance in a `Terminating:Wait` or `Pending:Wait` state — default timeout one hour, extendable to 48 hours via heartbeats — so custom drain or bootstrap logic can finish before the ASG's own lifecycle proceeds ([Lifecycle hooks overview](https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks-overview.html)).
+
+AWS's own documentation also flags the sharp edge version of the "stale state" problem directly: if an instance is terminated outside the normal flow while in Standby, the ASG keeps reporting it healthy until a later health check or re-activation attempt catches up — a documented gap between the state the system believes and the state that is actually true, which is precisely the race this article is concerned with.
+
+### Prometheus Alertmanager: Silences vs. Inhibition (Notification Suppression, Not Action Suppression)
+
+Alertmanager offers two mechanisms that are frequently confused: **silences**, time-boxed, label-matched mutes typically configured for a maintenance window, which expire on their own; and **inhibition**, a config-defined rule where a firing "source" alert suppresses notifications for matching "target" alerts, encoding "don't page about symptoms when the root cause is already firing" ([Alertmanager documentation](https://prometheus.io/docs/alerting/latest/alertmanager/)). Both operate purely at the notification layer — the underlying alert still evaluates, still fires, and still appears in the API and UI. Neither one suppresses an external actuator's remediation: if some other system is watching the same underlying metric and taking action on it directly (not reading Alertmanager's suppressed notification stream), silencing or inhibiting the alert in Alertmanager does nothing to stop that actuator. This is an important cautionary example for anyone tempted to treat "alert went quiet" as equivalent to "nobody will act on this" — alert suppression and action suppression are not the same system, and conflating them is itself a failure mode.
+
+### PagerDuty Maintenance Windows
+
+PagerDuty's maintenance windows go further than pure notification muting: during a defined window for a service, PagerDuty does not create incidents at all, not merely suppress their delivery ([Event Management documentation](https://support.pagerduty.com/main/docs/event-management)). A related but distinct mechanism, alert suppression in Event Orchestration, accepts and stores events for later forensic review without creating an incident from them — "queue, don't discard" rather than "ignore entirely." PagerDuty also separately offers Auto-Pause Incident Notifications, an algorithmic pause for noisy or likely-transient alerts, distinct from an operator-declared maintenance window.
+
+### Database Failover Managers: Patroni Pause and Orchestrator Downtime
+
+Patroni's `patronictl pause --wait` puts a PostgreSQL cluster into maintenance mode: Patroni stops driving automatic failover decisions and will not even restart a stopped Postgres instance on its own, while the cluster's state remains intact in the distributed configuration store until `patronictl resume` re-enables automation ([patronictl documentation](https://patroni.readthedocs.io/en/latest/patronictl.html)). This is explicitly designed for major-version upgrades and other manual interventions where the operator, not Patroni, must be the sole author of what happens next.
+
+Orchestrator (the openark MySQL topology manager) provides `begin-downtime`, which explicitly marks an instance as downtimed so that automated recovery and failover logic skips it during manual work ([topology-recovery.md](https://github.com/openark/orchestrator/blob/master/docs/topology-recovery.md); implementation in [downtime.go](https://github.com/openark/orchestrator/blob/master/go/inst/downtime.go)). Maintainer discussion in [issue #1417](https://github.com/openark/orchestrator/issues/1417) is worth noting for its own sake: `begin-downtime` and the separate `begin-maintenance` marker are not interchangeable, and conflating two different "this is planned" signals inside the same tool was itself a source of confusion — a small case study in how even the designers of a fencing mechanism can accumulate more than one incompatible notion of "intentional."
+
+### Comparative Summary
+
+| System | Planned-state signal | What it suppresses | Scope | Expires automatically? |
+|---|---|---|---|---|
+| Kubernetes | `DeletionTimestamp` on pod; PDB; cordon | Probe-triggered kill/restart; eviction beyond PDB budget | Per-pod / per-workload | Yes (deletion completes; PDB is structural) |
+| systemd | Unit "stopping/deactivating" state from `systemctl stop` | Watchdog-triggered restart, policy-based restart | Per-unit | Yes (stop completes) |
+| Erlang/OTP | Exit reason `normal`/`shutdown`; `terminate_child` | Supervisor auto-restart | Per-child process | Yes (immediate) |
+| Nomad | Node drain / `migrate` block | Reschedule/backoff logic | Per-node allocation | Yes (drain completes) |
+| Consul | `consul maint -enable` (synthetic critical check) | Healthy status in DNS/API | Per-service | No — manual `-disable` required |
+| AWS Auto Scaling | Standby state; suspended `HealthCheck`/`ReplaceUnhealthy`; lifecycle hook wait state | Instance replacement/termination | Per-instance | Lifecycle hooks: yes, bounded timeout; Standby/suspend: no |
+| Alertmanager | Silence; inhibition rule | Notification delivery only | Per-alert label match | Silences: yes, time-boxed; inhibition: while source alert fires |
+| PagerDuty | Maintenance window | Incident creation and notification | Per-service | Yes, time-boxed |
+| Patroni | `patronictl pause` | Automatic failover and restart decisions | Per-cluster | No — manual `resume` required |
+| Orchestrator | `begin-downtime` | Automated recovery/failover targeting | Per-instance | Yes, duration-bound |
+
+The pattern that stands out in this table: mechanisms that are *not* automatically time-boxed (Consul maintenance, Patroni pause) are exactly the ones whose own documentation and community practice warn operators to remember to clear them — a recurring operational hazard discussed further below.
+
+## Failure Modes: When Remediation Fights the Plan
+
+**Liveness probes killing pods mid-shutdown (Kubernetes, documented and fixed, but recurring).** As detailed above, [kubernetes/kubernetes#105215](https://github.com/kubernetes/kubernetes/pull/105215) fixed node-level graceful shutdown not stopping probes; [#107473](https://github.com/kubernetes/kubernetes/issues/107473) and [#122824](https://github.com/kubernetes/kubernetes/issues/122824) show the fix did not uniformly cover every probe type or reliably fire at every evaluation point for several releases. The lesson is not that Kubernetes is poorly engineered — it is that "check an intentional-stop flag before acting" is a pattern that has to be applied *everywhere* a remediation decision is made, and a single missed call site reintroduces the whole bug class.
+
+**Stale health state surviving a state transition (AWS Auto Scaling).** AWS's own documentation warns that terminating an instance in Standby outside the normal API flow leaves the ASG believing it is still healthy until a later check or reactivation attempt catches up. This is a textbook case of a cached belief about state outliving the real state change that invalidated it — exactly the race a transition-aware supervisor must close by re-validating state at the moment of action, not trusting a snapshot taken earlier.
+
+**Automated failover acting on fragmented health state during an unplanned partition (GitHub, October 2018).** GitHub's own [post-incident analysis](https://github.blog/news-insights/company-news/oct21-post-incident-analysis/) describes a 43-second network partition that caused Orchestrator's Raft-based topology managers in isolated data centers to each reach independent quorum and fail over their MySQL clusters, while the original primary briefly kept accepting writes — producing split-brain and a 24-hour-11-minute period of degraded service with manual reconciliation of lost writes afterward. This was not a maintenance-window race, but it is the same structural hazard viewed from a different angle: multiple actors (the topology managers in each partition) each believed they were the sole fenced owner of a failover decision, and no single epoch or term number was available to let the system recognize that one of those beliefs was stale. It is the clearest cited illustration available of why "single owner of a lifecycle decision" must be enforced by a fencing mechanism, not by policy alone.
+
+**Generic failure modes worth naming explicitly, even without a single attributable public postmortem:**
+
+- *Maintenance-flag races with already-scheduled actions.* A probe, timer, or check scheduled a moment before a maintenance flag is set can still be in flight when the flag flips, and if the actuator only consults the flag at scheduling time rather than at the moment it is about to act, the in-flight action proceeds as if nothing had changed. This is structurally the same gap the Kubernetes `DeletionTimestamp` check closed for liveness/startup probes and initially missed for readiness.
+- *Stuck maintenance mode.* Mechanisms without automatic expiry (Consul's synthetic critical check, Patroni's pause) rely on an operator to clear them; if that step is forgotten, the system is silently left permanently out of self-healing with no built-in alarm. This is a known enough operational hazard that community documentation for Consul and Patroni both carry explicit reminders to disable/resume after the work is done.
+- *Unhealthy state reused as a reason to shed or fast-fail traffic.* A component marked "unhealthy" for monitoring purposes is sometimes read by an unrelated system (an inbound request router, a load balancer, a circuit breaker) as grounds to reject or drop traffic — even when the underlying cause is a planned, temporary unavailability rather than a fault. Alertmanager's silence/inhibition design (muting notifications without touching the underlying alert or any external actuator reading the same metric) is the clearest illustration of how easily "we muted the alarm" and "we told every consumer this is expected" can diverge.
+
+## Design Patterns Distilled
+
+**Single owner of lifecycle per phase.** Across every system surveyed, exactly one actor is authoritative for a resource's lifecycle during a given phase, and every other actor defers to it. Patroni's pause hands Postgres's fate entirely to the operator; Orchestrator's `begin-downtime` tells the automated recovery logic this instance is someone else's responsibility; OTP's supervisor is definitionally the only thing allowed to decide whether a child's exit warrants a restart. The corollary for a transition orchestrator: while a transition record is open, it — not the steady-state health engine — is the only actor permitted to act on the lifecycle of what it is transitioning.
+
+**Explicit state: intentional vs. failed.** systemd's stop-job exemption, OTP's `shutdown`/`normal` exit reasons, Nomad's drain-triggered migration being excluded from the `reschedule` block, and Kubernetes' `DeletionTimestamp` check all encode the same idea: "ended because it was told to" must be a distinguishable, inspectable state, not something inferred after the fact from the shape of the failure.
+
+**Generation/epoch fencing.** The GitHub 2018 postmortem is the strongest argument in this survey for fencing: when more than one actor could plausibly believe it owns a decision, only a monotonically increasing epoch or term number (as in Raft-based consensus) lets a system definitively identify and discard a stale decision instead of acting on it. A transition record should carry a generation number that every in-flight probe or action is tagged with at schedule time, so results tagged with a stale generation can be discarded outright rather than evaluated at all.
+
+**Check the transition record at action time, not only at schedule time.** This is the single most consequential and most frequently mis-implemented pattern in this survey. Kubernetes shipped the right idea and still took multiple releases, across multiple issues, to apply it consistently to every probe type. The practical rule: the moment immediately before any kill/restart/reject action executes must re-read the current transition state, never relying on a flag's value from when the action was first scheduled.
+
+**Queue, don't reject.** PagerDuty's Event Orchestration alert suppression stores events for later review rather than discarding them; AWS's lifecycle hooks hold an instance in a wait state rather than letting the ASG's normal flow proceed past it. The pattern generalizes: when a resource is intentionally unavailable, consumers of that resource should buffer or defer rather than fail fast, because "unavailable right now" is not the same claim as "unavailable, stop trying."
+
+**Bounded maintenance with expiry and alerting.** PagerDuty maintenance windows and AWS lifecycle hooks are both time-boxed by design, with an explicit default action if nothing resolves the wait state in time. Consul's maintenance mode and Patroni's pause are not, and both ecosystems carry operational folklore about forgetting to clear them. A transition orchestrator should prefer the bounded model: every open transition record should have a maximum lifetime, past which it either auto-resolves to a safe default or raises an alert — never silently persists forever.
+
+**Testing the fence, not just the happy path.** The patterns above are each individually simple; what causes real incidents is the interaction between them under restart, crash, or timing pressure. Useful test scenarios drawn directly from the failure modes above: inject a probe or health check that was already scheduled and pending *before* a transition record opens, and verify its result is discarded rather than acted on when it resolves after the fact; kill and restart the transition orchestrator itself mid-transition and verify the old health engine does not take over lifecycle ownership in the gap, and that the restarted orchestrator correctly resumes from the open transition record rather than treating it as abandoned; and simulate the transition record's expiry path to confirm it alerts rather than silently reverting to "nothing is wrong."
+
+## Recommendations for Agent Session Supervisors
+
+A persistent agent runtime — one that keeps long-lived LLM agent sessions alive in a terminal multiplexer, supervised by a health engine that sends heartbeats and kills/restarts on missed or stale ones, with an inbound-message path that short-circuits to "delivered, retry later" when a session is marked unhealthy — sits squarely inside the pattern surveyed above, and inherits the same bug class Kubernetes needed several releases to close.
+
+1. **Make the transition record the single source of lifecycle truth, with exclusive authority while open.** Modeled on Patroni's pause and Orchestrator's `begin-downtime`: once a migration, mode switch, or maintenance operation opens a transition record for a session, the steady-state health engine must treat that session as entirely out of its jurisdiction — not merely deprioritized — until the record closes.
+
+2. **Tag every probe and heartbeat with the current transition generation; discard stale-generation results outright.** Rather than trying to retroactively cancel a heartbeat probe dispatched moments before a transition opened, give every transition an epoch number and have the health engine compare an incoming heartbeat's epoch to the current one before acting — a result for a generation that no longer exists is discarded unevaluated, the same discipline that would have prevented the split-brain class of failure seen in the GitHub 2018 postmortem.
+
+3. **Check "is a transition open?" at the moment of the kill/restart decision, not only when the probe was scheduled.** This is the exact lesson of Kubernetes' `DeletionTimestamp` bug history: disabling new probes during a transition is necessary but not sufficient, since probes already in flight will still resolve and, if unchecked, still trigger remediation. The check belongs immediately before the kill/restart action executes, every time.
+
+4. **Give "not running by design" its own first-class state, distinct from "unhealthy."** A session intentionally stopped mid-switch is not the same condition as one that crashed, and the state machine should make that a structural distinction — as OTP's `shutdown`/`normal` exit reasons and systemd's stop-job exemption do — not an inferred special case layered on a single "unhealthy" flag.
+
+5. **Queue inbound messages during an open transition instead of short-circuiting to "delivered, retry later."** Marking a message delivered mid-transition is strictly worse than deferring it: it discards a real message under the fiction that it was handled. The PagerDuty/AWS lifecycle-hook pattern — hold and retry, don't discard — applies directly: the inbound receiver should check the same transition record and queue messages for replay once the transition closes.
+
+6. **Bound every transition with an expiry and an alert, never a silent indefinite state.** Prefer the PagerDuty/AWS lifecycle-hook model over the Consul/Patroni one: give every open transition record a maximum duration, and if it has not closed within that window, auto-escalate to an operator alert rather than leaving sessions in limbo with no one watching the clock.
+
+7. **Test the fence explicitly, not just the transition's happy path.** Inject a pending heartbeat probe immediately before opening a transition and confirm its late result is discarded; kill and restart the transition orchestrator mid-transition and confirm the old health engine does not reassert control in the gap, and that the restarted orchestrator resumes the same open record rather than abandoning it; force a transition past its expiry window and confirm it alerts rather than silently reverting.
+
+The throughline across every system in this survey, from a fifteen-year-old init system to a 2023 Kubernetes bug report, is the same: remediation logic that only asks "have I heard from it lately?" will always eventually fight a plan it was never told about. The fix is never to make the health check smarter about guessing intent — it is to make intent an explicit, fenced, checked-at-action-time fact that the health check is required to consult before it is allowed to act.
+
+## Sources
+
+- Kubernetes — [Liveness, Readiness, and Startup Probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/)
+- Kubernetes — [PR #105215: terminate probes on node graceful shutdown](https://github.com/kubernetes/kubernetes/pull/105215)
+- Kubernetes — [Issue #107473: liveness probe failures during pod termination](https://github.com/kubernetes/kubernetes/issues/107473)
+- Kubernetes — [Issue #122824: readiness probes excluded from DeletionTimestamp check](https://github.com/kubernetes/kubernetes/issues/122824)
+- Kubernetes — [Issue #42360: community discussion of probe behavior during termination](https://github.com/kubernetes/website/issues/42360)
+- Kubernetes — [Specifying a Disruption Budget for your Application](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
+- Kubernetes — [Safely Drain a Node](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/)
+- systemd — [systemd.service(5) man page](https://man7.org/linux/man-pages/man5/systemd.service.5.html)
+- systemd — [sd_notify(3) man page](https://www.freedesktop.org/software/systemd/man/latest/sd_notify.html)
+- Erlang/OTP — [Supervisor Behaviour design principles](https://www.erlang.org/doc/system/sup_princ.html)
+- Erlang/OTP — [supervisor module reference](https://www.erlang.org/doc/apps/stdlib/supervisor.html)
+- HashiCorp Nomad — [node drain command](https://developer.hashicorp.com/nomad/commands/node/drain)
+- HashiCorp Nomad — [reschedule block](https://developer.hashicorp.com/nomad/docs/job-specification/reschedule)
+- HashiCorp — [Advanced Node Draining in HashiCorp Nomad](https://www.hashicorp.com/en/blog/advanced-node-draining-in-hashicorp-nomad)
+- HashiCorp Consul — [consul maint command reference](https://developer.hashicorp.com/consul/commands/maint)
+- AWS — [Suspend and resume Amazon EC2 Auto Scaling processes](https://docs.aws.amazon.com/autoscaling/ec2/userguide/suspend-processes.html)
+- AWS — [Considerations for suspending processes](https://docs.aws.amazon.com/autoscaling/ec2/userguide/suspend-resume-considerations.html)
+- AWS — [Temporarily removing instances from your Auto Scaling group (standby)](https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-enter-exit-standby.html)
+- AWS — [EC2 Auto Scaling instance scale-in protection](https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-protection.html)
+- AWS — [Amazon EC2 Auto Scaling lifecycle hooks](https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks-overview.html)
+- Prometheus — [Alertmanager documentation](https://prometheus.io/docs/alerting/latest/alertmanager/)
+- PagerDuty — [Event Management documentation](https://support.pagerduty.com/main/docs/event-management)
+- PagerDuty — [Auto-Pause Incident Notifications](https://support.pagerduty.com/main/docs/auto-pause-incident-notifications)
+- Patroni — [patronictl documentation (pause/resume)](https://patroni.readthedocs.io/en/latest/patronictl.html)
+- Orchestrator (openark) — [topology-recovery.md](https://github.com/openark/orchestrator/blob/master/docs/topology-recovery.md)
+- Orchestrator (openark) — [downtime.go source](https://github.com/openark/orchestrator/blob/master/go/inst/downtime.go)
+- Orchestrator (openark) — [Issue #1417: downtime vs. maintenance mode](https://github.com/openark/orchestrator/issues/1417)
+- GitHub — [October 21 Post-Incident Analysis](https://github.blog/news-insights/company-news/oct21-post-incident-analysis/)
