@@ -22,7 +22,7 @@ The fix shipped in zylos-core PR #810. On tmux ≥ 3.4, the runtime passes `send
 
 The broader lessons are about what "read-only" actually means:
 
-- Most viewer tools carefully block *typing* but still let viewers influence the session in other ways: terminal size (ttyd, gotty, upterm), the target of implicit lookups (tmux), or a whole command channel (tmux control mode).
+- Most viewer tools carefully block *typing* but still let viewers influence the session in other ways: terminal size (ttyd, gotty, upterm, and GNU screen when a read-only viewer is the only one displaying the window), the target of implicit lookups (tmux), or a whole command channel (tmux control mode).
 - The robust patterns are:
   - **observers that are structurally one-way**: capture or stream the output instead of attaching a client;
   - **automation that never relies on implicit "current" resolution**;
@@ -151,13 +151,13 @@ A survey of common terminal-sharing mechanisms, checked against source where not
 | gotty (without `-w`) | Server-side input gate | **Size:** resize messages are not gated unless a fixed width/height is configured (per source survey) |
 | upterm `--read-only` | Server-side: a read-only guest's stdin is read and discarded (`io.Copy(io.Discard, ...)`) | **Size:** the pty and window-change handling is registered before the read-only branch, so read-only guests' window changes still feed the shared terminal size |
 | asciinema live streaming | Protocol is one-way by construction | No viewer-to-producer message type exists |
-| GNU screen multiuser ACLs | One daemon checks write permission (`ACL_WRITE`) before forwarding any input to the pty | No separate size side channel was found |
+| GNU screen multiuser ACLs | One daemon checks write permission (`ACL_WRITE`) before forwarding any input to the pty | **Size, conditionally** (from reading the 5.0.1 source, not a runtime test): a viewer's `SIGWINCH` reaches the daemon as `MSG_WINCH` → `CheckScreenSize`, a path with no `ACL_WRITE` check. If only that viewer's canvas displays the window, the new size is applied to the workload's pty (`TIOCSWINSZ`); if several canvases display it, `MayResizeLayer` skips the resize |
 
 Two patterns stand out.
 
-The first is **input versus everything else**. ttyd, gotty and upterm, three independent codebases in C and Go, all gate keystrokes and all let a view-only participant's window size through. For a single-user pty that's harmless. For an observer of a *shared* session it's precisely the kind of channel through which a watcher changes what the watched program sees. tmux handles size correctly for `attach -r` only because `-r` is shorthand for `-f read-only,ignore-size`. The two properties are separate flags that happen to be bundled.
+The first is **input versus everything else**. ttyd, gotty and upterm, three independent codebases in C and Go, all gate keystrokes and all let a view-only participant's window size through. GNU screen shows the same split in a narrower form: its ACLs gate input, but a read-only viewer's resize can still reach the workload when that viewer is the only one displaying the window. For a single-user pty that's harmless. For an observer of a *shared* session it's precisely the kind of channel through which a watcher changes what the watched program sees. tmux handles size correctly for `attach -r` only because `-r` is shorthand for `-f read-only,ignore-size`. The two properties are separate flags that happen to be bundled.
 
-The second is **checks versus construction**. Every row with "Yes" has a bidirectional channel guarded by a check, and each check covers some paths but not all. The rows with "No" (`capture-pane`, output-only `pipe-pane`, asciinema streaming) have no path back to the session at all. A missing check can't open a hole in a channel that doesn't exist.
+The second is **checks versus construction**. Every row where the viewer can still affect the session, including GNU screen's conditional size path, has a bidirectional channel guarded by a check, and each check covers some paths but not all. The rows with "No" (`capture-pane`, output-only `pipe-pane`, asciinema streaming) have no path back to the session at all. A missing check can't open a hole in a channel that doesn't exist.
 
 ## The Observer Effect Is an Old Problem
 
@@ -167,7 +167,7 @@ Production systems have plenty of documented examples of "watching" that turns o
 
 - **`docker attach`** proxies signals by default. With `--sig-proxy` true (the default), the Docker docs say plainly that "`CTRL-c` sends a `SIGINT` to the container". Someone who attaches to watch and presses Ctrl-C to leave signals the workload; the safe detach is Ctrl-P Ctrl-Q.
 - **MySQL `SHOW PROCESSLIST`**, a monitoring command, was part of a documented three-way lock-order deadlock in certain Alibaba Cloud RDS MySQL 8.0 minor versions. Once triggered, the instance stopped accepting new connections, and even `SHOW GLOBAL STATUS` hung, so the monitoring lost visibility exactly when it was needed.
-- **Chrome DevTools** being open made V8 stack-trace collection for console messages 5–10× slower in a case documented on the Chrome developer blog, because DevTools changes what V8 collects.
+- **Chrome DevTools** being open slowed a web application down by roughly 5–10× in a case documented on the Chrome developer blog. With DevTools open, V8 collects stack traces for console messages and async tasks, and profiling attributed about 90% of renderer execution time to symbolizing those stack frames.
 - **`kubectl attach`** and **`kubectl logs`** are the Kubernetes version of the same split. `attach` wires up the container's live stdin and TTY; `logs` only streams output. If all you want is to watch, use the tool with no input path.
 
 The tmux case adds a twist worth naming. The viewer did nothing at all; its mere *presence* changed the outcome of a lookup that other software performed implicitly. That's the hardest kind of observer effect to anticipate, because nobody reviewing the viewer's code would find anything wrong with it.
@@ -176,7 +176,7 @@ The tmux case adds a twist worth naming. The viewer did nothing at all; its mere
 
 The following rules are written as proposals for agent runtimes generally. For Zylos, item 2 is what shipped in #810; the rest are recommendations, not yet implemented.
 
-**1. Prefer observers that are one-way by construction.** If the goal is to show a human what the agent is doing, `capture-pane` polling or an output-only `pipe-pane` stream (without `-I`) gives you the screen or the byte stream without attaching a client at all. That removes the best-client problem, the size problem and the command-channel problem in one move. The trade-off is fidelity and latency: polling at a few hertz looks less live than an attached client, and `pipe-pane` gives raw bytes you must render yourself. If you do attach, use plain `attach -r` (which bundles `ignore-size`). Don't use control mode as a "read-only" mechanism: its read-only flag doesn't restrict the command pipe.
+**1. Prefer observers that are one-way by construction.** If the goal is to show a human what the agent is doing, `capture-pane` polling or an output-only `pipe-pane` stream (without `-I`) gives you the screen or the byte stream without attaching a client at all. That removes the best-client problem, the size problem and the command-channel problem in one move. The trade-off is fidelity and latency: polling at a few hertz looks less live than an attached client, and `pipe-pane` gives raw bytes you must render yourself. If you do attach, use plain `attach -r` (which bundles `ignore-size`). A read-only ACL in GNU screen is not an equivalent: by our reading of its source it blocks input but not a sole viewer's resize. Don't use control mode as a "read-only" mechanism: its read-only flag doesn't restrict the command pipe.
 
 **2. Automation must name its targets explicitly.** The tmux bug exists because `send-keys` was allowed to choose a client on the caller's behalf. The general rule applies far beyond tmux. Anything that resolves "current", "default" or "best" — a kube context, a default git remote, a default cloud profile — can be steered by whoever else happens to be present. Where a tool offers no way to say "none", look for a documented quiet-failure path like tmux's `CMD_CLIENT_CANFAIL`, and pin it with a test.
 
@@ -229,6 +229,7 @@ tmux -S "$SOCK" kill-server
 - gotty `webtty/webtty.go` — https://github.com/yudai/gotty
 - asciinema live streaming — https://docs.asciinema.org/manual/server/streaming/
 - GNU screen multiuser — https://www.gnu.org/software/screen/manual/html_node/Multiuser.html
+- GNU screen 5.0.1 source (`attacher.c`, `socket.c`, `resize.c` `CheckScreenSize`/`MayResizeLayer`/`ChangeWindowSize`, `window.c` `WinProcess`/`WinResize`) — https://ftp.gnu.org/gnu/screen/screen-5.0.1.tar.gz
 - J. Gait, "A Probe Effect in Concurrent Programs", *Software: Practice and Experience* 16(3), 1986 — https://doi.org/10.1002/spe.4380160304
 - Docker `container attach` (`--sig-proxy`) — https://docs.docker.com/reference/cli/docker/container/attach/
 - Alibaba Cloud RDS MySQL `SHOW PROCESSLIST` deadlock notice — https://www.alibabacloud.com/help/en/rds/apsaradb-rds-for-mysql/notice-show-processlist-deadlock-bug-description
