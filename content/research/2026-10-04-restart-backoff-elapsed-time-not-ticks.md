@@ -83,7 +83,9 @@ The AWS Architecture Blog's "Exponential Backoff And Jitter" is the canonical re
 
 - **Full Jitter:** `sleep = random(0, min(cap, base * 2^attempt))` — the entire delay is randomized up to the exponential ceiling.
 - **Equal Jitter:** half the exponential delay is kept fixed, the other half randomized — a compromise that avoids ever sleeping near zero.
-- **Decorrelated Jitter:** each retry's delay is randomized based on the *previous* delay rather than purely on attempt count, which the post's own simulation shows produces both less total work and lower completion time than the other two under contention.
+- **Decorrelated Jitter:** each retry's delay is randomized based on the *previous* delay rather than purely on attempt count.
+
+The post's simulation doesn't pick one winner on every measure. Equal Jitter comes out worst of the three: "It does slightly more work than 'Full Jitter', and takes much longer." Decorrelated makes the most calls: "the number of calls is approximately the same for 'Full' and 'Equal' jitter, and higher for 'Decorrelated'." Between the remaining two, the post says it's a trade-off: "The decision between 'Decorrelated Jitter' and 'Full Jitter' is less clear. The 'Full Jitter' approach uses less work, but slightly more time." So Full Jitter costs the contended resource fewer calls, and Decorrelated finishes slightly sooner. Per the post, both cut client work and server load substantially compared with un-jittered exponential backoff.
 
 The mechanism jitter fixes is **synchronized retries across many independent clients hitting the same shared resource** — thousands of SDK clients all backing off from a throttled API and then all retrying at the exact same moment because they all compute the exact same exponential delay, turning backoff into a self-reinforcing thundering herd. That mechanism simply doesn't exist for a supervisor managing a single long-lived agent session restarting against its own dependencies: there's no fleet, no shared contended resource, no other client computing the same delay at the same instant to collide with. Jitter is a reasonable, cheap thing to add regardless, but the specific justification is different: it exists to avoid a resonance between the backoff curve and some unrelated periodic process (a cron job, another timer in the same host) that happens to line up with it, not to protect a shared backend from a stampede. Where it does become essential for an agent supervisor is the moment there *are* many independent agent sessions sharing a rate-limited upstream API (the classic AWS motivating case reappears exactly), at which point the fleet-level reasoning fully applies again.
 
@@ -97,57 +99,118 @@ The fix used throughout the ecosystems surveyed here is to make time itself an i
 - **Go:** the `benbjohnson/clock` pattern — now continued under community maintenance — defines a `Clock` interface with a `New()` (real) and `NewMock()` (test) implementation; application code takes a `Clock` as a dependency instead of calling `time.Now()`/`time.Sleep()` directly, and tests drive the mock clock forward explicitly with `Add(duration)`.
 - **Kubernetes itself does exactly this for its own backoff library.** `client-go/util/flowcontrol`'s `Backoff` struct holds a `clock.Clock` field, and the package exposes `NewFakeBackOff` specifically to inject a test clock — meaning the same codebase that documents the backoff *algorithm* in prose also treats the algorithm's dependence on a clock as a first-class, swappable interface in code, not an implicit global.
 
-The test design that actually catches a tick-for-time substitution bug is a **negative control**: before trusting that a test proves the fix works, first prove the test can *fail* — run it against a deliberately wrong, tick-counting implementation and confirm the test reports a failure, then run it against the time-based implementation and confirm it passes. Concretely, for the motivating redesign in this article:
+The test design that actually catches a tick-for-time substitution bug is a **negative control**: before trusting that a test proves the fix works, first prove the test can *fail*. Run one assertion, unchanged, against a deliberately wrong tick-counting implementation and confirm it fails. Then run that same assertion against the time-based implementation and confirm it passes. For that to mean anything, the assertion has to encode the timing contract itself, not the output of either implementation. For the motivating redesign in this article, the contract is:
+
+- **Delay.** After the *k*-th consecutive failed restart attempt (*k* = 0 for the first crash), the supervisor waits `min(5·2^k, 60)` seconds before the next restart, measured from when it observed the process down.
+- **Reset.** A process that stays up for 60 seconds resets *k* to 0.
+- **Tolerance.** A restart may come at most one polling period late, because the supervisor only acts when it polls.
+
+Two inputs need to stay separate here. The **attempt count** *k* selects which delay applies. **Elapsed time** decides when that delay has expired and when the stability window has been met. A test that only fixes elapsed time doesn't pin down the attempt count. If a restarted process crashes as soon as it starts, a supervisor that polls every second makes more restart attempts in a given minute than one that polls every three seconds, so the two legitimately reach different backoff values. The test below therefore fixes the attempt history: it scripts how long each restarted process stays up, so every polling cadence sees the same attempts with the same outcomes. Only the polling rhythm changes between runs.
 
 ```js
-// Negative control: a tick-counting implementation that the test
-// must catch as wrong before trusting the test against the real one.
-function brokenBackoffTick(notRunningTicks) {
-  // treats "ticks" as if each were exactly 1 second — the bug.
-  return Math.min(5 * 2 ** notRunningTicks, 60);
+const test = require('node:test');
+const assert = require('node:assert');
+
+// The contract: after the k-th consecutive failed restart attempt (k = 0 for
+// the first crash), wait min(5 * 2^k, 60) s, measured from when the supervisor
+// observed the process down, before the next restart. The attempt count k
+// selects the delay; elapsed time decides when that delay has expired. A
+// process that stays up for 60 s resets k to 0.
+const BASE_S = 5, CAP_S = 60, STABLE_S = 60;
+const delayS = (k) => Math.min(BASE_S * 2 ** k, CAP_S);
+
+// Broken: one poll is treated as one second. Correct only if every poll
+// really does take one second.
+function tickCountingSupervisor() {
+  let k = 0, downPolls = 0, upPolls = 0;
+  return {
+    poll(running) {                      // returns true if it restarts now
+      if (running) {
+        downPolls = 0;
+        if (++upPolls >= STABLE_S) k = 0;
+        return false;
+      }
+      upPolls = 0;
+      if (downPolls < delayS(k)) { downPolls++; return false; }
+      k++; downPolls = 0;
+      return true;
+    },
+  };
 }
 
-test('tick-counting implementation is wrong under adaptive polling (negative control)', () => {
-  const clock = FakeClock.at(0);
-  const sched = new AdaptiveScheduler({ clock, periods: [1000, 3000, 3000] }); // 1s, 3s, 3s
-  const sup = new Supervisor({ clock, scheduler: sched, backoffFn: brokenBackoffTick });
+// Repaired: reads an injected monotonic clock (performance.now() in production).
+function elapsedTimeSupervisor(now) {
+  let k = 0, downSince = null, upSince = null;
+  return {
+    poll(running) {
+      const t = now();
+      if (running) {
+        downSince = null;
+        if (t - upSince >= STABLE_S * 1000) k = 0;
+        return false;
+      }
+      if (downSince === null) downSince = t;
+      if (t - downSince < delayS(k) * 1000) return false;
+      k++; downSince = null; upSince = t;
+      return true;
+    },
+  };
+}
 
-  sup.recordNotRunning(); sched.advanceOneRound(); // "tick" 1 -> actually +1s
-  sup.recordNotRunning(); sched.advanceOneRound(); // "tick" 2 -> actually +3s
-  sup.recordNotRunning(); sched.advanceOneRound(); // "tick" 3 -> actually +3s
+// Fake clock + scheduler. The outcome of each restart attempt is scripted
+// (seconds the restarted process stays up), so every cadence sees the same
+// attempts and the same outcomes; only the polling rhythm differs.
+function simulate(makeSupervisor, cadenceMs, upForS) {
+  let t = 0, upUntil = 0, downSeen = null, attempt = 0, round = 0;
+  const sup = makeSupervisor(() => t);
+  const gapsS = [];                      // observed-down -> restart, per attempt
+  while (attempt < upForS.length) {
+    const running = t < upUntil;         // process is down at t = 0
+    if (!running && downSeen === null) downSeen = t;
+    if (sup.poll(running)) {
+      gapsS.push((t - downSeen) / 1000);
+      upUntil = t + upForS[attempt++] * 1000;
+      downSeen = null;
+    }
+    t += cadenceMs[round++ % cadenceMs.length];
+  }
+  return gapsS;
+}
 
-  // 3 "ticks" should mean backoff = min(5*2^3, 60) = 40s by the broken model,
-  // but 7 real seconds have elapsed -- the broken implementation has no way
-  // to know that, so this assertion is expected to pass against the broken
-  // code and is the point: it proves the test harness can tell them apart.
-  expect(sup.currentBackoffSeconds()).toBe(40);
-  expect(clock.elapsedSeconds()).toBe(7); // real time, far less than the tick math assumes
+const UP_FOR_S = [0, 90, Infinity];     // attempt 1 dies at once, 2 runs 90 s, 3 stays up
+const EXPECTED_DELAY_S = [5, 10, 5];    // k = 0, then k = 1, then reset by the 90 s run
+const CADENCES_MS = [[1000], [3000], [1000, 3000, 3000]]; // fixed 1 s, fixed 3 s, adaptive
+
+function checkTimingContract(makeSupervisor) {
+  for (const cadenceMs of CADENCES_MS) {
+    const gapsS = simulate(makeSupervisor, cadenceMs, UP_FOR_S);
+    const slackS = Math.max(...cadenceMs) / 1000;  // can't act before the next poll
+    assert.ok(
+      EXPECTED_DELAY_S.every((d, i) => gapsS[i] >= d && gapsS[i] <= d + slackS),
+      `cadence ${cadenceMs} ms: waited [${gapsS}] s, contract [${EXPECTED_DELAY_S}] s (+${slackS} s)`);
+  }
+}
+
+test('negative control: the tick-counting supervisor breaks the contract', () => {
+  assert.throws(() => checkTimingContract(tickCountingSupervisor), assert.AssertionError);
 });
 
-test('elapsed-time implementation is correct under the same adaptive schedule', () => {
-  const clock = FakeClock.at(0);
-  const sched = new AdaptiveScheduler({ clock, periods: [1000, 3000, 3000] });
-  const sup = new Supervisor({ clock, scheduler: sched, backoffFn: elapsedTimeBackoff });
-
-  sup.recordNotRunning(); sched.advanceOneRound();
-  sup.recordNotRunning(); sched.advanceOneRound();
-  sup.recordNotRunning(); sched.advanceOneRound();
-
-  // Backoff is a function of elapsed wall/monotonic time since the first
-  // failure, not of how many scheduler rounds observed it -- so the same
-  // 7 real seconds produce the same backoff regardless of whether the
-  // scheduler polled every 1s or every 3s along the way.
-  expect(sup.currentBackoffSeconds()).toBe(elapsedTimeBackoff(7));
-});
-
-test('a 1s-only and a 3s-only schedule converge to the same backoff for the same elapsed time', () => {
-  const resultFast = runToElapsed({ periodMs: 1000, elapsedSeconds: 30 });
-  const resultSlow = runToElapsed({ periodMs: 3000, elapsedSeconds: 30 });
-  expect(resultFast.currentBackoffSeconds()).toBe(resultSlow.currentBackoffSeconds());
+test('the elapsed-time supervisor meets the same contract', () => {
+  checkTimingContract(elapsedTimeSupervisor);
 });
 ```
 
-The third test is the one that generalizes best as a regression guard: it asserts invariance of the backoff value to the scheduler's polling period, for the same amount of real elapsed time. Any implementation that counts loop iterations instead of elapsed time fails this test immediately and deterministically, with no need to simulate GC pauses or suspend/resume to trigger it — a fixed difference in configured polling period is enough. That property is also what makes it a reasonable **tolerance** check rather than a strict equality in a more realistic adaptive scheduler: the correct assertion is usually "backoff/reset timing is accurate to within one scheduler period," not "to the millisecond," because the supervisor genuinely cannot detect a state change faster than its own next poll — which is precisely the KEP-4603 reasoning about reset thresholds applied as a test tolerance instead of a design constant.
+Both tests run the same `assert.ok` in `checkTimingContract`. Only the implementation passed in changes. Run with `node --test`, the measured gaps between "observed down" and "restarted" are:
+
+| Cadence | Tick-counting | Elapsed-time | Contract (+ slack) |
+|---|---|---|---|
+| fixed 1 s | 5, 10, 5 s | 5, 10, 5 s | 5, 10, 5 s (+1 s) |
+| fixed 3 s | 15, 30, 60 s | 6, 12, 6 s | 5, 10, 5 s (+3 s) |
+| adaptive 1/3/3 s | 11, 22, 46 s | 7, 10, 7 s | 5, 10, 5 s (+3 s) |
+
+The fixed-1-second row is why this bug survives in production: at that cadence the broken implementation produces exactly the right numbers, and any test that only runs the old loop passes. At a 3-second cadence the assertion fails on the tick-counting version with `cadence 3000 ms: waited [15,30,60] s, contract [5,10,5] s (+3 s)`. Both bugs show up at once. The first two delays are stretched 3× (15 s and 30 s instead of 5 s and 10 s). And the 90-second run is seen as up on only 29 polls, which never reaches the "60 polls" stability threshold, so *k* is not reset and the third delay climbs to 60 s (20 polls × 3 s) instead of 5 s. The elapsed-time version stays inside the window at every cadence.
+
+The invariant this test guards should be stated with its assumption attached. **For a fixed attempt-and-outcome history, each restart happens no earlier than the contracted delay and no later than that delay plus one polling period, whatever the polling cadence.** It does *not* say that equal elapsed time produces equal backoff. Across different cadences, the number of restart attempts made in a given stretch of time can legitimately differ, and so can the backoff level reached. The one-period tolerance is also the honest form of the assertion for a real adaptive scheduler: the supervisor can't detect a state change faster than its own next poll. That is the KEP-4603 reasoning about reset thresholds applied as a test tolerance instead of a design constant.
 
 ## Recommendations for an AI agent supervisor
 
@@ -159,7 +222,7 @@ Generalizing from the comparison table and the failure mechanisms above, for a s
 4. **Keep the backoff-delay curve and the hard-stop/alert threshold as two separate mechanisms**, following systemd's `RestartSec` vs. `StartLimitBurst`/`StartLimitIntervalSec` split: a capped exponential delay alone degrades gracefully into "retry forever, slowly," which is fine for a human-supervised system but insufficient alone for an unattended one — pair it with a restart-count-within-a-window ceiling (PM2's `max_restarts`/`min_uptime`, or OTP's `intensity`/`period`) that stops retrying and escalates once a session is clearly looping rather than recovering.
 5. **Set stability-window and reset thresholds no finer than the scheduler's own worst-case polling period**, and document why, following KEP-4603's explicit reasoning: a reset value finer than the loop's measurement resolution is not actually controllable and just adds false precision to the configuration.
 6. **Treat jitter as optional for a single supervised session and necessary the moment multiple sessions share a rate-limited upstream.** Don't add jitter reasoning (fleet-level thundering-herd avoidance) to justify a design choice that's actually solving a different, single-process problem — but revisit it the moment the architecture adds concurrent sessions against the same API.
-7. **Test the timing contract with an injectable/fake clock, and include a negative control.** Before trusting a test suite's green result on the time-based implementation, confirm the same suite goes red against a deliberately tick-counting implementation under a scheduler with a non-constant period — only then does a passing suite mean what it's supposed to mean.
+7. **Test the timing contract with an injectable/fake clock, and include a negative control.** Before trusting a test suite's green result on the time-based implementation, confirm the same assertions, unchanged, go red against a deliberately tick-counting implementation when the polling period differs from the one the tick math assumes (a fixed 3 s or adaptive 1–3 s schedule, not just the old fixed 1 s loop), with the attempt history held fixed — only then does a passing suite mean what it's supposed to mean.
 
 ## Sources
 
