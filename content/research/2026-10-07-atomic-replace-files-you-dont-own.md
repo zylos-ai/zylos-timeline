@@ -52,9 +52,9 @@ This isn't theoretical — it's the center of the 2009 ext4 controversy. ext3's 
 
 **Vim's `backupcopy`** names this article's exact tradeoff. `backupcopy=no` renames the original aside and writes a new file in its place — fast, but breaks hard links and symlink targets. `backupcopy=yes` copies content into the original inode in place — preserves links and ownership, at the cost of a non-atomic in-place write. Vim's actual default, `auto`, splits the difference: it uses the rename path "when Vim sees that renaming the file is possible without side effects (the attributes can be passed on and the file is not a link)," and falls back to a copy otherwise — the same lstat-first decision Zylos's fix makes, generalized to an editor's save path.
 
-**Git's lockfile API** creates `<file>.lock` with `O_CREAT|O_EXCL` (so a second writer fails loudly instead of racing), writes new content into it, then renames it onto the real path: "readers are guaranteed to see either the old contents of the file or the new contents (assuming the filesystem implements rename() atomically)" ([git-scm.com](https://git-scm.com/docs/api-lockfile)).
+**Git's lockfile API** creates `<file>.lock` with `O_CREAT|O_EXCL` (so a second writer fails loudly instead of racing), writes new content into it, then renames it onto the real path. Its documentation notes that lockfiles only block other writers, while readers see either the old or the new contents, provided the filesystem's `rename()` is atomic ([git-scm.com](https://git-scm.com/docs/api-lockfile)).
 
-**chezmoi** treats symlinks as first-class manageable targets, but its default strategy regenerates a tracked dotfile as a regular file rather than symlinking to a shared store, specifically to support features symlinks can't carry (encryption, templating, executable bits) ([chezmoi.io](https://www.chezmoi.io/user-guide/manage-different-types-of-file/)). Dotfile managers built around symlinks inherit the symlink-preservation problem whenever an external tool updates the symlinked path without knowing it's a link.
+**chezmoi** treats symlinks as first-class manageable targets, but its default strategy regenerates a tracked dotfile as a regular file rather than symlinking to a shared store, specifically to support features symlinks can't carry (encryption, templating, executable bits) ([chezmoi.io](https://www.chezmoi.io/user-guide/manage-different-types-of-file/); the [design FAQ](https://www.chezmoi.io/user-guide/frequently-asked-questions/design/) explains the regular-file default and these reasons directly). Dotfile managers built around symlinks inherit the symlink-preservation problem whenever an external tool updates the symlinked path without knowing it's a link.
 
 ## What Rename-Replace Breaks
 
@@ -193,5 +193,6 @@ Each row in the decision table is independently testable:
 - Rust `tempfile::NamedTempFile::persist` — https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html
 - Git lockfile API — `.lock` + rename, reader guarantees — https://git-scm.com/docs/api-lockfile
 - chezmoi — symlinks as first-class targets, default regular-file strategy — https://www.chezmoi.io/user-guide/manage-different-types-of-file/
+- chezmoi design FAQ — why it writes regular files instead of symlinks — https://www.chezmoi.io/user-guide/frequently-asked-questions/design/
 - Microsoft Learn — `ReplaceFileW`: attribute/ACL preservation, same-volume requirement, error codes — https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew
 - macOS/BSD `rename(2)` manual page (symlink semantics; `renamex_np`/`RENAME_SWAP` context) — https://man.freebsd.org/cgi/man.cgi?query=rename&sektion=2&manpath=macOS+10.13.6
