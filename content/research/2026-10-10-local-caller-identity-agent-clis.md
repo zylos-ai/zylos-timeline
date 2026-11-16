@@ -14,7 +14,7 @@ The motivating case: an agent framework runs several sessions of one agent on on
 
 Conclusions, each supported below:
 
-- Within one uid there is no meaningful security boundary against a malicious peer; I confirmed that one process can read another same-uid process's environment. The goal for same-uid sessions is *correct attribution and loop prevention*, not defence against an adversary.
+- Within one uid there is no meaningful security boundary against a malicious peer; in my test, a non-descendant same-uid process read another's environment. That is the ordinary case, not a guarantee for every same-uid pair: the kernel still applies ptrace(2)'s dumpability and LSM checks. The goal for same-uid sessions is *correct attribution and loop prevention*, not defence against an adversary.
 - An inherited environment variable is a reasonable primary signal: cheap, it follows the process tree, and the runtime controls it. Its failure mode is silent loss or staleness (`sudo`, `env -i`, cron, service managers, a multiplexer's server environment), which is why the CLI must fail closed instead of guessing.
 - Where a daemon is involved, record the kernel-attested uid from `SO_PEERCRED` *separately* from the asserted session identity. The pid is a snapshot; on newer Linux, `SO_PEERPIDFD` avoids pid reuse.
 - Refusing send-to-self is a one-line guard with precedent in how mail and chat protocols treat loops and echoes.
@@ -47,7 +47,7 @@ It is also a snapshot: `/proc/<pid>/environ` holds "the initial environment that
 
 ### 2.2 Flags and explicit parameters
 
-A `--from <session>` flag is also caller-asserted, but it survives `env -i` and `sudo` and is visible in the command line. The AWS CLI documents the usual precedence: command-line parameter over environment variable over config file [26]. Flags suit deliberate overrides and tests; they are weak as the *only* mechanism for an agent, because a model composing a shell command can omit or mistype one, whereas an inherited variable needs no cooperation.
+A `--from <session>` flag is also caller-asserted, but it survives `env -i` and `sudo` and is visible in the command line. The AWS CLI documents the usual precedence: command-line parameter over environment variable over config file [26]. The recipe in section 7 deliberately departs from that precedence: when both are present and disagree, it refuses rather than letting the flag win. Flags suit tests and calls made outside a session; they are weak as the *only* mechanism for an agent, because a model composing a shell command can omit or mistype one, whereas an inherited variable needs no cooperation.
 
 ### 2.3 Parent process and process-tree inspection
 
@@ -191,7 +191,7 @@ update-environment default: DISPLAY KRB5CCNAME SSH_ASKPASS SSH_AUTH_SOCK SSH_AGE
 
 The window got the server's value, not the invoking client's. This is documented behavior [13], and it is how an agent inside a long-lived multiplexer could carry the wrong identity: *present but wrong*, which is worse than absent.
 
-### 4.4 Same uid can read another process's environment
+### 4.4 A same-uid process read another process's environment
 
 A victim process was started with `DEMO_SESSION_GROUP=secret_session_xyz DEMO_TOKEN=hunter2`. A separate process of the same uid, not a descendant of it, read its environment:
 
@@ -203,11 +203,13 @@ reading environ of pid 1 (root): Permission denied
 open /proc/<victim>/mem: PermissionError(13, 'Permission denied')
 ```
 
-The file is owner-only, which protects against *other users*, not the same user. A root-owned process's environment is unreadable. At `ptrace_scope` 1 opening the victim's `mem` file was refused for a non-descendant, consistent with Yama restricting attach-style access to descendants [5][6], while the environment read, a weaker mode [4], succeeded (I state only the observation, not why `mem` is stricter). Any session token placed in the environment is readable by every other process of that user.
+The file is owner-only, which protects against *other users*, not the same user. A root-owned process's environment is unreadable. At `ptrace_scope` 1 opening the victim's `mem` file was refused for a non-descendant, consistent with Yama restricting attach-style access to descendants [5][6], while the environment read, a weaker mode [4], succeeded (I state only the observation, not why `mem` is stricter).
+
+This is one observation, not a rule for every same-uid pair. Access to `environ` goes through ptrace(2)'s access-mode check [4][5]: it is denied if the target is not dumpable (its "dumpable" attribute is not 1, for example after `prctl(PR_SET_DUMPABLE, 0)`) and the caller lacks `CAP_SYS_PTRACE`, and the LSM step can deny it too (under the default commoncap LSM, for instance, when the target holds permitted capabilities the caller does not) [5]. For the ordinary cooperative deployment, where agent sessions are plain processes of one user, the safe design assumption is still that a session token placed in the environment can be read by the user's other processes.
 
 ### 4.5 A fail-closed sender CLI and its known-bad cases
 
-To check the design recipe in section 7, I wrote a toy CLI (`msgsend_demo.py`) and a `unittest` suite. The CLI refuses without an identity, refuses unknown identities, refuses self-send, and records the asserted sender and the verified uid in separate fields.
+To check the design recipe in section 7, I wrote a toy CLI (`msgsend_demo.py`) and a `unittest` suite. The CLI refuses without an identity, refuses unknown identities, refuses self-send, and records the asserted sender and the verified uid in separate fields. It reads identity from the environment only, so the flag-versus-environment case in section 7 is not covered by these tests.
 
 ```
 $ DEMO_SESSION_GROUP=alpha python3 -I msgsend_demo.py beta hello
@@ -241,15 +243,15 @@ This is not literally the confused deputy problem, which AWS defines as an entit
 
 ### 5.2 Documented fallbacks in widely used software
 
-I found no primary-source incident report of an agent framework misattributing messages through an unset variable, and I do not claim one. These are documented designs that show when fallback is benign:
+I found no primary-source incident report of an agent framework misattributing messages through an unset variable, and I do not claim one. These documented designs show that a fallback is only as safe as the guarantees it preserves:
 
-- **XDG_RUNTIME_DIR:** if unset, "applications should fall back to a replacement directory" "with similar capabilities and print a warning message" [25]. Any scratch directory is interchangeable, and the spec still demands a warning.
-- **D-Bus session bus:** an unset `DBUS_SESSION_BUS_ADDRESS` leads to an X11 property lookup and possibly starting a server [17]. Benign for an address.
+- **XDG_RUNTIME_DIR:** if unset, "applications should fall back to a replacement directory with similar capabilities and print a warning message" [25]. "Similar capabilities" is a high bar. The same section requires the directory to be owned by the user with mode 0700, bound to the login's lifetime and shared across overlapping logins, on a local filesystem, and fully featured (AF_UNIX sockets, file locking and so on) [25]. A replacement that lacks these, such as a shared or networked directory, breaks the reasons applications put sockets there. Even a correct fallback must warn.
+- **D-Bus session bus:** an unset `DBUS_SESSION_BUS_ADDRESS` leads to an X11 property lookup and possibly starting a server [17]. The dbus-launch manual warns that an application that had to start a new bus "will be in its own little world" and "can effectively end up starting a whole new session", which "can be suboptimal or even totally broken" [32]. A different bus is a different set of services, not an equivalent address.
 - **AWS CLI:** `AWS_PROFILE`, when defined, "overrides the behavior of using the profile named [default]" [26]. Unset means the `default` profile: a fallback to a *credential identity*. One mitigation is to keep no usable `default` profile (my suggestion, not documented).
 - **kubectl:** without `KUBECONFIG` it uses `$HOME/.kube/config`, and without `--context` the file's `current-context` [27]. A command run without an explicit context acts on whatever was last selected.
 - **Peer pidfd:** in one daemon, a helper collapsed every `SO_PEERPIDFD` failure into "no pidfd, assume a pre-6.5 kernel" and then skipped its pid-reuse check. The report shows a reaped peer also fails (`EINVAL`, distinct from `ENOPROTOOPT`), so the check was off in exactly the reuse case it was written for [31]. A fallback that reads absence as "unsupported" silently disables the guard.
 
-Fallback is fine when the substituted value has the same *effect* as any other (scratch directory, bus address) and wrong when the value *names an actor* (profile, cluster, sender). For an actor, the right default is none.
+A fallback is acceptable only when the substitute keeps the guarantees the caller relies on (for a runtime directory: owner-only access, lifetime and local semantics; for a bus: the same session's services) and says that it fell back. The D-Bus case shows how easily a fallback lands somewhere else. When the value *names an actor* (profile, cluster, sender), no substitute can keep the guarantee, because the guarantee is the identity itself. For an actor, the right default is none.
 
 ### 5.3 What fail closed should look like
 
@@ -270,14 +272,14 @@ I also intended to cite Matrix and Slack guidance on bots ignoring their own eve
 
 For a local messaging CLI between agent sessions sharing a uid:
 
-1. **Layered identity.** An explicit flag if present (tests, deliberate overrides), else the inherited variable. Nothing else. Optionally cross-check a weak second signal such as cgroup and *warn* on disagreement.
+1. **Two sources, one contract.** Accept an explicit flag (tests, calls made outside a session) or the inherited variable. If both are present they must name the same session; if they differ, refuse instead of letting either win, because one of them is wrong and the CLI cannot tell which. Nothing else. Optionally cross-check a weak second signal such as cgroup and *warn* on disagreement.
 2. **Validate against a registry.** An unknown session group is an error. This catches typos and values from dead sessions, though not a stale value naming another live session.
-3. **Fail closed** on missing, empty and unknown identities: non-zero exit, nothing written, actionable message.
+3. **Fail closed** on missing, empty, unknown and conflicting identities: non-zero exit, nothing written, actionable message.
 4. **Refuse self-send;** add a hop counter if automated replies are possible.
 5. **If a daemon mediates,** read `SO_PEERCRED` on each accepted connection. Store the **asserted identity** and the **verified uid** as separate fields. Authorize on the uid; use the asserted id for routing and audit. Use `SO_PEERPIDFD` when you must inspect the peer; treat a bare pid as diagnostic.
 6. **State what disagreement means.** A same-uid daemon cannot detect a lying session; document that. If it must, issue per-session tokens (the Kubernetes pattern: audience, expiry, binding) and separate sessions by uid or namespace, since otherwise peers can read them.
-7. **Log the provenance:** asserted id, verified uid, diagnostic pid, and whether the id came from a flag or the environment.
-8. **Test with positive controls.** Each guard gets a known-bad case that must be rejected: missing variable under `env -i`, empty value, unknown value, self-send, flag disagreeing with environment. Assert on the exit code *and* on the absence of any written row.
+7. **Log the provenance:** asserted id, verified uid, diagnostic pid, and whether the id came from the flag, the environment, or both (agreeing).
+8. **Test with positive controls.** Each guard gets a known-bad case that must be rejected: missing variable under `env -i`, empty value, unknown value, self-send, a flag disagreeing with the environment (for example `DEMO_SESSION_GROUP=alpha msgsend --from beta ...`). Assert on the exit code *and* on the absence of any written row.
 
 ## 8. Applying It to Zylos
 
@@ -328,3 +330,4 @@ The `socket(7)` and `unix(7)` pages as retrieved did not document `SO_PEERPIDFD`
 29. RFC 5321, Simple Mail Transfer Protocol, section 6.3 (Loop Detection). https://www.rfc-editor.org/rfc/rfc5321#section-6.3
 30. IRCv3 echo-message extension. https://ircv3.net/specs/extensions/echo-message
 31. Issue 250, "peer_pidfd cannot tell a pre-6.5 kernel from a peer that already exited, so the PID-reuse check is off in the reuse case", lacs-project/sysknife. https://github.com/lacs-project/sysknife/issues/250
+32. dbus-launch(1), D-Bus manual (automatic launching). https://dbus.freedesktop.org/doc/dbus-launch.1.html
