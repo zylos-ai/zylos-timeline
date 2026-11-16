@@ -55,14 +55,25 @@ failures against. The standard options, in decreasing order of precision:
   pattern OWASP warns about in the same document: "care must be taken to
   prevent [lockout] from being used to cause a denial of service by locking
   out other users' accounts."
-- **Per-(account, IP)**: django-axes, for example, supports
-  `AXES_LOCKOUT_PARAMETERS = ['username', 'ip_address']`, locking only the
-  combination of a specific account attempted from a specific source rather
-  than the account globally or the source globally. This is the sweet spot
-  when you have both dimensions available: an attacker spraying one
-  password across many accounts from one IP gets IP-scoped throttling; an
-  attacker grinding one account from many IPs gets account-scoped
-  throttling; nobody else is affected by either.
+- **Per-(account, IP)**: count failures against the combination of a
+  specific account attempted from a specific source. In django-axes the
+  bracket nesting decides which shape you get: per its
+  [customization docs](https://github.com/jazzband/django-axes/blob/master/docs/5_customization.rst),
+  a flat list entry "represents a separate lockout parameter" and a nested
+  list "represents lockout parameters used in combination." So
+  `AXES_LOCKOUT_PARAMETERS = [['username', 'ip_address']]` keys one counter
+  per (account, source) pair, while `['username', 'ip_address']` keeps two
+  independent counters and locks out by account *or* by source. The two
+  promise different things. The combined pair key affects nobody outside
+  that one pair — but for the same reason it does not aggregate: an
+  attacker grinding one account from many IPs, or spraying one password
+  across many accounts from one IP, starts a fresh counter with every new
+  pair and may never trip it. Separate account and IP keys do aggregate,
+  catching both of those patterns, but each lock then falls on every
+  legitimate request sharing that account or that IP — the collateral
+  described in the per-account bullet above and the per-IP bullet below.
+  Neither is a free sweet spot; having both dimensions lets you choose the
+  tradeoff (or mix the shapes, which axes also allows), not escape it.
 - **Per-IP**: count failures against the apparent source address, full
   stop. This is the fallback when there is no account dimension, and it is
   exactly where password-only consoles land, because there is no username
@@ -136,16 +147,19 @@ background sanity check at runtime:
 // appear to originate from one address, something upstream of us
 // is not forwarding real client IPs — warn loudly rather than
 // silently throttling everyone as "one client."
-function checkSourceConcentration(recentRequestIps, { windowSize = 500, warnRatio = 0.6 }) {
+function checkSourceConcentration(recentRequestIps, { windowSize = 500, warnRatio = 0.6 } = {}) {
+  const sample = recentRequestIps.slice(-windowSize); // sample once, use its length throughout
+  if (sample.length === 0) return;
   const counts = new Map();
-  for (const ip of recentRequestIps.slice(-windowSize)) {
+  for (const ip of sample) {
     counts.set(ip, (counts.get(ip) || 0) + 1);
   }
-  const [topIp, topCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] || [];
-  if (topCount / recentRequestIps.length > warnRatio) {
+  const [topIp, topCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  const share = topCount / sample.length;
+  if (share > warnRatio) {
     console.warn(
-      `[security] ${((topCount / recentRequestIps.length) * 100).toFixed(0)}% of the last ` +
-      `${recentRequestIps.length} requests appear to come from ${topIp}. ` +
+      `[security] ${(share * 100).toFixed(0)}% of the last ` +
+      `${sample.length} requests appear to come from ${topIp}. ` +
       `If this is a proxy/tunnel address, X-Forwarded-For is probably not being trusted correctly.`
     );
   }
@@ -169,21 +183,34 @@ function checkProxyTrustSanity(directPeerIp, xForwardedForHeader, trustedProxyCi
 }
 ```
 
-`express-rate-limit` ships essentially this idea as a built-in, mandatory
-validation rather than an optional helper: it refuses to treat `trust proxy:
-true` as a safe production value, raising `ERR_ERL_PERMISSIVE_TRUST_PROXY`
-because that setting "could cause the rate limiter to use the wrong IP
-address" — a leftmost `X-Forwarded-For` entry that is attacker-controlled —
-and separately raises `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` when a
-`X-Forwarded-For` header is present but `trust proxy` is `false` (the
-default), which "usually indicates a configuration issue that will cause
-express-rate-limit to apply its limits globally rather than per-user" — the
-exact failure in the motivating incident, caught automatically at the
-library level. It also validates the RFC 7239 `Forwarded` header path
-separately (`ERR_ERL_FORWARDED_HEADER`), since Express's own `trust proxy`
-setting doesn't parse that header format. These checks are a good model:
-treat "my rate limiter and my proxy disagree about trust" as a loud startup
-or first-request warning, not a silent fallback.
+`express-rate-limit` ships essentially this idea as built-in diagnostics.
+Its validation checks are enabled by default (the `validate` option
+"Defaults to `true`") and are meant "to detect common misconfigurations
+with proxies, etc." They are warnings, not enforcement: the library wraps
+each check so that a failure is caught and logged through the configured
+logger (the console by default), each check runs once and then disables
+itself, and any check can be turned off globally with `validate: false` or
+individually by name. Three of them target exactly this class of bug.
+`ERR_ERL_PERMISSIVE_TRUST_PROXY` is logged when Express's `trust proxy` is
+`true`, which makes Express return the leftmost, client-forgeable
+`X-Forwarded-For` entry as the client IP. `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
+is logged when an `X-Forwarded-For` header is present but `trust proxy` is
+`false` (the default), which the docs say usually indicates a
+misconfiguration that makes the library apply its limits globally rather
+than per user — the exact failure in the motivating incident.
+`ERR_ERL_FORWARDED_HEADER` is logged when an RFC 7239 `Forwarded` header is
+present and the default key generator is in use, since Express's own
+`trust proxy` setting doesn't parse that header format. None of these
+rejects the configuration or stops the app: the limiter keeps running on
+whatever IP Express hands it, so the wrong keys keep being used until the
+operator acts. That means routing these log lines somewhere that alerts,
+treating any of them in production as a deployment defect, and fixing the
+cause — setting `trust proxy` to the exact hop count or proxy addresses,
+or supplying a `keyGenerator` that parses `Forwarded` — rather than
+disabling the check to quiet the log. The model worth copying is the early,
+loud signal that "my rate limiter and my proxy disagree about trust"; if
+you want that disagreement to block startup, you have to enforce it
+yourself.
 
 ## Hard Lockout vs. Progressive Delay vs. Token Bucket
 
@@ -218,14 +245,25 @@ gets the password right isn't penalized for earlier typos.
 
 **Token bucket / rate limiting without lockout.** Treat login attempts as a
 metered resource: each key gets a bucket of tokens that refill over time;
-an attempt consumes a token; an empty bucket means "try again slightly
-later," with no persistent locked state at all. This degrades gracefully
-under shared-source collapse, because the *cost* of being wrong about
-attribution is "legitimate users occasionally wait a few seconds," not
-"legitimate users are locked out for ten minutes." It is the general
-mechanism `express-rate-limit`, Rack::Attack's `throttle`, and most modern
-rate limiters implement by default, as distinct from `fail2ban`-style
-banning.
+an attempt consumes a token; an empty bucket means "try again later," with
+no persistent locked state at all. Changing the algorithm alone does not
+make shared-source collapse harmless, though: if every visitor lands in one
+bucket, an attacker who spends each token as soon as it refills keeps that
+bucket empty, and legitimate requests almost never find a token. The cost
+of being wrong about attribution only drops to "legitimate users
+occasionally wait a few seconds" when admission is also isolated — separate
+buckets per device cookie or other known-good client, or a protected
+operator path that the anonymous bucket cannot drain. Note also that the
+popular off-the-shelf limiters are not token buckets by default: the
+default [`MemoryStore`](https://github.com/express-rate-limit/express-rate-limit/blob/main/source/memory-store.ts)
+in `express-rate-limit` counts hits per key until a reset time `windowMs`
+after the window opened, and Rack::Attack's `throttle` counts in a
+[cache](https://github.com/rack/rack-attack/blob/main/lib/rack/attack/cache.rb)
+key partitioned by `epoch / period` — both fixed-window counters, which
+share the same weakness (an attacker can use up a shared key's quota as
+soon as each window opens). What they do share with a token bucket is the
+absence of a lock state: when the window rolls over, the key is admitted
+again.
 
 **Tarpitting.** A close cousin of progressive delay applied at the
 connection or response level rather than the account level — deliberately
@@ -260,7 +298,9 @@ async function handleLogin(key, attempt, store) {
 The common thread across NIST's and OWASP's guidance is: prefer mechanisms
 whose failure mode under misattribution is "a bit slower," not "completely
 blocked." A hard lockout has no safe failure mode when the key turns out to
-be wrong.
+be wrong. Delay and rate limiting only deliver "a bit slower" if the key
+isn't one shared counter that an attacker can keep saturated; for that,
+they need the admission isolation the device cookie pattern below provides.
 
 ### The device cookie pattern
 
@@ -322,8 +362,8 @@ optional. The common bugs, and the fixes:
   added by infrastructure you control; everything to the left can be
   supplied by the original client and is therefore spoofable. This is
   precisely what `express-rate-limit`'s `ERR_ERL_PERMISSIVE_TRUST_PROXY`
-  check guards against: `trust proxy: true` makes Express return the
-  *leftmost* entry, "which could be set by the proxy or a malicious
+  check flags: `trust proxy: true` makes Express return the
+  *leftmost* entry, which "could be set by the proxy or a malicious
   client." The fix is to trust an exact hop count or explicit address/CIDR
   list (e.g., `app.set('trust proxy', 1)` for exactly one known proxy hop)
   and walk from the right:
@@ -350,9 +390,9 @@ function clientIpFromXff(xForwardedForHeader, directPeerIp, trustedProxies) {
   header (`for=`, `by=`, `host=`, `proto=` parameters) as a structured
   alternative to the de-facto `X-Forwarded-For`. Some proxies emit this
   instead of or in addition to XFF; a client-IP function that only parses
-  XFF will silently miss it — which is why `express-rate-limit` raises
-  `ERR_ERL_FORWARDED_HEADER` when it detects a `Forwarded` header it can't
-  use with the default key generator, rather than silently ignoring it.
+  XFF will silently miss it — which is why `express-rate-limit` logs
+  `ERR_ERL_FORWARDED_HEADER` when it detects a `Forwarded` header that the
+  default key generator ignores, so the gap is at least visible.
 - **Double proxies / unexpected hop counts.** A tunnel in front of a
   reverse proxy in front of the app adds two hops, not one; a trusted-hop
   count or trusted-CIDR list that assumes a single hop will again collapse
@@ -412,9 +452,12 @@ production:
 ## Design Checklist for Password-Only Agent Consoles
 
 1. **Never use a hard, instance-wide lockout keyed on IP alone** for a
-   console with no account dimension. Prefer progressive delay or a token
-   bucket whose failure mode under misattribution is "slower," not
-   "blocked."
+   console with no account dimension. Prefer progressive delay or rate
+   limiting (token bucket or windowed counter), and pair it with admission
+   isolation — a separate allowance for device-cookie holders or other
+   known-good clients, or a protected operator path — because one shared
+   bucket or delay counter that an attacker keeps drained is still
+   "blocked" for everyone else.
 2. **Maintain an explicit trusted-proxy list** (specific IPs/CIDRs, not
    just loopback) and fail loudly — log and alert — when a request arrives
    with forwarding headers from a peer not on that list, or without
@@ -484,8 +527,13 @@ production:
 - [NIST SP 800-63B-4, Digital Identity Guidelines: Authentication and Authenticator Management (final, July 31, 2025)](https://csrc.nist.gov/pubs/sp/800/63/b/4/final)
 - [NIST SP 800-63-4 web edition, Authenticators section](https://pages.nist.gov/800-63-4/sp800-63b/authenticators/)
 - [express-rate-limit: Error Codes reference (ERR_ERL_PERMISSIVE_TRUST_PROXY, ERR_ERL_UNEXPECTED_X_FORWARDED_FOR, ERR_ERL_FORWARDED_HEADER)](https://express-rate-limit.mintlify.app/reference/error-codes)
+- [express-rate-limit: Configuration reference (`validate` and `logger` options)](https://express-rate-limit.mintlify.app/reference/configuration)
+- [express-rate-limit source: validations.ts](https://github.com/express-rate-limit/express-rate-limit/blob/main/source/validations.ts)
+- [express-rate-limit source: memory-store.ts (default MemoryStore)](https://github.com/express-rate-limit/express-rate-limit/blob/main/source/memory-store.ts)
 - [django-axes documentation](https://django-axes.readthedocs.io/en/latest/4_configuration.html)
+- [django-axes documentation: Customization (lockout parameters)](https://github.com/jazzband/django-axes/blob/master/docs/5_customization.rst)
 - [Rack::Attack README](https://www.rubydoc.info/gems/rack-attack/5.4.2)
+- [Rack::Attack source: cache.rb](https://github.com/rack/rack-attack/blob/main/lib/rack/attack/cache.rb)
 - [RFC 7239: Forwarded HTTP Extension](https://datatracker.ietf.org/doc/html/rfc7239)
 - [nginx ngx_http_realip_module documentation](https://nginx.org/en/docs/http/ngx_http_realip_module.html)
 - [Characterizing and Preventing Account Denial-of-Service Attacks (SecureComm '19)](https://web.cs.wpi.edu/~cshue/research/securecomm.19.lockouts.pdf)
