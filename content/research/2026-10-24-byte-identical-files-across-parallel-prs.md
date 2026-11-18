@@ -12,9 +12,9 @@ Two agents work on two pull requests. Both need the same helper, say a lock scri
 
 No. A copy that was identical on Monday can differ on Tuesday after A pushes a fix, and Git will often hide the divergence: a three-way merge may succeed cleanly and produce a file that neither author wrote, a conflict resolved with `-X ours` may keep the stale side, and reverting A's PR can delete a file B still needs without any conflict. The reproduced cases below used Git 2.43.0 in throwaway repositories.
 
-This article proposes a small contract for a coordinator: pick one owner per duplicated path, compare blob object IDs (`git rev-parse <rev>:<path>`) instead of eyeballing diffs, re-run the comparison whenever the owner pushes, dry-run the combined merge with `git merge-tree --write-tree` and check what the merged blob equals, and treat `cherry`, `patch-id` and `range-diff` as hints rather than gates. It is a proposal for coordination practice, not a description of how any existing agent platform behaves.
+This article proposes a small contract for a coordinator: pick one owner per duplicated path, compare blob object IDs (`git rev-parse <rev>:<path>`) instead of eyeballing diffs, re-run the comparison whenever the owner pushes, rehearse both merge orders on top of the current destination base with `git merge-tree --write-tree` and check what the merged blob equals, test a revert on the reverted integration tree rather than on a PR tip, and treat `cherry`, `patch-id` and `range-diff` as hints rather than gates. It is a proposal for coordination practice, not a description of how any existing agent platform behaves.
 
-The central point: "the file is the same" is a claim about one object ID per path per branch tip. Verify that claim directly, at the tips that will actually merge, and re-verify when either tip moves.
+The central point: "the file is the same" is a claim about one object ID per path per branch tip. Verify that claim directly, at the tips that will actually merge and on the base they will merge into, and re-verify when either tip or the base moves.
 
 ## The Setup, and Why Duplication Is Tempting
 
@@ -91,6 +91,8 @@ tree=$(git merge-tree --write-tree origin/pr-a origin/pr-b) || { echo conflict; 
 
 When B's copy was merely stale (unmodified v1) rather than edited, the same test passed: the merge result equalled A's v2 blob, because only A had changed the file relative to the common base. So a stale but unmodified copy tends to heal on merge; an edited copy does not.
 
+Merging the two PR heads with each other is enough to show the third-version effect, but not to certify a merge: neither head contains what has landed on `main` since the PRs branched. Checklist step 3 below runs the same blob comparison on top of the current base.
+
 ### 2. Conflict resolution picks the stale side
 
 When both sides edited the same hunk, `merge-tree` exited `1` and named `lock.sh`. That is the good outcome. The bad one comes from how the conflict gets resolved. Merging A into a B branch that had edited the same hunk with `git merge -X ours pr-a` succeeded (exit 0) and the resulting `lock.sh` was B's `3ce80bcaaede…`, not A's `89a21505df91…`. The option told Git to prefer B's side for conflicting hunks, so the owner's fix was dropped without a marker.
@@ -129,7 +131,7 @@ git revert -m1 --no-edit <merge-of-A>   # exit 0, no conflict
 ls   # lock.sh is gone; b.txt (which needs it) remains
 ```
 
-The revert succeeded and removed `lock.sh`, because the reverse patch (delete the file) applied cleanly to a file with matching content. B's feature, still present, now lacks its dependency. Neither Git nor a green merge button warns about this. The hazard has a mirror image in the official [revert-a-faulty-merge](https://git-scm.com/docs/howto/revert-a-faulty-merge) guidance: after reverting a merge, merging the same branch again can bring nothing in, because Git considers its commits already integrated; the documented remedy is to revert the revert. Both cases come from the same fact, that Git tracks changes and ancestry, not intent about shared files.
+The revert succeeded and removed `lock.sh`, because the reverse patch (delete the file) applied cleanly to a file with matching content. B's feature, still present, now lacks its dependency. Neither Git nor a green merge button warns about this. B's own tip is no help as a check either: the revert changed only `main`, so `pr-b:lock.sh` still existed, and a build or test at that tip passes while `main` is broken. The hazard has a mirror image in the official [revert-a-faulty-merge](https://git-scm.com/docs/howto/revert-a-faulty-merge) guidance: after reverting a merge, merging the same branch again can bring nothing in, because Git considers its commits already integrated; the documented remedy is to revert the revert. Both cases come from the same fact, that Git tracks changes and ancestry, not intent about shared files.
 
 ## Rebase and Squash Behavior That Helps, and Where It Stops
 
@@ -159,8 +161,23 @@ Before merging the consumer PR:
 
 1. Identify the shared paths: `git diff --name-only origin/main...origin/pr-b` and intersect with the owner PR's list.
 2. Equality: `git rev-parse origin/pr-a:<path> origin/pr-b:<path>` — IDs must match, or the PR description must justify and mark the difference.
-3. Dry-run both orders: `git merge-tree --write-tree origin/pr-a origin/pr-b` and the reverse arguments. Exit `0` required; then compare `"$tree:<path>"` to the owner's blob, since exit `0` alone does not prove the path is unchanged.
-4. Re-check after any push to either branch; record the owner tip SHA that the check ran against.
+3. Rehearse both integration orders on the current destination base: base→A→B and base→B→A. Merging the two PR heads with each other (`git merge-tree --write-tree origin/pr-a origin/pr-b`, in either argument order) leaves out everything that has landed on `origin/main` since the PRs branched. In a probe where `main` had gained its own fix to the helper while both PRs carried the identical unfixed copy, the head-to-head merge exited `0` with the owner's blob, but merging either PR into `main` was an add/add conflict on `lock.sh`. Use a disposable commit for the intermediate result:
+
+   ```bash
+   base=$(git rev-parse origin/main)
+   rehearse() { # usage: rehearse <first> <second> <path>; prints the final blob
+     t1=$(git merge-tree --write-tree "$base" "$1") || { echo "conflict: base+$1"; return 1; }
+     c1=$(git commit-tree "$t1" -p "$base" -p "$1" -m "rehearsal: base+$1")  # disposable, never pushed
+     t2=$(git merge-tree --write-tree "$c1" "$2") || { echo "conflict: base+$1+$2"; return 1; }
+     git rev-parse "$t2:$3"
+   }
+   rehearse origin/pr-a origin/pr-b lock.sh
+   rehearse origin/pr-b origin/pr-a lock.sh
+   git rev-parse origin/pr-a:lock.sh   # owner's blob
+   ```
+
+   Both orders must exit `0`, and both final blobs must equal the owner's blob, since exit `0` alone does not prove the path is unchanged. To build or test the rehearsed result, do the same in a disposable worktree: `git worktree add --detach ../rehearse origin/main`, then `git -C ../rehearse merge --no-ff --no-edit origin/pr-a` followed by `origin/pr-b`, inspect `git -C ../rehearse rev-parse HEAD:lock.sh` (or `git -C ../rehearse ls-tree -r HEAD -- <dir>` for a directory), repeat from a fresh worktree in the other order, and remove each with `git worktree remove`.
+4. Re-check after any push to either branch or to the base; record the base and owner tip SHAs that the check ran against.
 5. If a mismatch exists, resolve by taking the owner's blob (`git checkout origin/pr-a -- <path>`), not by `-X ours` or `-X theirs`, and confirm with step 2.
 
 Around merge and rebase:
@@ -171,9 +188,15 @@ Around merge and rebase:
 Before reverting either PR:
 
 8. List every other open or merged PR that touched the same paths: `git log --oneline origin/main -- <path>` plus the open PR list. If a consumer exists, the revert needs a plan for the dependency, not just a green `git revert`.
-9. After the revert, build or test at the consumer's tip to confirm the dependency still exists.
+9. After the revert, check the post-revert integration tree, not the consumer's tip. A revert on `main` leaves the consumer's tip unchanged, so testing that tip can certify a broken revert: in the case 4 reproduction, `pr-b:lock.sh` was still present while `main:lock.sh` was gone. Use `main` after the revert (or the local revert commit before pushing it); if the consumer is still open, also merge it into that commit in a disposable worktree, because a consumer stacked on A can lose the file in that merge even though its own tip still has it. Confirm the dependency exists there, then run the consumer's build and tests in the same tree:
 
-Evidence to record in the PR thread: the tip SHAs, the blob ID, the `merge-tree` exit status, and the merged-path blob. Those four facts let a later reader tell whether the claim was checked at the current tips.
+   ```bash
+   git worktree add --detach ../post-revert origin/main
+   git -C ../post-revert merge --no-ff --no-edit origin/pr-b   # only if the consumer is still open
+   git -C ../post-revert cat-file -e HEAD:lock.sh || echo "lock.sh missing after revert"
+   ```
+
+Evidence to record in the PR thread: the base and tip SHAs, the blob ID, the `merge-tree` exit status of each rehearsal order, and the final blob of the shared path in each order. Those facts let a later reader tell whether the claim was checked at the current tips and base.
 
 ## Limits of This Evidence
 
