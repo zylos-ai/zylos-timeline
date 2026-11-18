@@ -173,7 +173,7 @@ CREATE TABLE files(
   id INTEGER PRIMARY KEY, stream TEXT, dev INT, ino INT, gen INT,
   anchor_len INT, anchor_hash BLOB,         -- sealed head anchor (<= K bytes)
   off INT, last_size INT, win_hash BLOB,    -- committed cursor + hash of W bytes before it
-  sealed INT,                               -- drained to EOF after it stopped being the live name
+  sealed INT,                               -- drained to EOF after a proven producer boundary (6.4)
   status TEXT,                              -- active | retired | gap
   gap_reason TEXT, gap_bytes INT);
 CREATE TABLE rows(
@@ -243,7 +243,15 @@ When identity breaks, do not delete the old cursor and start over. Mark it `gap`
 
 ### 6.4 "Retired" versus "vanished"
 
-A file that disappears is only cleanly retired if the reader had already *drained it to EOF after it stopped being the live name* (`sealed`). If it disappears while it was still the live file, or before it was drained, the extent of the unread tail is unknowable: the writer may have appended after your last poll. Retention deletion therefore creates a gap by default, and clean retirement is the exception you have to earn. In tests S7 and S7b the same deletion produced `LOSS-FLAGGED` when the rotated file had five unread lines and `OK` when it had been sealed first.
+A file that disappears is only cleanly retired if the reader had already *drained it to EOF after a proven producer boundary* (`sealed`). Observed EOF is not that boundary. It only says there were no more bytes at the moment you read; it does not say the producer has finished writing. `rename(2)` leaves open descriptors unaffected, so a writer that has not yet reopened keeps appending to the renamed file through its old `O_APPEND` descriptor. Rotators assume this happens: logrotate's `delaycompress` exists for programs that "might continue writing to the previous log file for some time", and Fluent Bit's `rotate_wait` keeps watching a rotated file for a few seconds in case pending data is flushed. A time window like that lowers the odds; it proves nothing.
+
+A producer boundary is an event after which the writer provably cannot add bytes to that file, for example:
+
+- a reopen acknowledgement from the writer, emitted after it has closed the old descriptor (such as a first record in the new live file naming the old file's `(dev, ino)` and its final size);
+- the exit of every process that could hold a write descriptor on it;
+- a single writer that rotates itself under its own lock and closes the old descriptor before the rename, so the rename itself is the boundary.
+
+Drain once more *after* the boundary, up to the acknowledged final size if you have one, and only then set `sealed`. If the file disappears while it was still the live file, before it was drained, or after an observed EOF with no boundary, the extent of the unread tail is unknowable: the writer may have appended after your last poll. Retention deletion therefore creates a gap by default, and clean retirement is the exception you have to earn. In tests S7 and S7b the same deletion produced `LOSS-FLAGGED` when the rotated file had five unread lines and `OK` when it had been sealed first. Test S7c is the counterexample to "EOF after rename is enough": the reader drained the renamed file to EOF, the writer then appended one more line through its retained descriptor, and retention deleted the file before the next poll. Treating that EOF as `sealed` retired the file with no gap while one line was missing; requiring a producer boundary recorded a `vanished_before_sealed` gap instead (with `gap_bytes` 0, one more example of why that number is only a lower bound).
 
 ### 6.5 Ordering, partial lines, malformed lines
 
@@ -260,7 +268,7 @@ Readers can only be as good as the weakest writer. The cheapest correctness work
 2. **Not on NFS with multiple appenders.** The same man page warns that `O_APPEND` "may lead to corrupted files on NFS filesystems if more than one process appends data to a file at once".
 3. **Never truncate or rewrite in place.** No `open(path, "w")` on a live log, no editing with tools that rewrite files, no `: > file`. Every rule in section 4.3 is about this.
 4. **Rotate only by same-directory `rename()`.** `rename(2)` is atomic with respect to replacing the new path, leaves open descriptors unaffected, and fails with `EXDEV` across mount points. Rotation by copy (copytruncate, `renamecopy`, cross-device `mv`) creates a window and new identities.
-5. **Reopen after rotation, or rotate yourself.** The best pattern is for the writing process to rename and reopen under its own lock. If an external rotator does the rename, the writer must be signalled (the `create` rows of table 3.3 show what happens otherwise).
+5. **Reopen after rotation, or rotate yourself.** The best pattern is for the writing process to rename and reopen under its own lock. If an external rotator does the rename, the writer must be signalled (the `create` rows of table 3.3 show what happens otherwise), and it should acknowledge the completed reopen so the reader has a producer boundary (section 6.4). Sending the signal is not that boundary; the writer can still append to the old file until it has actually reopened.
 6. **Never reuse rotated names, and don't shift.** Prefer unique names (timestamp plus sequence) over the `.1 -> .2` shuffle, which changes the name of every file on each rotation.
 7. **Delay destructive cleanup.** Compress or delete rotated files only after a retention window longer than the longest plausible reader outage. Compressing immediately creates a new inode and non-comparable offsets; Vector's docs recommend logrotate's `delaycompress` for a related reason (it fingerprints the rotated file uncompressed).
 8. **Put a sequence number in every record** (a writer id/epoch and a monotonic counter). It is the only mechanism that detects loss of bytes the reader never saw, and it gives you a content-level dedupe key independent of `dev`.
@@ -270,7 +278,7 @@ Why copytruncate is hostile in one sentence: it makes the *reader* the only part
 
 ## 8. Testing: fault injection and the assertions that matter
 
-Every case below was run against the reference tailer and the three baselines. The harness compares a ground-truth multiset of written lines with what landed in the database, and classifies each result as `OK`, `LOSS-FLAGGED` (loss exists but a gap record exists) or `SILENT-CORRUPTION`. Numbers are lines missing in the ingested table for the reference tailer; "baselines" lists the worst baseline result.
+Every case below except S7c was run against the reference tailer and the three baselines. The harness compares a ground-truth multiset of written lines with what landed in the database, and classifies each result as `OK`, `LOSS-FLAGGED` (loss exists but a gap record exists) or `SILENT-CORRUPTION`. Numbers are lines missing in the ingested table for the reference tailer; "baselines" lists the worst baseline result. The rows marked "Probe" come from a separate small script that models the retirement decision of section 6.4 (rename with the writer's descriptor still open, drain, late append, deletion), not from the full harness.
 
 | Case | Setup | Correct tailer must show | Measured (reference tailer) | Measured (worst baseline) |
 |---|---|---|---|---|
@@ -284,7 +292,8 @@ Every case below was run against the reference tailer and the three baselines. T
 | S5 | In-place rewrite, same inode, different head, longer | gap flagged | 2 lost, `head_anchor_mismatch` | 12 missing + mangled |
 | S6 | Drained file deleted, new longer file, inode reused | new generation, no skipped prefix | 0 missing (inode reuse confirmed), flagged conservatively | inode/path: 10 missing + mangled |
 | S7 | Retention deletes rotated file with 5 unread lines | gap flagged | 5 lost, `vanished_before_sealed` | all silent |
-| S7b | Same, but file was drained first | clean retirement, no gap | 0 missing, no gap | n/a |
+| S7b | Same, but file was drained after the writer had finished with it (producer boundary) | clean retirement, no gap | 0 missing, no gap. Probe with a reopen acknowledgement carrying the final size: a line appended after the first EOF was drained before retirement, 0 missing | n/a |
+| S7c | Rotated file drained to EOF, writer appends a late line through its retained `O_APPEND` descriptor, retention deletes before the next poll, no producer boundary | gap flagged (observed EOF is not writer completion) | Probe: EOF-after-rename treated as sealed retired the file with no gap, 1 of 2 lines missing (silent). With the boundary rule: `vanished_before_sealed`, `gap_bytes` 0 | n/a |
 | S8 | Unterminated final line completed later | 3 rows, then 4 | 3 then 4 | n/a |
 | S9 | Rotation with identical >128-byte preamble | no skip, no duplicate | 0 missing | fingerprint-only: 13 missing + dup |
 
@@ -326,18 +335,18 @@ Atomicity
 
 Rotation and retention
 - [ ] Siblings in the same directory are enumerated each poll; unknown files are processed oldest first, live name last; compressed files are excluded or handled separately.
-- [ ] A file is retired only after it was drained to EOF while no longer the live name (`sealed`). Any other disappearance is a gap.
+- [ ] A file is retired only after it was drained to EOF after a proven producer boundary (writer reopen acknowledgement, writer exit, or self-rotation that closes the old descriptor first), not merely after an observed EOF once it stopped being the live name (`sealed`). Any other disappearance is a gap.
 - [ ] Gaps are visible: a counter by reason, a UI banner, and an alert when `gap_bytes` or gap count grows.
 
 Writer contract
 - [ ] `O_APPEND`, one `write()` per record, lock if more than one writer, no NFS multi-appender.
-- [ ] Rotation by same-directory `rename()` only, writer reopens, unique rotated names.
+- [ ] Rotation by same-directory `rename()` only, writer reopens and acknowledges the reopen, unique rotated names.
 - [ ] No in-place truncation or rewrite, no copytruncate.
 - [ ] Cleanup (compress/delete) waits longer than your worst reader outage.
 - [ ] Records carry a writer epoch and a monotonic sequence number.
 
 Tests
-- [ ] The thirteen fault cases of section 8, including the documented blind spot, run in CI with the "silent loss implies failure" assertion.
+- [ ] The fourteen fault cases of section 8, including the documented blind spot, run in CI with the "silent loss implies failure" assertion.
 
 ## 11. What I could not verify
 
@@ -375,4 +384,4 @@ Operating-system and tooling references
 - SQLite conflict clauses, `INSERT OR IGNORE` (background, not re-verified): https://www.sqlite.org/lang_conflict.html
 
 Measurements
-- All "Measured" items: Linux 6.17.0-1021 (aarch64), ext4 root volume, tmpfs for the cross-filesystem and birth-time probes, Python 3.12.3, logrotate 3.21.0, GNU coreutils 9.4. Experiments were run in a throwaway scratch directory and cover identity behaviour, `statx` birth time, copytruncate under real logrotate, `tail` follow modes, commit-ordering crash tests, and the fault-injection harness described in section 8.
+- All "Measured" items: Linux 6.17.0-1021 (aarch64), ext4 root volume, tmpfs for the cross-filesystem and birth-time probes, Python 3.12.3, logrotate 3.21.0, GNU coreutils 9.4. Experiments were run in a throwaway scratch directory and cover identity behaviour, `statx` birth time, copytruncate under real logrotate, `tail` follow modes, commit-ordering crash tests, the fault-injection harness described in section 8, and the retirement-policy probe for appends after an observed EOF (S7b, S7c).
