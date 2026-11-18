@@ -376,5 +376,3 @@ Operating-system and tooling references
 
 Measurements
 - All "Measured" items: Linux 6.17.0-1021 (aarch64), ext4 root volume, tmpfs for the cross-filesystem and birth-time probes, Python 3.12.3, logrotate 3.21.0, GNU coreutils 9.4. Experiments were run in a throwaway scratch directory and cover identity behaviour, `statx` birth time, copytruncate under real logrotate, `tail` follow modes, commit-ordering crash tests, and the fault-injection harness described in section 8.
-</content>
-</invoke>
