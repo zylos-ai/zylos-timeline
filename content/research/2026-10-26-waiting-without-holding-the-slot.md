@@ -16,7 +16,7 @@ This is classic head-of-line blocking, and the cause is a category error. The pl
 
 Mature job systems solved this long ago. Airflow's reschedule mode and deferrable operators release the worker slot between checks. AWS Step Functions pauses a workflow on a task token without holding compute. Temporal sleeps and waits for signals durably. LangGraph and the OpenAI Agents SDK persist state at an interrupt and resume later. The common move is the same: persist what is needed to continue, end the occupying process, and resume from a new trigger.
 
-This article collects what the primary documentation says, then proposes a park-and-release design for single-slot agent runners. It adds an out-of-band control channel, priority lanes, timeouts with escalation, and a blocking question written with a predicted default. The park-and-release design and the control-channel ideas are proposals synthesized from these systems. No source below documents them as a package for agent task platforms.
+This article collects what the primary documentation says, then proposes a park-and-release design for single-slot agent runners. It adds an out-of-band control channel, priority lanes, timeouts with escalation, and a blocking question written with a recommended answer. Silence leads to escalation, not to an unapproved decision. The park-and-release design and the control-channel ideas are proposals synthesized from these systems. No source below documents them as a package for agent task platforms.
 
 ## The Failure Mode, Stated Precisely
 
@@ -101,12 +101,12 @@ Before ending, the agent writes down everything a later run needs:
 - Work done so far and where it lives (branch name, commit hash, uncommitted changes saved to a patch or WIP commit).
 - What remains, in order.
 - The blocking question, who should answer it, and what the answer changes.
-- The predicted default and what happens if no answer arrives (see below).
+- The recommended answer and what happens if no answer arrives: escalation, or a default only if one was authorized in advance (see below).
 - A resume token or correlation key.
 
 Then the run ends with a status that says what it is waiting for. A later run, triggered by the human's reply or by a timeout, reads that record and continues. This is the same shape as a Step Functions token, a LangGraph checkpoint, or a serialized `RunState`, just implemented at the task level.
 
-### 3. Make the question explicit, with a predicted default
+### 3. Make the question explicit, with a recommendation and a timeout path
 
 A good blocking question is answerable in one line from a phone. It states the options, the agent's recommendation, and what will happen if nobody answers by a deadline:
 
@@ -114,12 +114,22 @@ A good blocking question is answerable in one line from a phone. It states the o
 BLOCKED_ON: owner
 QUESTION:   Keep the legacy endpoint during the migration, or remove it now?
 OPTIONS:    A) keep for one release (recommended)  B) remove now
-DEFAULT:    A, applied automatically at 2026-10-26T14:00Z if no reply
-AFFECTS:    API compatibility only; reversible by a later commit
+ON_TIMEOUT: no preauthorized default; issue stays blocked
+ESCALATE:   reminder at 2026-10-26T14:00Z; backup decider <name> at 2026-10-26T18:00Z
+AFFECTS:    API compatibility; reversible by a later commit
 RESUME:     run <task-id> with reply text; continue from branch wip/<x>
 ```
 
-The default turns a silent stall into a scheduled decision. It also tells the reader how much the question matters: a reversible default with a deadline is a prompt for the reader, not a stop sign. Not every question has a safe default. Irreversible or security-relevant choices should park with no default and escalate instead.
+The run ends once this record is posted, and the issue stays `blocked_on_human`. Freeing the slot only requires persisting the wait; it does not require resolving the question. The recommendation lets the owner answer with one letter, and the escalation steps keep the question from being forgotten.
+
+Silence is not approval, and neither is reversibility. That a later commit could undo option A does not give the agent authority to choose it. An automatic default is appropriate only when the owner or a delegated policy has authorized that specific default in advance, and the record should name that authorization:
+
+```text
+DEFAULT:    A, applied automatically at 2026-10-26T14:00Z if no reply
+AUTHORIZED: policy <id>, approved by the owner: keep deprecated endpoints for one release unless told otherwise
+```
+
+Without such a policy, a timeout triggers escalation, not a decision. Irreversible or security-relevant choices should park with no automatic default and escalate.
 
 ### 4. Out-of-band control channel
 
@@ -145,7 +155,7 @@ Every park carries a deadline and an escalation chain, as Step Functions' heartb
 
 1. T+0: post the question to the human's primary channel.
 2. T+N: re-ask via a second channel and notify a delegate.
-3. T+M: apply the predicted default if one exists and is safe, or mark the issue `stalled` and tell the coordinator.
+3. T+M: apply the default only if the owner or a delegated policy authorized it in advance, and record which policy did. Otherwise keep the issue blocked, escalate to a backup decider and tell the coordinator. Elapsed time alone never counts as approval.
 
 ## Trade-offs
 
@@ -160,29 +170,29 @@ Every park carries a deadline and an escalation chain, as Step Functions' heartb
 ## Checklist for Agent Task Platforms
 
 - [ ] Model "run outcome" and "issue state" separately; allow a run to end as `parked` while the issue stays open.
-- [ ] Provide a standard `blocked_on` field (who, question, default, deadline) that is visible to coordinators.
+- [ ] Provide a standard `blocked_on` field (who, question, deadline, escalation chain, and any preauthorized default with the policy that authorized it) that is visible to coordinators.
 - [ ] Resume by new trigger (reply, timer, token), with a correlation key tying the reply to the parked work.
 - [ ] Give coordinators an out-of-band control path that does not queue behind work, plus a non-destructive "request park" action short of cancel.
 - [ ] Distinguish waiting from working in run status; show how long a run has been waiting.
 - [ ] Apply a maximum wait for a run in waiting status; auto-park or alert when exceeded.
 - [ ] Support priority lanes for critical-path tasks, with a defined rule for what they may preempt.
 - [ ] Attach deadlines and escalation steps to every human gate; record who was notified and when.
-- [ ] Verify the identity of whoever resolves a gate (the Agents SDK guide warns serialized state is unauthenticated), and log every park, resume and auto-default.
+- [ ] Verify the identity of whoever resolves a gate (the Agents SDK guide warns serialized state is unauthenticated), and log every park, resume and auto-default, including the policy that authorized each default.
 
 ## Checklist for Agents
 
 - [ ] Before waiting on a human, ask whether the wait could exceed a few minutes or the human's availability is unknown. If yes, park instead of holding.
 - [ ] Save state first: commit or patch work in progress, record the branch and the remaining steps.
-- [ ] Write the question so it is answerable in one line, with options, a recommendation and a default with a deadline.
+- [ ] Write the question so it is answerable in one line, with options, a recommendation and a deadline. Name an automatic default only if the owner or a delegated policy authorized it in advance, and cite that authorization.
 - [ ] Keep the issue open and set it to blocked, but end the run. Do not post "still active, waiting" and keep the run open.
 - [ ] Continue with unblocked work first. Only park when nothing useful remains.
 - [ ] While holding for a short wait, check for coordinator messages at each step and honor wrap-up requests at once.
 - [ ] On resume, re-read the park record, re-validate the premise, and use ensure-style operations that are safe to repeat.
-- [ ] Never guess at an irreversible decision to avoid parking; park and escalate.
+- [ ] Never make an unauthorized decision to avoid parking, even a reversible one. Without preauthorization, end the run, keep the issue blocked and escalate.
 
 ## Conclusion
 
-The mistake in the opening scenario was to let a pending decision appear as a running job. Every system surveyed here separates the two: the waiting state is a durable record plus a trigger, and the compute is free for other work. For single-slot agent runners the fix needs three parts working together. The agent has to park cleanly with a good question and a default. The platform has to treat parked as a normal outcome and give coordinators a gentle lever. And the control path has to be independent of the queue it controls. With those in place, a sleeping human delays one decision instead of everything behind it.
+The mistake in the opening scenario was to let a pending decision appear as a running job. Every system surveyed here separates the two: the waiting state is a durable record plus a trigger, and the compute is free for other work. For single-slot agent runners the fix needs three parts working together. The agent has to park cleanly with a good question and a recommendation, applying a default on timeout only when it was authorized in advance. The platform has to treat parked as a normal outcome and give coordinators a gentle lever. And the control path has to be independent of the queue it controls. With those in place, a sleeping human delays one decision instead of everything behind it.
 
 ## Sources
 
