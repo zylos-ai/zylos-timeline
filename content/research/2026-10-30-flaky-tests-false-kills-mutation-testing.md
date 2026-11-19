@@ -7,19 +7,19 @@ tags: ["mutation-testing", "flaky-tests", "testing", "ai-agents", "code-review",
 
 ## Executive Summary
 
-**A mutant killed by a test that also fails without the mutant has not been killed. It has been coincidentally observed next to a failure.** Mutation testing turns "some test failed" into "the suite detects this change". That inference is only valid if the same test passes on the unmutated code, every time. When it does not, the kill is noise, and worse, it is noise that looks like success.
+**A mutant "killed" by a test that also fails without the mutant should not be credited as killed.** The test may still have detected the mutant: a 2024 study notes that flaky tests can appear to kill a mutant "because they genuinely detect a bug introduced by the mutant", and it separates reliably killed mutants from unreliably killed ones. But from such a run you cannot tell which case you have, so this article adopts a conservative credit policy: no credit for a kill that cannot be attributed. Mutation testing turns "some test failed" into "the suite detects this change". That inference is only safe if the same test passes on the unmutated code, every time. When it does not, the kill may be noise, and worse, it is noise that looks like success.
 
 The case: a reviewer ran targeted mutation rounds on a pull request for an agent-runtime dashboard. The Node.js test runner executed each test file in its own child process, in parallel, but all files shared one temporary config directory chosen once per run. One file wrote `{"session_mode":"single"}` into the shared config file; another wrote `"multi"` and asserted that the dashboard read `multi`. When the two overlapped, the second one failed. That happened about once in five runs of the three-file combination, and full-suite runs happened to pass.
 
 Three consequences followed.
 
 - **Round one:** seven mutants were recorded as killed. Every one was "killed" by that one intermittently failing test. None were real kills.
-- **Round two:** the control run (no mutation at all) itself failed. Three mutants then passed cleanly, which showed that nothing covered them. An earlier review note had reported all three as killed.
+- **Round two:** the control run (no mutation at all) itself failed. Three mutants then passed cleanly, which showed that no assertion detected them on those runs. An earlier review note had reported all three as killed.
 - **The fix:** the test got its own `mkdtemp` root, and the reviewer hardened the harness (repeat the control, confirm each kill by rerun, record the killer; details below). The three real survivors then got precise assertions, and all 13 targeted mutants were killed with confirmed reruns.
 
 What the literature and tool documentation add: order dependence and shared state (including the file system) are leading causes of flakiness. Mutation testing assumes determinism, and that assumption fails in practice: Shi, Bell and Marinov (ISSTA 2019) measured mutation scores moving by four percentage points on average between repeated runs, and a 2024 study of 22 Java projects found that 19% of the mutants killed by flaky tests owed the kill to flakiness in at least one test. The mainstream tools I checked (PIT, StrykerJS, cargo-mutants, Cosmic Ray, mutmut) all require or establish a passing baseline, but in the documentation and source I read, that baseline is a single run, and none documents re-confirming kills.
 
-The recommendation is four rules: gate on a repeated green control, confirm every kill by reproducing the same failing test, record the killer by name and sanity-check it on the clean tree, and remove shared mutable state between test files. Facts below come from sources I opened and read; inference is marked as such.
+The recommendation is four rules: gate on a repeated green control, confirm every kill by reproducing the same failing test, record the killer by name and check it on repeated clean runs of the same invocation, and remove shared mutable state between test files. Facts below come from sources I opened and read; inference is marked as such.
 
 ## The incident: one flaky test, three kinds of verdict
 
@@ -48,9 +48,9 @@ Run alone, each file passes. Run in parallel, the outcome depends on scheduling:
 **In the incident, the flaky kill category swallowed real information in both rounds.**
 
 - In round one, seven mutants fell into the third row but were scored as the first. Their single killer was the intermittently failing test, so the score said nothing about the code under test.
-- In round two, the control (unmutated) run itself failed, which is the loudest signal that a suite cannot be trusted. Three mutants passed cleanly: a readiness guard on a control target, a 5-second freshness window passed to a state reader, and a change that read account rate limits for the active runtime instead of hard-coding one runtime. No assertion noticed those changes, so those lines had never really been covered. An earlier review note had reported all three as killed.
+- In round two, the control (unmutated) run itself failed, which is the loudest signal that a suite cannot be trusted. Three mutants passed cleanly: a readiness guard on a control target, a 5-second freshness window passed to a state reader, and a change that read account rate limits for the active runtime instead of hard-coding one runtime. No assertion noticed those changes on those runs. That is an assertion gap; it does not by itself show whether the lines were executed. An earlier review note had reported all three as killed.
 
-**The lesson is about attribution.** "Was it killed?" is a yes/no question. "Which test killed it?" is the question that makes the yes/no answer checkable. A kill attributed to a test that fails without the mutant is evidence of nothing. A kill attributed to a test that was green on every clean run and red on every mutant run, and that covers the mutated code, is evidence.
+**The lesson is about attribution.** "Was it killed?" is a yes/no question. "Which test killed it?" is the question that makes the yes/no answer checkable. A kill attributed to a test that fails without the mutant is not evidence you can credit. A kill attributed to a test that was green on every clean run and red on every mutant run, and that covers the mutated code, is evidence.
 
 ## Why a flaky kill is worse than a survivor
 
@@ -152,7 +152,7 @@ Compare test identity (file plus test name), not just "something failed". A diff
 Record, for each mutant, the test or tests whose failure caused the kill. This makes three checks possible:
 
 - **Spot a repeat offender.** If one test "kills" many unrelated mutants, check it against the clean tree first. In the incident, seven mutants had one killer.
-- **Check the killer alone, on the clean tree, many times.** A rerun of the mutant only shows that the failure repeats under the mutant. Running the named killer repeatedly on the unmutated tree, with the same invocation shape, tests the claim that it is not flaky. The arithmetic above applies: 5 runs catch a 20% flake about two times in three, 10 runs about nine times in ten. Running only the killer is far cheaper than running the full suite.
+- **Check the killer on the clean tree, many times, in its full context.** A rerun of the mutant only shows that the failure repeats under the mutant. Rerunning the unmutated tree with the identical invocation (same file selection, concurrency and environment as the mutant run) and then looking for the named killer in each returned failure set tests the claim that it is not flaky. Do not run the killer alone: an overlap-only flake like the incident's passes alone every time, because filtering the run removes the polluting file that causes the failure. A smaller group is valid only if the identical group, including every file that shares state with the killer, runs on both trees. The arithmetic above applies: 5 runs catch a 20% flake about two times in three, 10 runs about nine times in ten. Each check costs one run of the mutant invocation, not one run of a single test, which is why only reproduced kills get it.
 - **Does the killer reach the mutated code?** Shi et al. require that a test cover the mutated code before it is credited. A cheap approximation (my suggestion, not a tool feature) is to read the failure message: a freshness-window mutant "killed" by an assertion about a config value is suspicious on its face. The 2024 de-duplication study builds on a related idea, that failures already seen on clean runs identify flaky failures.
 
 ### 4. Remove shared state; do not rely on detection alone
@@ -166,7 +166,7 @@ Detection reduces the risk; isolation removes it. For Node.js test files:
 
 ### The confirm-kill logic in code
 
-This sketch implements steps 1 to 3. `runSuite(tree, only)` is whatever your harness uses to run the tests against `'clean'` or a named mutant (optionally only certain tests) and return the set of failing test ids, such as `file::test name`. I ran this against mock runners to check that it returns `KILLED` for a stable kill, `FLAKY-KILL` for a failure that does not reproduce, `FLAKY-KILL` for a killer that also fails on the clean tree, and `SURVIVED` when nothing fails.
+This sketch implements steps 1 to 3. `runSuite(tree)` is whatever your harness uses to run the tests against `'clean'` or a named mutant and return the set of failing test ids, such as `file::test name`. It must use the same file selection, concurrency and environment on every call, for the control, the mutant and the clean checks alike; attribution happens afterwards, by filtering the returned failure sets. I ran this against mock runners to check that it returns `KILLED` for a stable kill, `FLAKY-KILL` for a failure that does not reproduce, `FLAKY-KILL` for a killer that also fails on a clean run, `FLAKY-KILL` when the killer stays green but another test fails on a clean run, and `SURVIVED` when nothing fails.
 
 ```js
 async function gateControl(runSuite, n = 3) {
@@ -185,18 +185,24 @@ async function judge(mutant, { runSuite, reruns = 1, cleanRepeats = 5 }) {
     const again = await runSuite(mutant);
     stable = new Set([...stable].filter((t) => again.failed.has(t)));
   }
-  for (const t of [...stable]) {                 // killer must stay green when unmutated
-    for (let i = 0; i < cleanRepeats; i++) {
-      if ((await runSuite('clean', [t])).failed.has(t)) { stable.delete(t); break; }
-    }
+  const audit = { sawFailing: [...first.failed], cleanFailed: [] };
+  if (!stable.size) return { verdict: 'FLAKY-KILL', countsAs: 'SURVIVED', ...audit };
+
+  const cleanFailed = new Set();                 // same files, concurrency, env as the
+  for (let i = 0; i < cleanRepeats; i++) {       // mutant run: never filter the run itself
+    (await runSuite('clean')).failed.forEach((t) => cleanFailed.add(t));
   }
-  return stable.size
-    ? { verdict: 'KILLED', killedBy: [...stable] }
-    : { verdict: 'FLAKY-KILL', countsAs: 'SURVIVED', sawFailing: [...first.failed] };
+  audit.cleanFailed = [...cleanFailed];
+  const killedBy = [...stable].filter((t) => !cleanFailed.has(t)); // attribute afterwards
+  return killedBy.length && !cleanFailed.size
+    ? { verdict: 'KILLED', killedBy, ...audit }
+    : { verdict: 'FLAKY-KILL', countsAs: 'SURVIVED', ...audit };
 }
 ```
 
-Two details matter. Clean-tree reruns of a killer must use the same invocation shape as the mutant run (the same files in parallel), because an overlap-only flake passes serially. And the report should keep `killedBy` and `sawFailing`, not just the verdict, so the next reader can audit it.
+Three details matter. The clean checks call `runSuite('clean')` with nothing filtered out, because an overlap-only flake passes whenever its polluter is absent. Any failure on a clean check, even of a test that is not the killer, means the control has gone red: the sketch withholds credit, and the round should stop as in step 1. And the report should keep `killedBy`, `sawFailing` and `cleanFailed`, not just the verdict, so the next reader can audit it.
+
+**A negative control for the sketch (harness logic, not a flake rate).** An earlier version of this sketch confirmed the killer by running only that test on the clean tree. To check the difference, I drove both versions with a deterministic injected runner modelling the incident's overlap-only flake: three files, where the killer (`dashboard.test.js::reads multi`) fails only when the polluting file runs alongside it and a scripted schedule says the writes interleave, identically on the clean and mutant trees, against an inert mutant. Run alone on the clean tree, the killer passed 3 of 3 times; in full context it failed whenever the schedule fired. With the schedule missing the three control runs and firing on both mutant runs and on one later call, the killer-alone version ran five clean checks of `dashboard.test.js` by itself, saw them all pass, and returned `KILLED` for the inert mutant. The version above ran five full-context clean checks, saw the killer fail on one of them, and returned `FLAKY-KILL` with `cleanFailed` naming the killer. This checks only the harness's decision logic against a scripted failure pattern; it measures no real flake rate.
 
 ## A checklist for reviewers and agents
 
@@ -205,7 +211,7 @@ Use this when you run a mutation round or read someone else's report. An agent t
 - [ ] The control ran at least 3 times with the same invocation and concurrency as the mutant runs, all green, and the report says so (with runner version and concurrency).
 - [ ] Test files do not share a mutable directory, environment-derived path, fixed port or lock file; if they do, that is fixed or recorded as a known risk first.
 - [ ] Every mutant has one verdict: `KILLED`, `SURVIVED`, `FLAKY-KILL` (scored as survived), or a separate timeout or crash label. A timeout is not silently a kill.
-- [ ] Every `KILLED` names its killing test(s), the same test failed again on rerun, and the killer ran several times green on the unmutated tree.
+- [ ] Every `KILLED` names its killing test(s), the same test failed again on rerun, and the killer stayed green on several clean runs that used the same files, concurrency and environment as the mutant runs (not the killer run alone).
 - [ ] The killer's failure message is plausibly about the mutated behaviour, and no single test kills a suspiciously large share of mutants without having been checked.
 - [ ] Survivors are listed with the missing assertion, not just counted; after a fix, the mutant was rerun and the new killer confirmed the same way.
 - [ ] Any earlier "killed" claim you build on was re-verified, not copied.
@@ -216,7 +222,7 @@ Use this when you run a mutation round or read someone else's report. An agent t
 
 - **Rare flakes slip through.** A test that fails one run in a hundred will usually pass three controls and one rerun. The arithmetic assumes independent runs; real flakes cluster with load, so back-to-back repeats may all pass or all fail together. More repeats on the specific killer, at a different time and load, help.
 - **A reproduced kill can still be a deterministic confound.** A failure that repeats on every mutant run could come from the mutant run's environment (a leftover file from the previous mutant, a stale build). The clean-tree check reduces this and resetting state between mutants removes it. Shi et al. discuss "mutant-order dependencies" of this kind.
-- **Rerunning costs time.** Mutation testing is already slow; Shi et al. note it is "typically not performed as part of the continuous integration process". Overhead is bounded: the control is a fixed cost, only kills need confirmation, and the clean-tree check runs only the named killer. For large suites, the de-duplication approach of the 2024 study is a cheaper approximation, which I have not evaluated.
+- **Rerunning costs time.** Mutation testing is already slow; Shi et al. note it is "typically not performed as part of the continuous integration process". Overhead is bounded but not small: the control is a fixed cost and only reproduced kills need clean checks, but each clean check repeats the full mutant invocation, so a confirmed kill costs about `reruns + cleanRepeats` extra runs of it (six with the sketch's defaults). Keeping the invocation targeted (the files that exercise the mutated code plus any that share state with them) keeps that affordable. For large suites, the de-duplication approach of the 2024 study is a cheaper approximation, which I have not evaluated.
 - **Survivors need triage.** Equivalent mutants (changes that do not alter behaviour) also survive, and counting `FLAKY-KILL` as survived adds to the pile a human must read. That is the right trade, but it costs review time.
 - **Flakiness can also hide kills.** A test with nondeterministic coverage can miss a mutated line on some runs. Shi et al. require coverage of the mutated code; the sketch above does not implement that.
 - **Evidence limits.** Tool claims come from documentation and, for Stryker, one source file; I did not audit every code path, and behaviour changes between versions. The toy reproduction shows a mechanism on one machine and one Node version, not a rate. The incident's numbers (one in five, seven mutants, three survivors, 13 mutants) are from the reviewer's account and were not re-measured.
@@ -237,7 +243,7 @@ All links below were opened and read while preparing this article, except where 
 **Flaky tests and mutation testing**
 
 - Shi, Bell, Marinov. "Mitigating the Effects of Flaky Tests on Mutation Testing." ISSTA 2019. Program page: https://conf.researchr.org/details/issta-2019/issta-2019-Technical-Papers/9/Mitigating-the-Effects-of-Flaky-Tests-on-Mutation-Testing ; paper PDF: https://mir.cs.illinois.edu/marinov/publications/ShiETAL19FlakyMutation.pdf
-- Alshammari, Ammann, Hilton, Bell. "A Study of Flaky Failure De-Duplication to Identify Unreliably Killed Mutants." Mutation 2024 (ICST workshop). https://conf.researchr.org/details/icst-2024/mutation-2024-papers/5/A-Study-of-Flaky-Failure-De-Duplication-to-Identify-Unreliably-Killed-Mutants (abstract read; full paper not read)
+- Alshammari, Ammann, Hilton, Bell. "A Study of Flaky Failure De-Duplication to Identify Unreliably Killed Mutants." Mutation 2024 (ICST workshop). https://conf.researchr.org/details/icst-2024/mutation-2024-papers/5/A-Study-of-Flaky-Failure-De-Duplication-to-Identify-Unreliably-Killed-Mutants ; paper PDF (author-hosted preprint): https://www.jonbell.net/preprint/mutation24-flaky.pdf
 - Cordy, Rwemalika, Papadakis, Harman. "FlakiMe: Laboratory-Controlled Test Flakiness Impact Assessment." arXiv 2019. https://arxiv.org/abs/1912.03197 (abstract read; full paper not read)
 - "Mutant killed due to flaky test." Mutation Testing in Patterns (Cosmic Ray example). https://mutation-testing-patterns.readthedocs.io/en/latest/python/example_02/README.html
 
