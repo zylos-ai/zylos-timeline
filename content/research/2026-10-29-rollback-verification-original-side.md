@@ -63,7 +63,7 @@ The last point is the industry's consensus answer, formalized as expand/contract
 
 ### A/B updates and verified boot: commit only after the target proves itself
 
-Android's A/B (seamless) updates write the new system to the inactive slot. The [documentation](https://source.android.com/docs/core/ota/ab) states that the current slot "is always marked as successful at the beginning of the update", that the bootloader "will fallback to the old OS if the new OS fails to boot", and that a new slot is marked successful with `markBootSuccessful()` only after it has booted and passed post-reboot checks. Before reboot the partitions are re-read and checked against the expected hash. The old slot is never modified, so falling back requires no restore verification at all, which is the strongest form of the original-side pattern: verify by not touching it.
+Android's A/B (seamless) updates write the new system to the inactive slot. The [documentation](https://source.android.com/docs/core/ota/ab) states that the current slot "is always marked as successful at the beginning of the update", that the bootloader "will fallback to the old OS if the new OS fails to boot", and that a new slot is marked successful with `markBootSuccessful()` only after it has booted and passed post-reboot checks. Before reboot the partitions are re-read and checked against the expected hash. The documentation says the update process "should not modify" the "contents of partitions in the current slot", so falling back needs no restore of those slot partitions, which is the strongest form of the original-side pattern for that scope: verify by not touching it. The scope matters. The unchanged slot says nothing about state outside the slot pair, such as user data the new OS may already have written, so it neither establishes that the old OS can use that shared state nor removes original-side checks on it.
 
 Rollback protection in Android Verified Boot is the opposite problem, preventing downgrades to vulnerable versions, but its API design is instructive. The [libavb header](https://android.googlesource.com/platform/external/avb/+/119251268c594d115a1eff31b3ec32108b88b593/libavb/avb_slot_verify.h) says `avb_slot_verify()` "will NEVER modify stored_rollback_index[n] locations", leaving the write to the caller's policy (an A/B example is referenced). The verifier reports; the caller owns the state transition. The [platform overview](https://source.android.com/docs/security/features/verifiedboot/verified-boot) describes the mechanism as recording the most recent version in tamper-evident storage and refusing to boot lower ones. I could not read the AVB README's rollback section (the page was too large to fetch usefully), so I do not claim details beyond the header comment.
 
@@ -100,7 +100,20 @@ Cases 4 and 6 show why `PRAGMA integrity_check` is not a restore check. SQLite d
 
 Case 6 matters for restore logic bugs: restoring the wrong file, or an empty one, is structurally healthy.
 
-The hash proves identity with the snapshot; it does not prove the snapshot was a good state to begin with. That is a separate check, made when the snapshot is taken, and it is itself an original-side check using only what the original version has.
+### Control: the main file matches, but SQLite reads the leftover WAL
+
+All six cases above restore into a path with no write-ahead log next to it. A failed upgrade does not guarantee that. SQLite's [WAL documentation](https://sqlite.org/wal.html) says "the WAL file might be retained on disk" if "the last process to have the database open exits without cleanly shutting down the database connection", that "The WAL file is part of the persistent state of the database", and that a reader that needs a page "first checks the WAL to see if that page appears there". So a restore that replaces only `live.db` can leave the target version's committed data in `live.db-wal`, where the next reader will find it.
+
+I ran this as a separate control on the same Python 3.12.3 / SQLite 3.45.1 environment. A child process creates the original state (one row, `original`), takes a self-contained backup with the backup API, switches the live database to WAL with `wal_autocheckpoint=0`, commits target data (the row becomes `target` and a new `owner_state` table is created), and exits with `os._exit` without closing the connection. The parent waits for it to exit, copies the backup over `live.db` only, and then checks:
+
+| Restore | SHA-256 equals backup | `integrity_check` | `SELECT` returns | Runs |
+| --- | --- | --- | --- | --- |
+| Backup copied over `live.db`; crash-leftover `live.db-wal` (12,392 bytes) still present | yes | ok | `target`, and `owner_state` is listed | 5 of 5 |
+| Same backup copied to a fresh directory with no WAL | yes | ok | `original` | 5 of 5 |
+
+The first row is the dangerous one: every check from levels 1 to 3 below passes, and the database the old version will read is the target state, including a table the original never had. The hash was right about the file it hashed; it was the wrong unit of identity. The second row is the positive control: the same backup is a correct original state when nothing else at its path is read with it.
+
+A hash taken over the whole state SQLite will read proves identity with the snapshot; it does not prove the snapshot was a good state to begin with. That is a separate check, made when the snapshot is taken, and it is itself an original-side check using only what the original version has.
 
 ## Design Patterns
 
@@ -115,14 +128,20 @@ Make the side a required parameter with no default. A default silently picks a s
 
 ### 2. Capability-limited verification
 
-Rank checks by how little they assume:
+Before any check, establish what is being checked. For SQLite the unit is not the main file: "The state of an SQLite database is controlled by both the database file and the journal file", and among the actions SQLite lists as likely to lead to corruption is "Overwriting a database file with another without also deleting any hot journal associated with the original database" ([How To Corrupt An SQLite Database File](https://sqlite.org/howtocorrupt.html)). So restore is a step with a precondition:
 
-1. Existence and size of the restored files.
-2. Content hash equal to the one recorded at snapshot time.
+- Stop or exclude every client that may hold the database open (the failed new version, the old version, sidecar tools, the verifier itself) before restoring, and keep them excluded until verification finishes. SQLite warns against "Backup or restore while a transaction is active".
+- Restore a coherent set: the database plus whatever journal, `-wal` and `-shm` files belong with it. A snapshot taken with the backup API or `VACUUM INTO` is a self-contained file, so the coherent set at the restored path is that file with no journal or WAL beside it. The pre-restore files (database, journal, WAL, shared-memory file) move aside together as one unit and are kept as evidence (pattern 4); they are not mixed with the restored file.
+- Do not prescribe deleting a live WAL to make the problem go away. SQLite says "The WAL file is part of the persistent state of the database" and that "The only safe way to remove a WAL file is to open the database file using one of the sqlite3_open() interfaces then immediately close the database" ([WAL](https://sqlite.org/wal.html)). On a restore path that is not what you want either: opening the restored file next to the target's leftover WAL is what makes SQLite read the target data, and the same page says the last connection to close "does one last checkpoint", which would fold that data into the main file.
+
+Then rank checks by how little they assume:
+
+1. Existence and size of the restored files, and absence of any journal, WAL or shared-memory file at the restored path that is not part of the snapshot.
+2. Content hash equal to the one recorded at snapshot time, over every file in the restored set, taken before any SQLite connection opens it.
 3. Structural integrity (`integrity_check` for SQLite, which is stronger than `quick_check`, which per the documentation skips UNIQUE and index-content verification).
 4. Semantic schema check from a module that the original side actually has.
 
-Levels 1 to 3 need no version-specific knowledge and are enough to say "this is what we saved". Level 4 is optional on the original side and must be loaded from the original deployment's own code. If you cannot load it, report "semantic check unavailable on original side" explicitly; do not fall back to the new package's version of it, and do not treat it as a pass.
+Levels 1 to 3 need no version-specific knowledge and, with the precondition above met, are enough to say "this is what we saved". Without it they are not: in the WAL control above, a restored main file passed levels 2 and 3 while SQLite returned the target data. Level 4 is optional on the original side and must be loaded from the original deployment's own code. If you cannot load it, report "semantic check unavailable on original side" explicitly; do not fall back to the new package's version of it, and do not treat it as a pass.
 
 ### 3. First takeover: the old side never had the component
 
@@ -142,7 +161,7 @@ Rollback code is rarely exercised in production, so the tests have to manufactur
 
 **Fault injection at defined points.** Kill the upgrader (a real `SIGKILL`) before the install step, after the install step but before migration, mid-migration, and after the new version starts. After each, assert the end state is either fully upgraded and verified, or fully original and verified. WiX's built-in failing deferred action and Windows Installer's rollback sequencing exist for the same reason.
 
-**Negative controls.** Every verification needs a test showing it can fail. Corrupt the snapshot (truncate it, flip bytes, swap in a valid but different database) and confirm rollback verification reports failure. The experiment above shows how many "obvious" corruptions pass a structural check alone, and a verifier that has never been seen to fail has not been shown to work.
+**Negative controls.** Every verification needs a test showing it can fail. Corrupt the snapshot (truncate it, flip bytes, swap in a valid but different database) and confirm rollback verification reports failure. Include the crash-leftover WAL case: a writer commits target data in WAL mode with checkpointing held off and is killed without closing, then the restore runs. Verification must reject that state, or the restore must have moved the leftover files aside first; a main-file hash plus `integrity_check` alone passes it. Pair it with the positive control, the same snapshot restored to a fresh isolated path, which must read back as the original. The experiment above shows how many "obvious" corruptions pass a structural check alone, and a verifier that has never been seen to fail has not been shown to work.
 
 **First-takeover fixture.** Build a fixture where the original deployment genuinely lacks the new component (not one with the component stubbed out), and run the full roll-back path against it.
 
@@ -160,18 +179,20 @@ The first file looks like coverage (it exercises all three call sites) but pins 
 - [ ] Verification functions take a required `side` argument (`original` or `target`). No default, and no inference from persisted state.
 - [ ] Original-side verification imports nothing from the new package. Enforce it with a test that runs the check with the new package absent from the module path.
 - [ ] The snapshot manifest records what existed (files, databases, component owners, schema versions) and a content hash per file, written at snapshot time and verified after the write finishes.
-- [ ] Restore verification includes at least hash equality plus a structural check; do not rely on `integrity_check` alone.
+- [ ] Before restoring, every client and handle on the database is stopped or excluded, and stays excluded until verification passes and the service is reactivated.
+- [ ] The restore produces a coherent database state: the snapshot plus only its own journal/WAL/SHM files (none, for a backup-API or `VACUUM INTO` snapshot). Pre-restore files, including any leftover `-wal`, are moved aside together and kept, never deleted on their own.
+- [ ] Restore verification includes at least hash equality over the whole state SQLite will read plus a structural check, taken before any connection opens the restored files; do not rely on `integrity_check` alone, or on a main-file hash alone.
 - [ ] A missing capability on the original side is reported as "unverifiable", never silently as success and never as failure of the restore.
 - [ ] First-takeover components are listed as absent in the manifest, and the original-side verifier treats that as expected.
 - [ ] "Rolled back" is a state entered only after original-side verification passes. Keep pre-restore files until then.
 - [ ] The rollback is idempotent and journaled, so a kill during rollback resumes safely.
-- [ ] Tests: kill before install, after install, mid-migration; a corrupted snapshot is detected; a wrong-but-valid database is detected; a first-takeover fixture; each call site's `side` pinned by a fast default test, and a mutation pass over those literals.
+- [ ] Tests: kill before install, after install, mid-migration; a corrupted snapshot is detected; a wrong-but-valid database is detected; a crash-leftover WAL holding target data is detected or moved aside before verification; a first-takeover fixture; each call site's `side` pinned by a fast default test, and a mutation pass over those literals.
 - [ ] Where practical, make schema changes backward compatible (expand/contract) so the old version can read the new state; keep the snapshot as the fallback, not the plan.
 - [ ] Escalation messages say which side failed and which check, so an operator can tell a broken restore from a verifier that asked the wrong question.
 
 ## Validation Scope and Sources
 
-The experiment and the mutation run were executed locally on Python 3.12.3 with SQLite 3.45.1 on Linux, as isolated scripts with temporary databases. They are models of the failure shape, not tests of any particular platform. The mutation result depends on the toy flow's structure and the two hand-written test files; it shows a mechanism, not a rate. Pages marked above as seen only through search excerpts (Mozilla, Chrome, the Fedora scriptlet wiki, WiX) were not read in full. The Helm hook source question and the AVB README were not resolved.
+The experiment and the mutation run were executed locally on Python 3.12.3 with SQLite 3.45.1 on Linux, as isolated scripts with temporary databases. They are models of the failure shape, not tests of any particular platform. The mutation result depends on the toy flow's structure and the two hand-written test files; it shows a mechanism, not a rate. The leftover-WAL control was run separately, 5 times, on the same Python 3.12.3 / SQLite 3.45.1 Linux environment, with the writer in a forked child process that had exited before the parent restored and checked; all 5 runs gave the results in its table. Pages marked above as seen only through search excerpts (Mozilla, Chrome, the Fedora scriptlet wiki, WiX) were not read in full. The Helm hook source question and the AVB README were not resolved.
 
 Primary references:
 
@@ -182,4 +203,4 @@ Primary references:
 - A/B and verified boot: [Android A/B updates](https://source.android.com/docs/core/ota/ab), [Verified Boot](https://source.android.com/docs/security/features/verifiedboot/verified-boot), [libavb avb_slot_verify.h](https://android.googlesource.com/platform/external/avb/+/119251268c594d115a1eff31b3ec32108b88b593/libavb/avb_slot_verify.h).
 - Browsers: [Firefox downgrade risks](https://support.mozilla.org/en-US/kb/risks-downgrading-older-version-firefox-shared-pro), [Chrome downgrade guide](https://support.google.com/chrome/a/answer/7125792).
 - Helm: [helm rollback](https://helm.sh/docs/helm/helm_rollback/), [chart hooks](https://helm.sh/docs/topics/charts_hooks/).
-- SQLite: [PRAGMA](https://sqlite.org/pragma.html), [VACUUM](https://sqlite.org/lang_vacuum.html).
+- SQLite: [PRAGMA](https://sqlite.org/pragma.html), [VACUUM](https://sqlite.org/lang_vacuum.html), [Write-Ahead Logging](https://sqlite.org/wal.html), [How To Corrupt An SQLite Database File](https://sqlite.org/howtocorrupt.html).
