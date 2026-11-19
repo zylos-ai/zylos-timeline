@@ -111,7 +111,7 @@ I ran this as a separate control on the same Python 3.12.3 / SQLite 3.45.1 envir
 | Backup copied over `live.db`; crash-leftover `live.db-wal` (12,392 bytes) still present | yes | ok | `target`, and `owner_state` is listed | 5 of 5 |
 | Same backup copied to a fresh directory with no WAL | yes | ok | `original` | 5 of 5 |
 
-The first row is the dangerous one: every check from levels 1 to 3 below passes, and the database the old version will read is the target state, including a table the original never had. The hash was right about the file it hashed; it was the wrong unit of identity. The second row is the positive control: the same backup is a correct original state when nothing else at its path is read with it.
+The first row is the dangerous one: the main file exists, its hash matches the backup and `integrity_check` returns ok, yet the database the old version will read is the target state, including a table the original never had. The hash was right about the file it hashed; it was the wrong unit of identity. The second row is the positive control: the same backup is a correct original state when nothing else at its path is read with it. Checks on the main file alone cannot tell the two rows apart; level 1 below, which also looks for a stray WAL at the restored path, rejects the first.
 
 A hash taken over the whole state SQLite will read proves identity with the snapshot; it does not prove the snapshot was a good state to begin with. That is a separate check, made when the snapshot is taken, and it is itself an original-side check using only what the original version has.
 
@@ -130,7 +130,7 @@ Make the side a required parameter with no default. A default silently picks a s
 
 Before any check, establish what is being checked. For SQLite the unit is not the main file: "The state of an SQLite database is controlled by both the database file and the journal file", and among the actions SQLite lists as likely to lead to corruption is "Overwriting a database file with another without also deleting any hot journal associated with the original database" ([How To Corrupt An SQLite Database File](https://sqlite.org/howtocorrupt.html)). So restore is a step with a precondition:
 
-- Stop or exclude every client that may hold the database open (the failed new version, the old version, sidecar tools, the verifier itself) before restoring, and keep them excluded until verification finishes. SQLite warns against "Backup or restore while a transaction is active".
+- Stop or exclude every client that may hold the database open (the failed new version, the old version, sidecar tools) before restoring, and keep them excluded until verification passes. The verifier is no exception until the file-level checks (levels 1 and 2 below) have passed on the unopened files; only then does it open its own dedicated connection for levels 3 and 4, and business access resumes only after those pass. SQLite warns against "Backup or restore while a transaction is active".
 - Restore a coherent set: the database plus whatever journal, `-wal` and `-shm` files belong with it. A snapshot taken with the backup API or `VACUUM INTO` is a self-contained file, so the coherent set at the restored path is that file with no journal or WAL beside it. The pre-restore files (database, journal, WAL, shared-memory file) move aside together as one unit and are kept as evidence (pattern 4); they are not mixed with the restored file.
 - Do not prescribe deleting a live WAL to make the problem go away. SQLite says "The WAL file is part of the persistent state of the database" and that "The only safe way to remove a WAL file is to open the database file using one of the sqlite3_open() interfaces then immediately close the database" ([WAL](https://sqlite.org/wal.html)). On a restore path that is not what you want either: opening the restored file next to the target's leftover WAL is what makes SQLite read the target data, and the same page says the last connection to close "does one last checkpoint", which would fold that data into the main file.
 
@@ -138,10 +138,10 @@ Then rank checks by how little they assume:
 
 1. Existence and size of the restored files, and absence of any journal, WAL or shared-memory file at the restored path that is not part of the snapshot.
 2. Content hash equal to the one recorded at snapshot time, over every file in the restored set, taken before any SQLite connection opens it.
-3. Structural integrity (`integrity_check` for SQLite, which is stronger than `quick_check`, which per the documentation skips UNIQUE and index-content verification).
+3. Structural integrity, on the dedicated verification connection opened after levels 1 and 2 pass (`integrity_check` for SQLite, which is stronger than `quick_check`, which per the documentation skips UNIQUE and index-content verification).
 4. Semantic schema check from a module that the original side actually has.
 
-Levels 1 to 3 need no version-specific knowledge and, with the precondition above met, are enough to say "this is what we saved". Without it they are not: in the WAL control above, a restored main file passed levels 2 and 3 while SQLite returned the target data. Level 4 is optional on the original side and must be loaded from the original deployment's own code. If you cannot load it, report "semantic check unavailable on original side" explicitly; do not fall back to the new package's version of it, and do not treat it as a pass.
+Levels 1 to 3 need no version-specific knowledge and, with the precondition above met, are enough to say "this is what we saved". Without it they are not: in the WAL control above, the main file alone passed the existence, hash and integrity checks while SQLite returned the target data. Level 4 is optional on the original side and must be loaded from the original deployment's own code. If you cannot load it, report "semantic check unavailable on original side" explicitly; do not fall back to the new package's version of it, and do not treat it as a pass.
 
 ### 3. First takeover: the old side never had the component
 
@@ -179,9 +179,9 @@ The first file looks like coverage (it exercises all three call sites) but pins 
 - [ ] Verification functions take a required `side` argument (`original` or `target`). No default, and no inference from persisted state.
 - [ ] Original-side verification imports nothing from the new package. Enforce it with a test that runs the check with the new package absent from the module path.
 - [ ] The snapshot manifest records what existed (files, databases, component owners, schema versions) and a content hash per file, written at snapshot time and verified after the write finishes.
-- [ ] Before restoring, every client and handle on the database is stopped or excluded, and stays excluded until verification passes and the service is reactivated.
+- [ ] Restore runs in this order: stop or exclude every business and old-version client and handle; restore the complete file set; with the files still unopened, check the file set and its hashes; only then open a dedicated verification connection for the structural and semantic checks; reopen business access only after all of them pass.
 - [ ] The restore produces a coherent database state: the snapshot plus only its own journal/WAL/SHM files (none, for a backup-API or `VACUUM INTO` snapshot). Pre-restore files, including any leftover `-wal`, are moved aside together and kept, never deleted on their own.
-- [ ] Restore verification includes at least hash equality over the whole state SQLite will read plus a structural check, taken before any connection opens the restored files; do not rely on `integrity_check` alone, or on a main-file hash alone.
+- [ ] Restore verification includes at least hash equality over the whole state SQLite will read, taken before any connection opens the restored files, plus a structural check on the dedicated verification connection afterwards; do not rely on `integrity_check` alone, or on a main-file hash alone.
 - [ ] A missing capability on the original side is reported as "unverifiable", never silently as success and never as failure of the restore.
 - [ ] First-takeover components are listed as absent in the manifest, and the original-side verifier treats that as expected.
 - [ ] "Rolled back" is a state entered only after original-side verification passes. Keep pre-restore files until then.
