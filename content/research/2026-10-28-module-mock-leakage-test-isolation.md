@@ -12,7 +12,7 @@ A test helper used Node's test runner to fake `spawnSync` from `node:child_proce
 
 The general lesson: **`restore()` undoes what the mock framework knows it did. It does not prove the process is back to its pre-test state.** Anything that captured a reference while the mock was live, or any global the tests share, can outlive the restore. Pass counts say nothing about this unless order, platform and isolation are controlled.
 
-I ran small experiments on **Node v24.17.0 (Linux)** and read the Node, Jest and Vitest docs. Where I did not reproduce the field report exactly, the article says so. Code marked "observed" was run; code marked "illustrative" was not.
+I ran small experiments on **Node v24.17.0 (Linux)** (the pool comparison used Node v24.22.1 and Vitest 5.1.1) and read the Node, Jest and Vitest docs. Where I did not reproduce the field report exactly, the article says so. Code marked "observed" was run; code marked "illustrative" was not.
 
 ## What `mock.module()` documents, and what it does not
 
@@ -61,9 +61,25 @@ So the same code gives different verdicts by isolation and by seed.
 
 **Jest.** Per the configuration docs, each test file gets its own independent module registry; `resetModules` resets it before each test; `jest.isolateModules(fn)` creates a sandbox registry for modules loaded inside the callback. `restoreMocks` is equivalent to calling `jest.restoreAllMocks()` before each test, and the docs warn that `restoreAllMocks()` only works for mocks created with `jest.spyOn()` and properties replaced with `jest.replaceProperty()`; "other mocks will require you to manually restore them." ESM mocking uses `jest.unstable_mockModule`, which the ESM docs describe as applying to the file and its ESM dependencies. `--randomize` shuffles tests within a file, seeded by `--seed`, and only with the default jest-circus runner. Note the scope: within a file, not across files.
 
-**Vitest.** `vi.mock` is hoisted above imports so the mock is registered before the import runs. Test isolation depends on `pool`: `threads` runs each file in a separate Worker, `forks` (the default) in a forked child process, `vmThreads` in a VM context on workers. `isolate` defaults to `true` and has no effect on the VM pools; the docs suggest disabling it only if the code "doesn't rely on side effects." `restoreMocks` restores spies from `vi.spyOn`; `unstubGlobals` and `unstubEnvs` undo `vi.stubGlobal` and `vi.stubEnv`. The docs warn that all three can break async *concurrent* tests, because one test's completion restores state another is using. Vitest shuffles with `--sequence.shuffle` and `--sequence.seed`.
+**Vitest.** `vi.mock` is hoisted above imports so the mock is registered before the import runs. Test isolation depends on `pool`: `threads` runs each file in a separate Worker, `forks` (the default) in a forked child process, `vmThreads` in a VM context inside a `threads` pool, and `vmForks` the same way inside child processes. `isolate` defaults to `true` and has no effect on the VM pools; the docs suggest disabling it only if the code "doesn't rely on side effects." `restoreMocks` restores spies from `vi.spyOn`; `unstubGlobals` and `unstubEnvs` undo `vi.stubGlobal` and `vi.stubEnv`. The docs warn that all three can break async *concurrent* tests, because one test's completion restores state another is using. Vitest shuffles with `--sequence.shuffle` and `--sequence.seed`.
 
-**Where leaks survive in both:** per-file registries do not isolate state that is not in a module registry. That includes `process.env`, `process.cwd()` (worker threads cannot `chdir`; Vitest's docs say so for `threads`), signal handlers, timers, open sockets, native addons shared in-process, and anything stored on built-in singletons. The Vitest docs also note that some native-language libraries segfault under `threads`. Process-level pools (`forks`) are the stronger boundary; thread and VM pools share one OS process.
+**Where leaks survive in both:** a per-file module registry resets modules, not the runtime around them. What else leaks between files depends on what the files actually share, and a shared process ID is not the right test:
+
+- **One JavaScript context shared by several tests or files.** This covers Node's `--test-isolation=none`, Jest or Vitest tests within one file, a Vitest worker reused with `isolate: false`, and a Vitest VM-pool worker. The VM pools give each file a fresh VM context, but `isolate` "has no effect on `vmThreads` and `vmForks` pools", and a worker keeps running files until it is recycled ("a worker's memory usage grows with every test file it runs"). In that case `process.env`, signal listeners and properties patched onto built-in module objects carry over to the next test or file (all three observed below).
+- **Separate Worker threads.** These JavaScript surfaces are per isolate, not per process. Node's docs: "`process.env` is a copy of the parent thread's environment variables, unless otherwise specified. Changes to one copy are not visible in other threads, and are not visible to native add-ons (unless `worker.SHARE_ENV` is passed as the `env` option to the `Worker` constructor)." They also say: "Signals are not delivered through `process.on('...')`." Threads do share truly process-level and native state: the working directory (workers cannot call `process.chdir()`, and Vitest's docs say so for `threads`, but a `chdir` in the main thread is visible to them), the environment native add-ons see, and native add-on state. The Vitest docs note that some native-language libraries segfault under `threads`.
+- **External resources.** Temp files and directories, databases, servers and detached child processes are outside every boundary here. Process exit releases only what the OS ties to that process.
+
+Observed (Node v24.22.1, Vitest 5.1.1, Linux): two test files each record what they see, then patch `child_process.spawnSync` (through both `import` and `require`), set `process.env.LEAK_ENV`, add a `SIGUSR2` listener and set a global, and never restore. Runs used `--maxWorkers=1 --no-file-parallelism`.
+
+| Pool | Second file saw patched built-in / env / listener / global | Both files in one PID |
+| --- | --- | --- |
+| `forks` | no / no / no / no | no |
+| `threads` | no / no / no / no | yes |
+| `vmThreads` | yes / yes / yes / no | yes |
+| `vmForks` | yes / yes / yes / no | yes |
+| `forks` or `threads` with `--no-isolate` | yes / yes / yes / yes | yes |
+
+A plain Worker probe on the same Node agreed. A `spawnSync` patched in the main thread was not seen in a Worker. A Worker's `process.env` write was invisible to the main thread unless `SHARE_ENV` was passed. A Worker's `SIGINT` listener did not appear in the main thread's `process.listeners('SIGINT')`. A main-thread `chdir('/')` did show in the Worker's `process.cwd()`. So `forks` with isolation (one process per file in the run above) is the strongest boundary, and it also separates working directory and native state. `vmForks` puts a process boundary between workers, not between files that share a worker.
 
 ## Why leaks look random
 
@@ -87,6 +103,7 @@ assert.equal(JSON.parse(r.stdout).error.code, 'ETIMEDOUT');
 **3. Add a tripwire.** After the isolated tests, assert in the parent that the real implementation is back. Check identity and also shape, so a replaced-by-another-fake case is caught:
 
 ```js
+// guards the direct built-in surface only; it does not detect modules that cached the fake
 const real = require('node:child_process').spawnSync;   // captured at file top, before any mock
 test('tripwire: real spawnSync is back', async () => {
   assert.equal((await import('node:child_process')).spawnSync, real);
@@ -96,7 +113,7 @@ test('tripwire: real spawnSync is back', async () => {
 });
 ```
 
-A tripwire only guards what it names. A broader version snapshots, before and after each file: key built-in function identities, `process.env`, `process.cwd()`, `process.listeners('SIGINT')`, and `process.getActiveResourcesInfo()` (available on Node 24.17; listed in the process docs). Diff the snapshots and fail on drift.
+A tripwire only guards what it names. This one checks what a fresh `require` or `import` of `node:child_process` returns. It does not certify cached consumers: a CommonJS module that kept the mocked object or destructured `spawnSync`, or an ES module bound to it, while the mock was live (cases 2 and 3 above) still holds the fake while every assertion here passes. Containing those is the job of the child process in pattern 2. A broader version snapshots, before and after each file: key built-in function identities, `process.env`, `process.cwd()`, `process.listeners('SIGINT')`, and `process.getActiveResourcesInfo()` (available on Node 24.17; listed in the process docs). Diff the snapshots and fail on drift.
 
 **4. Run negative controls.** A guard that has never failed is unproven. Reintroduce the leak on purpose (skip the child process, or overwrite the property) and confirm the suite fails. I ran a small version: replace `cp.spawnSync`, then assert that the tripwire's comparison throws, then restore in `finally` (observed, passes). In CI, keep one permanent negative control or run it as a mutation step when the isolation helper changes.
 
@@ -111,7 +128,7 @@ A tripwire only guards what it names. A broader version snapshots, before and af
 Agents reach for module mocks readily, because a failing path (a timeout, a missing binary) is easy to fake that way, and they tend to verify by running only the file they just wrote, which hides cross-file effects. Reviewers should look beyond the pass count:
 
 - Does the mock restore *and* does anything cache a reference first loaded under it?
-- Does the test run under `--test-isolation=none` or a thread pool anywhere?
+- Does the test run under `--test-isolation=none`, `isolate: false` or a Vitest VM pool anywhere?
 - Is there a platform skip whose absence would change other results?
 - Is there a tripwire or snapshot diff, and a negative control showing it can fail?
 - Did the author run the suite with a randomized order on the CI platform, not just the one file locally?
@@ -134,12 +151,14 @@ The leftover `npm root -g` trap is a reminder that fakes also leave data behind:
 
 - Node.js test runner, `mock.module()`, `MockModuleContext.restore()`, execution model, randomization: https://nodejs.org/docs/latest-v24.x/api/test.html
 - Node.js `process.getActiveResourcesInfo()`: https://nodejs.org/docs/latest-v24.x/api/process.html
+- Node.js Worker threads (`process.env` copy, `SHARE_ENV`, signals): https://nodejs.org/docs/latest-v24.x/api/worker_threads.html
 - Jest object (`isolateModules`, `restoreAllMocks`, `resetModules`): https://jestjs.io/docs/jest-object
 - Jest configuration (`restoreMocks`, `resetModules`): https://jestjs.io/docs/configuration
 - Jest CLI (`--randomize`, `--seed`, `--detectOpenHandles`): https://jestjs.io/docs/cli
 - Jest ECMAScript modules (`unstable_mockModule`): https://jestjs.io/docs/ecmascript-modules
 - Vitest `pool`: https://vitest.dev/config/pool
 - Vitest `isolate`: https://vitest.dev/config/isolate
+- Vitest `vmMemoryLimit` (worker recycling in VM pools): https://vitest.dev/config/vmmemorylimit
 - Vitest `restoreMocks`, `unstubGlobals`, `unstubEnvs`: https://vitest.dev/config/restoremocks , https://vitest.dev/config/unstubglobals , https://vitest.dev/config/unstubenvs
 - Vitest `sequence` (shuffle, seed): https://vitest.dev/config/sequence
 - Vitest module mocking (hoisting): https://vitest.dev/guide/mocking/modules
