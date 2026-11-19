@@ -70,7 +70,7 @@ Rows two and three have byte-identical journals and opposite realities. This is 
 
 ## 2. Process Identity Beyond the PID
 
-A PID is a reusable integer. `pidfd_open(2)` says it directly: signalling by PID can hit "the wrong process if the originally intended target process has terminated and its PID has been recycled for another process", whereas a PID file descriptor "is a stable reference to a specific process" [docs]. On this host `pid_max` is 4194304 [verified], so reuse within a short window is unlikely, but containers, PID namespaces, and lowered `pid_max` settings change the odds. A recovery process that sends a signal to a stale PID is a correctness bug even if rare.
+A PID is a reusable integer. The `pidfd_send_signal(2)` man page says it directly: signalling by PID can hit "the wrong process if the originally intended target process has terminated and its PID has been recycled for another process", whereas a PID file descriptor "is a stable reference to a specific process" [docs, `pidfd_send_signal(2)`]. On this host `pid_max` is 4194304 [verified], so reuse within a short window is unlikely, but containers, PID namespaces, and lowered `pid_max` settings change the odds. A recovery process that sends a signal to a stale PID is a correctness bug even if rare.
 
 ### Linux identity tuple
 
@@ -89,13 +89,15 @@ function identity(pid) {
 
 **[verified]** I created a symlink named `a) b` pointing to `/bin/sleep` so that `comm` was `(a) b)`. A naive `s.split(' ')[21]` returned `0`; the last-paren parse returned the correct starttime `636098888`. A process that has exited returns `null` (the `/proc` entry is gone).
 
-The tuple `(boot_id, pid, starttime)` makes a false match require the same boot, same PID and same start tick. That is not a mathematical guarantee (two processes can start in the same tick with the same recycled PID in theory), but it is a standard practical identity check. Verify the tuple *immediately before* signalling; there is still a small time-of-check/time-of-use window, which only a pidfd closes.
+The tuple `(boot_id, pid, starttime)` makes a false match require the same boot, same PID and same start tick. That is not a mathematical guarantee (two processes can start in the same tick with the same recycled PID in theory), but it is a standard practical identity check. When I forced immediate PID reuse (the test in the pidfd section below), the replacement started in the same 10 ms tick as the original in 3 of 5 runs and the tuple matched [verified], so the gap is real when reuse is fast. Verify the tuple *immediately before* signalling; there is still a small time-of-check/time-of-use window. A pidfd closes it only if you open the pidfd *first* and check the identity *afterwards* (next section).
 
 ### pidfd
 
 - `pidfd_open(2)` returns a descriptor for an existing PID; `pidfd_send_signal(2)` signals through it; `clone(2)` with `CLONE_PIDFD` (since Linux 5.2) gives you a pidfd for the child at creation time, with no window in which the PID could be recycled [docs, `clone(2)`, `pidfd_open(2)`, `pidfd_send_signal(2)`].
 - A pidfd is a process-local descriptor. It does not survive the parent's death unless inherited by another process. So it solves "do not signal the wrong process" while the supervisor lives, but it is not a durable record. Persist the tuple for crash recovery.
 - `pidfd_open` for an already-reaped PID fails; I confirmed `ESRCH` ("No such process") from Python's `os.pidfd_open` after `wait()` [verified]. Also verified: `signal.pidfd_send_signal(fd, SIGKILL)` killed a child from Python on this kernel.
+- **Order matters: pin first, then check.** A pidfd refers to whatever process holds the PID at the moment `pidfd_open` runs, not to a process you looked at earlier. `pidfd_open(2)` promises that the PID has not been recycled only for your own child that has not been reaped yet, and only if `SIGCHLD` is not ignored [docs, `pidfd_open(2)` NOTES]; a recovery process is not in that position. If you check the tuple, the old child then exits and is reaped, and its PID goes to an unrelated process, `pidfd_open` pins the unrelated process and the signal goes there. So: `pidfd_open(n)`, then read `/proc/n/stat` and compare the tuple, and signal through the pidfd only on a match. If the pinned process has exited in between, the signal fails with `ESRCH` instead of reaching anyone else [docs, `pidfd_send_signal(2)`].
+- **[verified] Negative control.** In a fresh PID namespace (`sudo unshare --pid --fork --mount-proc`, so writing `/proc/sys/kernel/ns_last_pid` forces the next PID), a Python script started A, recorded its tuple, killed and reaped A, and started B on A's PID. With B started 50 ms after A: check-then-open passed the check and SIGTERM killed B in 5 of 5 runs; open-then-check saw B's different starttime and sent nothing in 5 of 5 runs. With B started immediately, open-then-check still signalled B in 3 of 5 runs because both started in the same tick (the limit noted in the tuple section). `CLONE_PIDFD` at creation remains the only option with no window at all.
 - **Node.js does not expose pidfds.** On Node 24.22.1 the `ChildProcess` object has no pidfd-related property or method, and the public `uv.h` header (libuv 1.52.1) contains no `pidfd` symbol [verified by inspection]. I did not check libuv's internals, so I cannot say whether it uses pidfds privately. Practical consequence: in Node, use the `/proc` tuple, or write a small helper in another language (Python has `os.pidfd_open`, as above).
 
 ### macOS
@@ -176,7 +178,7 @@ Establish first that the old controller is really dead: check its recorded ident
 | `started:true`, `pid:null`, token scan finds survivors | Child (or descendant) is still running | Do not relaunch. Wait, or adopt the process by identity and tail it. |
 | `started:true`, `pid:null`, no survivors, lock FREE, no ready file, no claim file | Probably never started or died before doing work, but a child that already finished is indistinguishable from one that never started unless it left a completion marker | Safe only if the operation is idempotent or has a completion marker. Otherwise refuse. |
 | `started:true`, `pid:null`, ready file/claim exists | Child launched; read its identity from the file | Continue as for the "pid recorded" row |
-| `started:true`, `pid:n`, tuple matches a live process | The same child is alive | Adopt, wait, or signal via the verified tuple (best: via a pidfd you obtain after the check) |
+| `started:true`, `pid:n`, tuple matches a live process | The same child is alive | Adopt, wait, or signal. To signal: `pidfd_open(n)` first, then re-check the tuple, and signal through the pidfd only if it still matches; on mismatch or `ESRCH`, treat it as the next row |
 | `started:true`, `pid:n`, tuple mismatch or `/proc/n` missing | The child exited (or the PID was reused). It did not necessarily succeed. | Look for the exit/completion marker. Without one, treat outcome as unknown. |
 | boot_id differs from the journal's | Reboot; all PIDs are meaningless, and the child was certainly terminated | Compensate on the basis of partial work, not "still running" |
 
@@ -213,7 +215,7 @@ Guidelines:
 - Write intent (with a fresh `launchId`) to the journal and fsync file + directory *before* spawning. Use field names that say "intent" versus "launched".
 - Put `launchId` in the child's environment, and have the child (or its wrapper) atomically publish `{launchId, pid, starttime, boot_id}` before doing work.
 - Record `(boot_id, pid, starttime)` rather than a bare PID; parse `/proc/<pid>/stat` after the last `)`.
-- Prefer a pidfd (`CLONE_PIDFD` or `pidfd_open` right after the identity check) for signalling where your runtime allows it; in Node, do the identity check immediately before `process.kill` and accept the residual window.
+- Prefer a pidfd for signalling where your runtime allows it: `CLONE_PIDFD` at creation, or in recovery `pidfd_open` *first* and then the identity check (never check first and open after); in Node, do the identity check immediately before `process.kill` and accept the residual window.
 - Run long children with output redirected to files, not pipes to the parent.
 - Hold a lock the child inherits (`flock(1)` wrapper) or run in a named transient unit/cgroup so recovery can ask "is anything of mine alive".
 - Make the child's work idempotent where possible, and write a completion marker last.
@@ -223,9 +225,9 @@ Guidelines:
 
 ## Sources
 
-- Linux man-pages (local copies, version 6.7): `proc_pid_stat(5)`, `proc_pid_environ(5)`, `pidfd_open(2)`, `pidfd_send_signal(2)`, `clone(2)`, `flock(2)`, `fsync(2)`. Online: https://man7.org/linux/man-pages/man2/pidfd_open.2.html, https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html, https://man7.org/linux/man-pages/man2/flock.2.html, https://man7.org/linux/man-pages/man2/fsync.2.html
+- Linux man-pages (local copies, version 6.7): `proc_pid_stat(5)`, `proc_pid_environ(5)`, `pidfd_open(2)`, `pidfd_send_signal(2)`, `clone(2)`, `flock(2)`, `fsync(2)`. Online: https://man7.org/linux/man-pages/man2/pidfd_open.2.html, https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html, https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html, https://man7.org/linux/man-pages/man2/flock.2.html, https://man7.org/linux/man-pages/man2/fsync.2.html
 - Node.js `child_process` docs (v24): https://nodejs.org/docs/latest-v24.x/api/child_process.html (`subprocess.pid`, `options.detached`, `subprocess.unref()`)
 - systemd: https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html and https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html
 - runit `runsv(8)`: https://smarden.org/runit/runsv.8.html
 - Apple XNU headers (`bsd/sys/proc_info.h`, `bsd/sys/event.h`): https://github.com/apple-oss-distributions/xnu
-- Reproductions: run on this host (Linux 6.17.0-1021-nvidia, Node v24.22.1, Python 3.12.3, util-linux `flock`/`lslocks`, ext4), in a scratch directory that was removed afterwards. Not run: systemd transient units (no user bus available), anything on macOS, the `SIGSTOP` test variant.
+- Reproductions: run on this host (Linux 6.17.0-1021-nvidia, Node v24.22.1, Python 3.12.3, util-linux `flock`/`lslocks`, ext4), in a scratch directory that was removed afterwards. The PID-reuse negative control ran as root inside a fresh PID namespace (`unshare --pid`), the only place it was safe to set `ns_last_pid`. Not run: systemd transient units (no user bus available), anything on macOS, the `SIGSTOP` test variant.
