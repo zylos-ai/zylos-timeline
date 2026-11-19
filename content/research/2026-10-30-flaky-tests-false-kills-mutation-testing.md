@@ -153,7 +153,7 @@ Record, for each mutant, the test or tests whose failure caused the kill. This m
 
 - **Spot a repeat offender.** If one test "kills" many unrelated mutants, check it against the clean tree first. In the incident, seven mutants had one killer.
 - **Check the killer on the clean tree, many times, in its full context.** A rerun of the mutant only shows that the failure repeats under the mutant. Rerunning the unmutated tree with the identical invocation (same file selection, concurrency and environment as the mutant run) and then looking for the named killer in each returned failure set tests the claim that it is not flaky. Do not run the killer alone: an overlap-only flake like the incident's passes alone every time, because filtering the run removes the polluting file that causes the failure. A smaller group is valid only if the identical group, including every file that shares state with the killer, runs on both trees. The arithmetic above applies: 5 runs catch a 20% flake about two times in three, 10 runs about nine times in ten. Each check costs one run of the mutant invocation, not one run of a single test, which is why only reproduced kills get it.
-- **Does the killer reach the mutated code?** Shi et al. require that a test cover the mutated code before it is credited. A cheap approximation (my suggestion, not a tool feature) is to read the failure message: a freshness-window mutant "killed" by an assertion about a config value is suspicious on its face. The 2024 de-duplication study builds on a related idea, that failures already seen on clean runs identify flaky failures.
+- **Does the killer reach the mutated code?** Shi et al. require that a test cover the mutated code before it is credited. A cheap approximation (my suggestion, not a tool feature) is to read the failure message: a freshness-window mutant "killed" by an assertion about a config value is suspicious on its face. The 2024 de-duplication study works from the failure itself in a related way: it compares a killed mutant's failure with the same test's prior flaky failures (matching stack traces), and treats a match as a sign that the kill came from flakiness.
 
 ### 4. Remove shared state; do not rely on detection alone
 
@@ -193,10 +193,9 @@ async function judge(mutant, { runSuite, reruns = 1, cleanRepeats = 5 }) {
     (await runSuite('clean')).failed.forEach((t) => cleanFailed.add(t));
   }
   audit.cleanFailed = [...cleanFailed];
-  const killedBy = [...stable].filter((t) => !cleanFailed.has(t)); // attribute afterwards
-  return killedBy.length && !cleanFailed.size
-    ? { verdict: 'KILLED', killedBy, ...audit }
-    : { verdict: 'FLAKY-KILL', countsAs: 'SURVIVED', ...audit };
+  return cleanFailed.size                        // any clean failure: control is red
+    ? { verdict: 'FLAKY-KILL', countsAs: 'SURVIVED', ...audit }
+    : { verdict: 'KILLED', killedBy: [...stable], ...audit };
 }
 ```
 
