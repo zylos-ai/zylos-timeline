@@ -61,20 +61,23 @@ The safer rule is narrower: establish the trusted anchor first, then apply stric
 
 `O_NOFOLLOW` protects only the final pathname component. An intermediate directory can still be a symlink. A fallback implementation therefore has to walk one component at a time, opening each directory relative to the descriptor from the previous step and retaining the resulting descriptors until the operation finishes.
 
+A held descriptor preserves identity, not location. It keeps referring to the same directory across renames, but nothing keeps that directory beneath the root. Renaming an ancestor of the anchor is harmless: the anchor and its descendants move together. Moving a descendant out of the anchor is different. If another writer renames `state/agents` to a directory outside `state`, a file later created relative to a retained `agents` descriptor lands outside the root, while the same relative name resolved again from the root descriptor fails with `ENOENT`. The walk-and-hold fallback is therefore sound only for a tree whose ownership excludes cross-boundary relocation, meaning no other writer can rename entries out of it, or on a platform where the held handles themselves prevent renames. Go's notes on `os.Root` draw this platform line: on Unix its root descriptor tracks the directory across renames, while on Windows "The open handle prevents that directory from being renamed or deleted until the Root is closed."
+
 ## A Linux Contract for a Strict Owned Tree
 
 The following is a target contract, not a description of what every standard library already guarantees:
 
 1. A trusted launcher or configuration source identifies the environment-owned parent. Passing an already-open parent directory descriptor is stronger than passing an absolute string.
-2. Open or create the component root relative to that parent with no-follow semantics. Validate the opened object with `fstat()`; do not infer its type from the pathname.
+2. Open or create the component root relative to that parent with no-follow semantics. Acquire it as in step 7 and validate the opened object with `fstat()`; do not infer its type from the pathname.
 3. Keep the root descriptor for the component's lifetime. Do not convert it back into a pathname as the authority for later operations.
 4. Accept only relative managed names. Reject absolute inputs and parent traversal before invoking the filesystem operation.
-5. On Linux 5.6 and later, resolve descendants with `openat2(rootfd, relative, ...)` using `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`. Add explicit regular-file or directory checks for the expected object type.
-6. Without `openat2()`, walk each component with descriptor-relative `openat()` calls and `O_NOFOLLOW`, checking every opened object. This is more code and needs platform-specific review.
+5. On Linux 5.6 and later, resolve descendants with `openat2(rootfd, relative, ...)` using `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`. Add explicit regular-file or directory checks for the expected object type, acquired as in step 7. The kernel's guarantee covers resolution: every component was a descendant of `rootfd` when that call resolved it. It does not keep a returned descriptor's object beneath the root afterwards, so resolve each operation again from `rootfd` rather than using a descendant directory descriptor as a later anchor.
+6. Without `openat2()`, walk each component with descriptor-relative `openat()` calls and `O_NOFOLLOW`, checking every opened object as in step 7. Use this fallback only where the ownership contract excludes moving managed directories out of the root, or where the platform's held handles prevent such renames (see above). This is more code and needs platform-specific review.
+7. Acquire objects so that opening them cannot block or reach a device before `fstat()` checks their type. An ordinary `open()` of a FIFO, for reading or for writing, blocks until the other end is opened, and opening a device node reaches its driver; both happen before `fstat()` can reject the object. Directory components opened with `O_DIRECTORY` fail on a non-directory. For other objects, open with `O_NONBLOCK | O_NOCTTY`, check with `fstat()`, then clear `O_NONBLOCK` if blocking I/O is wanted: a FIFO then opens at once for reading and fails with `ENXIO` for writing when it has no reader. `O_NONBLOCK` still opens the object, so a tree that may contain device nodes needs `O_PATH`, `fstat()`, and a reopen of the checked object through `/proc/self/fd/N`, or an ownership assumption that no writer of the tree can create special files in it (an unprivileged user can create a FIFO). Writable opens follow the same rule: create new files with `O_CREAT | O_EXCL`, and for an existing file defer truncation to `ftruncate()` after the type check, since the manual leaves `O_TRUNC` unspecified for objects other than regular files, FIFOs, and terminal devices.
 
 `RESOLVE_NO_XDEV` is a separate decision. It blocks mount-point traversal, including bind mounts, so it should not be smuggled into a no-symlink policy. Likewise, symlink controls do not by themselves reject hard links, device nodes, FIFOs, sockets, or another trusted writer replacing a regular file. Each belongs to a separate threat-model decision.
 
-The core property is simple: after the anchor is acquired, the kernel resolves the operation relative to the anchored directory object. A rename of an ancestor changes a name, not the object represented by the open descriptor.
+The core property is simple: after the anchor is acquired, the kernel resolves each operation relative to the anchored directory object. A rename of an ancestor of the anchor changes a name, not the object represented by the open descriptor. A descendant moved out of the anchor is no longer reachable by resolving from it, but a descriptor already held for that descendant still is, which is why step 5 resolves each operation from the root.
 
 ## Portable Runtime Choices
 
@@ -109,7 +112,7 @@ Expected to succeed:
 - a legitimate symlink in an ancestor before the ownership boundary;
 - an owned root located on an approved bind mount, if mount crossing is allowed;
 - ordinary directories and regular files below the root;
-- continued descriptor-relative access to the same directory object after an ancestor rename.
+- continued descriptor-relative access to the same directory object after a rename of an ancestor of the anchor.
 
 Expected to fail:
 
@@ -118,14 +121,15 @@ Expected to fail:
 - an absolute input or `..` escape;
 - a final escaping symlink followed by a trailing slash;
 - a Windows junction or other reparse-point escape;
-- a device, FIFO, or socket where the contract requires a regular file;
+- a device, FIFO, or socket where the contract requires a regular file, for readable and writable opens, rejected without the open blocking on the FIFO;
+- where another writer may rename entries, a managed directory moved out of the root between operations receiving a later write;
 - a concurrent parent-directory swap that attempts to redirect a write outside the root.
 
 Mount crossing and hard links need their own tests because no-symlink resolution does not decide either policy. The test suite should also include a known-bad concurrent swap so a passing result proves that the detector can actually observe the failure mode.
 
 ## Limits of the Model
 
-An anchored directory capability controls pathname resolution; it does not make every writer trustworthy. If another process already has write access to the same directory, it may still replace file contents or names within the permitted tree. Permissions, process isolation, ownership, and write protocols remain necessary.
+An anchored directory capability controls pathname resolution; it does not make every writer trustworthy. If another process already has write access to the same directory, it may still replace file contents or names within the permitted tree, or move entries out of it. Permissions, process isolation, ownership, and write protocols remain necessary.
 
 The model also does not prescribe one policy for read-only external trees. Following a link that stays within a declared input root may be correct, while following any link in mutable private state may violate the component's integrity contract. Document those as separate interfaces so a compatibility exception cannot silently weaken the writable boundary.
 
