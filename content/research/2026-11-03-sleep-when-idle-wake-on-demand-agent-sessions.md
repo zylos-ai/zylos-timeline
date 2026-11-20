@@ -12,7 +12,7 @@ A host that runs several long-lived agent sessions (each an LLM CLI process hold
 
 Five conclusions, each expanded below:
 
-1. **Demand is deliverable, unexpired, addressed-to-this-incarnation work, and nothing else.** Run-scoped control messages (for example, "exit") must carry the run identity they were meant for and die when that run ends.
+1. **Demand is deliverable, unexpired work addressed to the durable session, and nothing else.** Only run-scoped control messages (for example, "exit") are addressed to one incarnation: they carry the run identity they were meant for, never count as demand, and die when that run ends.
 2. **Producers must never ask "is the consumer awake?"** They enqueue unconditionally; the queue is the wake signal. This is how socket activation, Knative, KEDA, Durable Objects and Lambda all work. Buffering alone does not make the work safe: that takes an acknowledged durable enqueue, a defined expiry policy and idempotent completion.
 3. **Gating wake on dependency health trades churn for silent stalls.** Choose one deliberately, back off on actual start attempts only, reset that history only after sustained success, and make the gated state visible, including the work waiting behind it.
 4. **Write intent before acting, and flush shared state before sleeping.** Once the process has stopped, check for demand again, so work that arrived mid-stop is not left waiting. On restart, re-derive the truth from durable state rather than trusting memory.
@@ -29,7 +29,7 @@ The defect is that the message was addressed to an *incarnation* (a particular r
 - **Instance identity in Kubernetes.** Object names can be reused, but a UID is distinct for every object created over the cluster's lifetime, precisely "to distinguish between historical occurrences of similar entities" ([Kubernetes: Names and UIDs](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/)). Separately, `metadata.generation` is a sequence number for a generation of the desired state ([ObjectMeta reference](https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/object-meta/)), which controllers compare against what they have observed to detect stale status.
 - **Erlang references.** A reference is a term unique among connected nodes, created with `make_ref/0` ([Erlang data types](https://www.erlang.org/doc/system/data_types.html)). Since OTP 24, `gen_server:call` uses process aliases so that a reply arriving after a timeout is never delivered to the caller ([gen_server docs](https://www.erlang.org/docs/25/man/gen_server)). Before that, callers had to discard stray late replies themselves.
 
-**Recommendation.** Give every process start a monotonically increasing run ID (an epoch). Classify every message as either *durable work* (addressed to the session, survives restarts) or *run-scoped control* (addressed to one run ID). The wake predicate counts only durable work that is unexpired and deliverable now: an item that carries a future retry time is queued but not yet demand. Any eligible item wakes the session, so a session can sleep only while the eligible queue is empty. Compute demand independently of any health gate (section 3): the gate decides whether to *start*, not whether work is *waiting*, so a blocked session still reports its queued work. Run-scoped control messages are bound to their run ID, ignored by the wake predicate, and deleted or marked expired when that run ends. A control message that names a dead run is not a stale request; it is garbage, and the receiver rejects it just as a fenced storage service rejects an old token.
+**Recommendation.** Give every process start a monotonically increasing run ID (an epoch). Classify every message as either *durable work* (addressed to the session, survives restarts) or *run-scoped control* (addressed to one run ID). The wake predicate counts only durable work that is unexpired and deliverable now: an item that carries a future retry time is queued but not yet demand. When that time arrives the item becomes demand with no new enqueue, so the supervisor must check on the clock as well as on arrival: evaluate the predicate periodically, or arm a timer for the earliest retry time among queued items. Any eligible item wakes the session, so a session can sleep only while the eligible queue is empty. Compute demand independently of any health gate (section 3): the gate decides whether to *start*, not whether work is *waiting*, so a blocked session still reports its queued work. Run-scoped control messages are bound to their run ID, ignored by the wake predicate, and deleted or marked expired when that run ends. A control message that names a dead run is not a stale request; it is garbage, and the receiver rejects it just as a fenced storage service rejects an old token.
 
 ## 2. Producers must not check whether the consumer is awake
 
@@ -90,7 +90,7 @@ If a status page shows a sleeping session as "offline", users will assume the sy
 |---|---|---|
 | Active | Process running, working or ready | Nothing |
 | Idle | Running, TTL clock ticking | Nothing |
-| Sleeping | Reclaimed on purpose; no eligible work queued (deferred items may be waiting for a retry time) | Nothing; show deferred items, when the next becomes eligible, and "will wake on next message" |
+| Sleeping | Reclaimed on purpose; no eligible work queued (deferred items may be waiting for a retry time) | Nothing; show deferred items, when the next becomes eligible, and "will wake when a deferred item is due or new work arrives" |
 | Waking | Start in progress | Wait; show how long |
 | Wake failed | Start attempted and failed, with attempt count and next retry time | Read the reason |
 | Blocked | Health gate closed, with reason, since-when and queued-work count | Fix the dependency |
@@ -102,9 +102,9 @@ The two states most often missing are *Waking* and *Wake failed*. Without them, 
 
 A host runs three sessions. Session A finishes its work at 17:00 and goes idle.
 
-1. **17:10, idle TTL.** The supervisor records intent "sleep, run 41". Session A consolidates: it writes a summary, updates the shared notes, and releases one half-finished item to the queue. That item hit its daily API quota, so it carries a retry time of 09:00 tomorrow and is not yet eligible. It records the consolidation marker. The supervisor stops the process and re-evaluates the wake predicate: nothing is eligible, so the session stays down. (Had a message arrived during the stop, this re-check would have started run 42 at once.) The status shows *Sleeping, 1 deferred item, eligible at 09:00*.
+1. **17:10, idle TTL.** The supervisor records intent "sleep, run 41". Session A consolidates: it writes a summary, updates the shared notes, and releases one half-finished item to the queue. That item hit its daily API quota, so it carries a retry time of 09:00 tomorrow and is not yet eligible. It records the consolidation marker. The supervisor stops the process and re-evaluates the wake predicate: nothing is eligible, so the session stays down, and the supervisor arms a timer for 09:00, the earliest retry time. (Had a message arrived during the stop, this re-check would have started run 42 at once.) The status shows *Sleeping, 1 deferred item, eligible at 09:00*.
 2. **17:12, a stale message.** An old "exit" command addressed to run 40 is found in the inbox. It names a dead run, so the wake predicate ignores it and it is expired. No wake, no loop.
-3. **Next morning, 09:00.** The daily job does not check whether Session A is up. It enqueues unconditionally with a 6-hour expiry, and the deferred item from 17:10 becomes eligible at the same time. The supervisor sees deliverable, unexpired work, and the status flips to *Waking*.
+3. **Next morning, 09:00.** The daily job does not check whether Session A is up. It enqueues unconditionally with a 6-hour expiry. The deferred item from 17:10 becomes eligible at the same time, and the 09:00 timer would have woken the session for it even if the daily job had enqueued nothing. The supervisor sees deliverable, unexpired work, and the status flips to *Waking*.
 4. **Health gate fails.** The probe shows the account credentials have expired. The status becomes *Blocked: credentials, since 09:00, 2 queued items*, an alert fires and reports the waiting work, and no start is attempted, so the backoff counter stays at zero. The work remains queued, not lost.
 5. **09:40, credentials fixed.** The probe passes and the supervisor re-evaluates at once. No start has failed, so there is no backoff to wait out: it starts run 42 immediately, and Session A drains the queue. The backoff counter resets after the session completes real work, not at process start.
 
@@ -113,7 +113,7 @@ At every step, a person looking at the status page can tell what is happening an
 ## Checklist
 
 - [ ] Every process start gets a monotonically increasing run ID; run-scoped messages carry it.
-- [ ] The wake predicate counts only unexpired, deliverable, durable work.
+- [ ] The wake predicate counts only unexpired, deliverable, durable work, and is re-evaluated when a deferred item's retry time arrives, not only when new work is enqueued.
 - [ ] Run-scoped control messages are expired when their run ends.
 - [ ] Producers enqueue unconditionally into a durable queue and count work as delivered only on acknowledgement; the only way work disappears is an explicit expiry.
 - [ ] Consumption is at-least-once and idempotent.
