@@ -16,7 +16,7 @@ This article traces four independent ways that failure arises and shows each one
 3. **Version gates that the server does not honor.** A client that only accepts a snapshot row if its `rev` increased will skip a row the server updated without bumping `rev`.
 4. **Ordering.** A patch can arrive before the snapshot it logically follows, and a slow older snapshot can arrive after a newer patch. A blind "snapshot replaces everything" rule regresses a resolved block to pending.
 
-The recommended shape, which is engineering synthesis rather than any provider's documented contract, is: composite `(messageId, blockId)` keys everywhere including the UI layer; one monotonic per-entity sequence bumped on every mutation of that entity; apply-if-newer for both patches and snapshot rows; buffer patches that have no base; and treat decode or apply failure as a reason to mark the block stale and refetch, never as a reason to leave it interactive. Section 9 gives a checklist, a decision table, and a recommended regression test.
+The recommended shape, which is engineering synthesis rather than any provider's documented contract, is: composite `(messageId, blockId)` keys everywhere including the UI layer; one monotonic per-entity sequence bumped on every mutation of that entity; apply-if-newer for snapshot rows and other full replacements, but apply a delta only on its exact predecessor (`seq == local.seq + 1`, or an explicit base reference that matches); buffer deltas that have no base or arrive after a gap, and rebase from a recovery snapshot; and treat decode or apply failure as a reason to mark the block stale and refetch, never as a reason to leave it interactive. Section 9 gives a checklist, a decision table, and a recommended regression test.
 
 Related Zylos articles cover neighboring ground: the [protocol layers of agent frontends](/research/2026-05-03-agent-frontend-streaming-protocols-ag-ui-convergence), [user intent that must survive realtime guards](/research/2026-07-27-durable-user-intent-realtime-agent-uis), and [commitment boundaries for retries](/research/2026-09-08-streaming-agent-safe-retry-boundaries). This one is narrower: what the client does with a patch once it has arrived.
 
@@ -39,12 +39,12 @@ The second half is the one that gets lost. Clients are usually tested for "do no
 
 ### What the protocols actually scope
 
-Several widely used streaming formats identify content by position or id within one message or response, not globally. Verified against primary sources:
+Several widely used streaming formats identify content by position or id within one message or response, not globally; AG-UI activities are the contrast case. Verified against primary sources:
 
 - **Anthropic Messages streaming.** Each content block "has an `index` that corresponds to its index in the final Message content array", with `content_block_start`, one or more `content_block_delta`, and `content_block_stop` events. The index is a position in one message. Two messages both have a block 0. [Anthropic streaming docs]
 - **OpenAI Responses streaming.** Events such as `response.output_item.added` carry an `output_index` ("The index of the output item that was added") and a `sequence_number` ("The sequence number of this event"), per the SDK types generated from the API spec. These are scoped to one response. [openai-python types]
 - **Vercel AI SDK data parts.** A data part written with an `id` is reconciled: "When you write to a data part with the same ID, the client automatically reconciles and updates that part." In the client source, the lookup is `state.message.parts.find(...)` on matching `type` and `id`, so reconciliation is scoped to the message being assembled. On a match the code assigns `existingUIPart.data = dataChunk.data`: the data object is replaced, not deep-merged. Without an `id`, the part is appended. [Vercel AI SDK docs and source]
-- **AG-UI activity messages.** An activity message "occupies the same id space as every other message, so its `messageId` must not be reused by a text or reasoning message". Here the id is message-scoped by construction, and the spec even defines what a client does on a cross-type collision: leave the activity message untouched. [AG-UI events]
+- **AG-UI activity messages.** `ActivitySnapshot` and `ActivityDelta` target an activity by `messageId`, and an activity message "occupies the same id space as every other message, so its `messageId` must not be reused by a text or reasoning message". The activity is itself a message, so its identifier is a message id in the message id space, not a block index scoped to a parent message. The spec even defines what a client does on a cross-type collision: leave the activity message untouched. [AG-UI events]
 
 None of this is a flaw. A per-message index is exactly right while a message is being streamed. The trap is that the client then adopts the same per-message id as its long-lived storage key. In a transcript with hundreds of messages, `b1` is not an identity.
 
@@ -97,10 +97,10 @@ So "deep merge" and "RFC 7396" behave differently on both arrays and null. A cli
 JSON Patch addresses locations by JSON Pointer, so it can modify one array element (`/options/1/label`) and express `null` values. Its traps are different:
 
 - `replace` and `remove` require the target to exist: "The target location MUST exist for the operation to be successful."
-- Error handling is atomic: if an operation fails, "application of the entire patch document SHALL NOT be deemed successful."
+- Error handling (section 5): if an operation is not successful, "evaluation of the JSON Patch document SHOULD terminate and application of the entire patch document SHALL NOT be deemed successful." The RFC notes that the HTTP PATCH method is atomic, so over HTTP a failed patch changes nothing. For an in-process library call, whether the operations before the failing one remain visible depends on the library and how it is called (see the experiment below).
 - Array indices are positional. Concurrent patches that insert or remove elements shift the indices another patch was authored against. The RFC offers a `test` operation to guard on a value; indices need that or a stable id (inferred).
 
-The AG-UI documentation describes its reference client behavior as applying deltas with `fast-json-patch`, atomically, and on failure "emitNoUpdate" after a warning. [AG-UI state docs] In the experiment, patch `[replace /b1/status "resolved", replace /b1/state/answer "a"]` against a document whose `state` had no `answer` threw `OPERATION_PATH_UNRESOLVABLE`, and the document stayed `{"b1":{"status":"pending","state":{}}}`. The status change, which was valid on its own, was lost with the failing operation. Using `add` for the second operation applied both. The lesson for the sender: pick `add` for fields that may not exist yet, because `add` on an object member creates or replaces.
+The AG-UI documentation describes its reference client behavior as applying deltas with `fast-json-patch` through `applyPatch(state, delta, true, false)`, that is with `mutateDocument` set to false, so the original state is not mutated; it lists the result as atomic (all or none) and, on failure, returns `emitNoUpdate()` after a warning. [AG-UI state docs] In the experiment, with `applyPatch` called the same way (`mutateDocument=false`), patch `[replace /b1/status "resolved", replace /b1/state/answer "a"]` against a document whose `state` had no `answer` threw `OPERATION_PATH_UNRESOLVABLE`, and the document stayed `{"b1":{"status":"pending","state":{}}}`: no partial write was visible. That all-or-none result belongs to the `mutateDocument=false` call. Rerun with `mutateDocument=true`, the same patch threw the same error but left `{"b1":{"status":"resolved","state":{}}}`, the first operation applied and the second not. Either way the status change, which was valid on its own, did not reach a successfully applied state. Using `add` for the second operation applied both. The lesson for the sender: pick `add` for fields that may not exist yet, because `add` on an object member creates or replaces.
 
 ### Schema drift: scalar on the client, array on the server
 
@@ -109,7 +109,7 @@ This is the quiet one. The server upgrades a prompt from single-select (`answer:
 Note that the status change in the same patch was perfectly decodable. The harm comes from coupling "status moved to resolved" to "every other field in the same patch decoded". Mitigations, in order of cheapness:
 
 1. **Decode leniently on the terminal transition.** Apply `status` (and any field the UI needs for rendering a read-only state) independently of optional payload fields. Unknown or mistyped payload goes to a "raw" slot for display or diagnostics.
-2. **Fail closed.** If a patch for a block cannot be applied, mark that block `stale` and disable its actions until a snapshot confirms its state. A disabled prompt costs a refresh; an enabled resolved prompt costs a duplicate action or a confusing error.
+2. **Fail closed.** If a patch for a block cannot be applied, mark that block `stale`, remember the sequence of the failed update, and disable its actions until an authoritative snapshot or replay at that sequence or later covers it. A snapshot older than the failed update cannot clear the stale state: if the row is at 10 and the update at 11 failed, a snapshot at 10 is exactly the state the client already knows is out of date, and re-enabling the options on it would bring back the bug. A disabled prompt costs a refresh; an enabled resolved prompt costs a duplicate action or a confusing error.
 3. **Version the schema.** Send `schemaVersion` or capability flags so the server can avoid sending shapes the client cannot decode. Replicache's pull request carries a developer-defined `schemaVersion` for this purpose, so that the client "can correctly handle the data". [Replicache pull reference]
 4. **Count the failures.** A decode-failure counter per block type turns silent drift into an alert.
 
@@ -122,12 +122,12 @@ Replicache's documentation states the needed discipline for its row-version back
 | Option | What it gives | Cost or trap |
 |---|---|---|
 | Monotonic per-entity `version` incremented on every mutation | Cheap local compare; works per row | Every writer path must bump it. Enforce in the data layer (trigger or single write function), not in call sites |
-| Global or per-space change sequence ("cursor") | Total order over changes; supports "give me everything after N" | Entity-level compare needs the entity's last-change sequence stored on the row |
+| Global or per-space change sequence ("cursor") | Total order over changes; supports "give me everything after N" | Entity-level compare needs the entity's last-change sequence stored on the row. Skips numbers for any one entity, so it cannot show a missing delta for that entity (section 5) |
 | Content hash | Detects any difference, including missed bumps | No ordering: cannot tell old from new. Good as a repair check, bad as a gate. Experiment: hashes differed (`true`), which says "something changed", not which side is newer |
 | Last-writer-wins by server timestamp | Simple; needs no counters | Resolution and clock skew; ties; two writes in the same tick. Server-assigned time only, never client time |
 | Always replace from snapshot, no gate | Cannot skip a change | Can regress state if the snapshot is older than a live patch (section 5) |
 
-My recommendation is to have the server derive the version from the database rather than rely on call-site discipline, and to carry a change-sequence cursor in snapshots so ordering can fall back on it. Where the version is untrusted, make the client gate `>` on the version but also compare a content digest on equal versions and refetch the row on mismatch, as a repair path (inferred design). This is cheap and catches the precise bug above.
+My recommendation is to have the server derive the version from the database rather than rely on call-site discipline, and to carry a change-sequence cursor in snapshots so ordering can fall back on it. Where the version is untrusted, make the client gate `>` on the version but also compare a content digest on equal versions and repair the row on mismatch (inferred design). The repair needs its own way to establish freshness, because a plain refetch returns the same version and hits the same `>` gate. Two ways that work: a targeted recovery read whose row the client accepts at a version equal to or above its own (`>=`, for that one read only, still subject to the terminal-status rule below), or a server-side repair that issues a newer version or a repair epoch for the row so the ordinary gate accepts it. The second also fixes every other client. Either is cheap and catches the precise bug above.
 
 A terminal-state shortcut is also worth adding. Interactive status is a small monotone progression (`pending` to `resolved` or `cancelled`). If the incoming row says terminal and the local row says pending, accept it regardless of version comparison unless the sequence says it is older than a known newer local terminal state. That makes the invariant from section 1 hold even if some version field is broken (inferred; resembles a state-based CRDT whose merge is a join over a lattice, see Shapiro et al.). Do not apply this to fields that legitimately move back and forth.
 
@@ -146,13 +146,18 @@ Orderings that occur in practice:
 | Patch seq 11 applied, then a snapshot read at seq 10 | Regress to pending | Ignore rows whose sequence is not newer than local |
 | Snapshot first, then replayed patches (reconnect) | Replays reapply old operations | Drop patches with `seq <= local.seq` |
 | Duplicate delivery of the same patch | `add` or array patches double-apply | Idempotent by sequence |
-| Gap (seq 11, then 14) | Missing 12 and 13 silently | Detect the gap and refetch |
+| Row at 10; delta 12 (label only) arrives before delta 11 (resolves) | Apply-if-newer applies 12, then drops 11 as stale: prompt stays pending | Buffer 12 until 11 arrives, then apply 11 and 12 in order |
+| Gap (seq 11, then 14) | Missing 12 and 13 silently | Buffer 14, mark the block stale, and rebase from a recovery snapshot at 13 or later (or a replay of 12 and 13) |
 
 AG-UI documents the shape of the problem and a coarse solution: snapshots are for the start of an interaction, after connection interruptions, and to establish a new baseline; "Frontends should replace their existing state model with the contents of this snapshot rather than trying to merge it with previous state"; deltas are applied "in sequence", and on inconsistency "the frontend may request a fresh `StateSnapshot`". [AG-UI events and state docs] That is correct when the snapshot is guaranteed to be the freshest view at the moment it is applied. It does not say what happens if an older snapshot arrives after a newer delta, because the protocol is a single ordered stream. In a client that also fetches snapshots over a separate HTTP call, that guarantee is gone, and applying the wholesale-replace rule to a late response is my inference of where the protocol's assumption would be violated, not a documented AG-UI behavior. The AG-UI `ActivitySnapshot` event does include a `replace` flag (default true; when false the snapshot is ignored if the message already exists), which is a protocol-level admission that "snapshot over existing state" is a decision, not a given.
 
 Other systems answer the ordering question with explicit cursors. In Replicache, the pull request carries the `cookie` returned by the previous pull, and for its row-version strategy the server keeps an ordered `cvrVersion` per client group because "Replicache requires that cookies are ordered within a client group." Push mutations are checked against `lastMutationID`: already-processed mutations are skipped and mutations from the future are an error. [Replicache reset and row-version strategies] The relevant idea for chat UIs is not the whole sync engine but those two moves: an ordered cursor, and an idempotent skip of what has already been applied.
 
-The experiment's store follows the same shape. Rows hold `{value, seq}` per composite key; `applyPatch` drops `seq <= local.seq` and buffers if there is no base; `applySnapshot` accepts a row only if its `seq` is newer, then drains buffered patches for that key. The log for the adversarial order (patch 11, snapshot 10, patch 11 replay, snapshot 10 duplicate) ended with `{"seq":11,"status":"resolved"}`.
+The two inputs need different gates. A snapshot row or any other full replacement carries the whole state at its sequence, so a higher sequence is sufficient: apply if `seq > local.seq`. A delta is only meaningful on the state it was computed from, so a higher sequence is not sufficient. Apply a delta only when it is contiguous with local state for that entity (`seq == local.seq + 1` on a per-entity sequence) or when it names its predecessor explicitly (a `baseSeq` equal to `local.seq`). A delta that is newer but not contiguous goes to a buffer; contiguous ones then drain from it in order. If the missing delta does not arrive, mark the block stale and rebase from a recovery snapshot at or after the last missing sequence, then drain or drop the buffer against the new base. The contiguity has to be per entity: a global or per-conversation cursor skips numbers for a particular block whenever other entities change in between, so with such a cursor a jump from 11 to 14 for one block proves nothing, and the delta must carry its predecessor instead.
+
+The permutation that separates the two rules is small. A row is at 10 and pending; delta 11 resolves the prompt; delta 12 changes only its label; 12 arrives first. Under apply-if-newer, 12 applies, 11 is then dropped as stale, and the block ends at 12 with the new label and `status: pending`: the options stay clickable even though the server resolved them. Under the contiguity rule, 12 waits in the buffer, 11 applies, 12 drains, and the block ends resolved (output in section 8).
+
+The experiment's store follows the same shape for the cases it covers. Rows hold `{value, seq}` per composite key; `applyPatch` drops `seq <= local.seq` and buffers if there is no base; `applySnapshot` accepts a row only if its `seq` is newer, then drains buffered patches for that key. The log for the adversarial order (patch 11, snapshot 10, patch 11 replay, snapshot 10 duplicate) ended with `{"seq":11,"status":"resolved"}`. That store applies any newer patch once a base exists, so it does not enforce contiguity; the separate permutation script in section 8 shows why it must.
 
 A snapshot should also say what it is a snapshot as of. A single `asOfCursor` on the response, plus per-row sequences, lets the client reason about patches both older and newer than the snapshot without comparing wall-clock time.
 
@@ -163,10 +168,10 @@ A snapshot should also say what it is a snapshot as of. A single `asOfCursor` on
 | Anthropic Messages streaming | `index` within a message | start, delta, stop events per block | Event order within one stream | Not applicable; final message is the complete value |
 | OpenAI Responses streaming | `output_index` (and item ids) within a response | `added`, delta, `done` events | `sequence_number` on events | Not applicable inside the stream; resume semantics are provider specific and not verified here |
 | Vercel AI SDK data parts | `type` plus `id` within a message | Same id replaces `data` wholesale | Arrival order | UI messages can be passed back in whole; no cross-fetch version gate in the code I read |
-| AG-UI | Message id; activity `messageId` | `STATE_DELTA` and `ActivityDelta` as RFC 6902 | Stream order; no sequence field in the events I read | `STATE_SNAPSHOT` replaces; `MessagesSnapshot` is all-or-nothing per role for `activity` and `reasoning` |
+| AG-UI | Message id; an activity is itself a message, addressed by `messageId` in the message id space | `STATE_DELTA` and `ActivityDelta` as RFC 6902 | Stream order; no sequence field in the events I read | `STATE_SNAPSHOT` replaces; `MessagesSnapshot` is all-or-nothing per role for `activity` and `reasoning` |
 | Replicache | Key in a key-value space | Server computes a diff from a cookie | Ordered cookie, `lastMutationID` | Reset or patch response; reset is an allowed strategy |
 
-Observations that are verified from the sources above: all four streaming formats scope their per-block index or id to a message or response; only Vercel and AG-UI have an explicit "update an existing part" primitive, and Vercel's is replace-by-id, not merge; only the sync-engine style (Replicache) puts an ordered cursor and idempotence rules at the center. Inference: a chat client that combines a streaming protocol with a separate sync fetch is in the position of building the second kind of system out of the first kind of messages, and has to add the cursor itself.
+Observations that are verified from the sources above: Anthropic, OpenAI and Vercel scope their per-block index or id to a message or response, while an AG-UI activity is addressed by its own message id in the message id space. Anthropic, Vercel and AG-UI all have a primitive that updates something that already exists, but of different kinds: Anthropic's `content_block_delta` "contains a delta of a type that updates the content block at a given index", inside the stream that opened the block (the documented text and partial-JSON deltas are fragments to accumulate); Vercel's data part with a repeated id replaces `data` wholesale, not merge; AG-UI's `ActivityDelta` applies JSON Patch to an existing activity message by `messageId`. Only the sync-engine style (Replicache) puts an ordered cursor and idempotence rules at the center. Inference: a chat client that combines a streaming protocol with a separate sync fetch is in the position of building the second kind of system out of the first kind of messages, and has to add the cursor itself.
 
 I did not verify the internals of other sync engines (for example Linear's) against primary documentation, so I make no claims about them. CRDT-lite ideas are covered in the next section as a design option, not as what any named product does.
 
@@ -174,11 +179,11 @@ I did not verify the internals of other sync engines (for example Linear's) agai
 
 A full CRDT is unnecessary for blocks that have one authoritative writer (the server). Three small ideas from the literature on convergent replicated types carry most of the value [Shapiro et al.]:
 
-1. **Per-entity sequence as a version vector of one.** `seq` is assigned by the server on every mutation of that entity. Merge is `max` by `seq`. Patches and snapshot rows are the same kind of thing: "state at seq n".
+1. **Per-entity sequence as a version vector of one.** `seq` is assigned by the server on every mutation of that entity. For full states (snapshot rows, whole-block replacements), each one is "state at seq n" and merge is `max` by `seq`. A delta is a different kind of thing: "the transition from seq n-1 to n", valid only on state at n-1.
 2. **Monotone status lattice.** `pending` is below `resolved` and `cancelled`; terminal states are absorbing. A merge that takes the join can never resurrect an interactive prompt. If two terminal states conflict (answered on one device, cancelled on another), the server's single writer order decides and the client should not break the tie.
 3. **Tombstones.** If blocks can be removed, keep a tombstone with a sequence, or a snapshot "as of N" that lacks the block will resurrect it when merged with an older local copy (inferred).
 
-With those, the merge function over `(local, incoming)` is: ignore if `incoming.seq <= local.seq`; otherwise apply. The status lattice is a safety net for the case where sequence assignment itself is broken, and a signal worth logging when it fires.
+With those, the merge function over `(local, incoming)` is: ignore if `incoming.seq <= local.seq`; for a full state, otherwise apply; for a delta, apply only if `incoming.seq == local.seq + 1` (or its explicit predecessor equals `local.seq`), otherwise buffer it and, if the gap does not fill, rebase from a recovery snapshot (section 5). The status lattice is a safety net for the case where sequence assignment itself is broken, and a signal worth logging when it fires.
 
 ## 8. Local experiment: the pitfalls, run for real
 
@@ -226,6 +231,15 @@ final m2/b1 = {"m":"m2","b":"b1","seq":11,"status":"resolved"}
 
 Separately, `lodash.merge` on `options` arrays produced `[{"id":"b","label":"Cancel (new)"},{"id":"b","label":"Cancel"}]`, and `merge({state:{selected:'a'}}, {state:{selected:null}})` gave `selected: null` while `undefined` left `'a'` unchanged.
 
+A second, smaller script (same Node and `fast-json-patch` versions, run 2026-11-20) plays the section 5 permutation under both delta rules (row at 10 pending; delta 11 sets `status` to resolved; delta 12 sets only `label`; 12 arrives first) and reruns the section 3 failing patch with `mutateDocument` false and true:
+
+```text
+old (apply if seq > local): delta 12 applied; delta 11 dropped as stale (local @12) => @12 {"status":"pending","label":"Deploy to prod?"}
+new (apply only seq == local+1): delta 12 buffered (gap: local @10); delta 11 applied; delta 12 drained from buffer => @12 {"status":"resolved","label":"Deploy to prod?"}
+mutateDocument=false: threw OPERATION_PATH_UNRESOLVABLE; doc after: {"b1":{"status":"pending","state":{}}}
+mutateDocument=true: threw OPERATION_PATH_UNRESOLVABLE; doc after: {"b1":{"status":"resolved","state":{}}}
+```
+
 What the experiment does not show: real browser rendering, concurrent editors, or an actual server. The version-gate and ordering sections use hand-built fixtures; they demonstrate the logic, not field frequency. The React result is for the 18.3.1 test renderer on a minimal component; reordering behavior in virtualized lists in other frameworks has different mechanics (Compose and SwiftUI were not run).
 
 ## 9. Checklist, decision table, and the regression test
@@ -238,10 +252,10 @@ What the experiment does not show: real browser rendering, concurrent editors, o
 4. Prefer replacing a small block wholesale (`id`-addressed, as Vercel data parts do) over fine-grained patches into arrays, unless you have stable ids on array elements.
 5. When using RFC 6902, use `add` for optional fields, `test` as a guard when ordering matters, and address array elements by id, not index, where the format allows.
 6. Make the terminal transition independent of optional payload decoding.
-7. On any decode or apply failure: mark the block stale, disable its actions, and trigger a targeted refetch. Never swallow silently.
-8. Give every entity a server-assigned monotonic `seq` that increments on every mutation, enforced in the data layer. Gate both patches and snapshot rows on `seq`.
-9. Buffer patches without a base; drain on snapshot; detect gaps and refetch.
-10. Snapshots carry an `asOfCursor`. Never let a snapshot with an older cursor than local overwrite newer rows.
+7. On any decode or apply failure: mark the block stale, disable its actions, and trigger a targeted refetch. Keep it stale and disabled until an authoritative snapshot or replay at or after the failed update's sequence covers it; a snapshot older than the failed update does not re-enable it. Never swallow silently.
+8. Give every entity a server-assigned monotonic `seq` that increments on every mutation, enforced in the data layer. Gate snapshot rows and full replacements on `seq > local.seq`; apply a delta only when `seq == local.seq + 1` on that per-entity sequence, or when it names a predecessor equal to `local.seq`. A higher sequence alone is not enough for a delta.
+9. Buffer deltas that have no base or arrive after a gap, and drain them in order as the missing ones arrive. If a gap does not fill, mark the block stale and rebase from a recovery snapshot at or after the last missing sequence. A global cursor skips numbers for any one block, so it cannot detect such a gap; use a per-entity sequence or an explicit predecessor.
+10. Snapshots carry an `asOfCursor`. Never let a snapshot with an older cursor than local overwrite newer rows. After rebasing on a snapshot, drop buffered deltas it already covers and apply the rest only if they continue contiguously from it.
 11. Make terminal status absorbing in the client merge, and log when the lattice rescues a bad version.
 12. Count decode failures, skipped-as-stale rows, buffered patches, and gap refetches per block type.
 
@@ -254,7 +268,7 @@ What the experiment does not show: real browser rendering, concurrent editors, o
 | Large state, frequent small edits | RFC 6902 with `test` guards and stable-id addressing | Positional indices across concurrent patches |
 | Server may change field types | `schemaVersion` plus lenient terminal decode | Strict decode that discards the whole patch |
 | Server writer paths are many | Version derived in the DB layer; cursor in snapshots | Call-site bumping of `rev` |
-| Live stream plus separate fetch | Per-entity `seq`, apply-if-newer, buffer | "Last arrival wins" |
+| Live stream plus separate fetch | Per-entity `seq`; apply-if-newer for full states, contiguous-only for deltas; buffer gaps and rebase | "Last arrival wins"; applying a delta just because its `seq` is higher |
 | Cross-device resolution | Server-authoritative terminal state, absorbing in client | Client timestamps for ties |
 
 ### The recommended test (small, fast, catches all four)
@@ -265,7 +279,7 @@ Build the fixture once and run it against whatever merge layer you use:
 2. **Nested-only patch.** Patch only `state.selected` (or the equivalent). Assert the block's `options` array and `status` are untouched, and that clearing a field is represented the way your protocol defines it.
 3. **Array-typed field where a scalar is declared.** Send `answer: ["a","b"]` where the client expects a string, plus `status: "resolved"`. Assert the block is not interactive afterwards: either rendered resolved, or marked stale with actions disabled and a refetch scheduled.
 4. **Silent server update.** Change a row's status on the server through every code path that can do it. Sync. Assert the client shows the new status, with whichever field your gate uses.
-5. **Order permutations.** Take a log of `[snapshot@10, patch@11]` and run all interleavings, plus duplicates and a replay. Assert the final state is identical in every case.
+5. **Order permutations.** Take a log of `[snapshot@10, patch@11]` and run all interleavings, plus duplicates and a replay. Assert the final state is identical in every case. Include the three-revision case: the row is at 10 and pending, delta 11 resolves the prompt, delta 12 changes only its label, and 12 arrives before 11. Assert the block ends resolved with the new label, not pending. A merge layer that applies any delta with a higher `seq` fails this case.
 
 Test 4 is the one most often missing, because it needs a server-side test that enumerates writers. Treat it as an invariant check on the data layer, not a UI test.
 
@@ -290,4 +304,4 @@ The provider and protocol statements above were checked against current document
 - Android Developers, Lists and grids in Compose (stable and unique keys): https://developer.android.com/develop/ui/compose/lists
 - Apple, SwiftUI `ForEach` documentation: https://developer.apple.com/documentation/swiftui/foreach
 - Shapiro, Preguica, Baquero, Zawirski, "A comprehensive study of Convergent and Commutative Replicated Data Types", Inria RR-7506: https://inria.hal.science/inria-00555588
-- Local experiment: Node 24.22.1 with `fast-json-patch@3.1.1`, `lodash@4.17.21`, `react@18.3.1`, `react-test-renderer@18.3.1`, run 2026-11-04.
+- Local experiment: Node 24.22.1 with `fast-json-patch@3.1.1`, `lodash@4.17.21`, `react@18.3.1`, `react-test-renderer@18.3.1`, run 2026-11-04; delta-ordering and `mutateDocument` script with `fast-json-patch@3.1.1`, run 2026-11-20.
