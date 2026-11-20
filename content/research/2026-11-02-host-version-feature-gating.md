@@ -41,9 +41,9 @@ Two details matter later. First, VS Code's pre-release extension support says "W
 
 ## Capability Advertisement
 
-**LSP.** The language server protocol exchanges capabilities in the `initialize` request: "The set of capabilities is exchanged between the client and server during the initialize request." Unknown capabilities are tolerated in both directions. The spec says "Clients should ignore server capabilities they don't understand (e.g. the initialize request shouldn't fail in this case)", that "A missing property should be interpreted as an absence of the capability", and that servers receiving client capabilities with unknown properties "should ignore these properties." The client also "must not send any additional requests or notifications to the server" until the server has answered `initialize` ([LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)). The design principle is that absence means no, and the unknown is ignored rather than rejected.
+**LSP.** The language server protocol exchanges capabilities in the `initialize` request: "The set of capabilities is exchanged between the client and server during the initialize request." The tolerance the spec defines is for unknown capability properties exchanged in that handshake, in both directions. It says "Clients should ignore server capabilities they don’t understand (e.g. the initialize request shouldn’t fail in this case)." For the client capabilities sent with `initialize`, "Servers receiving a ClientCapabilities object literal with unknown properties should ignore these properties. A missing property should be interpreted as an absence of the capability." The client also "must not send any additional requests or notifications to the server" until the server has answered `initialize` ([LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)). The design principle is that a missing capability means no, and an unknown capability property is ignored rather than rejected.
 
-**Git protocol v2.** A server that chooses protocol v2 replies with a `version 2` line followed by a capability list, each capability being "a key with an optional value". The key rule: "Clients must ignore all unknown keys." The server then checks that the client's request "is comprised of a valid command as well as valid capabilities which were advertised" ([protocol-v2](https://git-scm.com/docs/protocol-v2)). The host publishes the menu, and both sides promise to tolerate items they do not know.
+**Git protocol v2.** A server that chooses protocol v2 replies with a `version 2` line followed by a capability list, each capability being "a key with an optional value". The key rule: "Clients must ignore all unknown keys." The tolerance is on the client side, for the advertisement. The server is strict about requests: it checks that the client's request "is comprised of a valid command as well as valid capabilities which were advertised", and "If the request is valid the server will then execute the command" ([protocol-v2](https://git-scm.com/docs/protocol-v2)). The host publishes the menu, the client skips entries it does not know, and the client may request only what is on the menu.
 
 **Kubernetes discovery.** The API server publishes "a list of all group versions and resources supported via the Discovery API" at `/api` and `/apis`, with per-group-version documents at `/apis/<group>/<version>`; kubectl uses these endpoints to learn what a cluster supports. Aggregated discovery returns everything in two requests via a special `Accept` header ([API overview](https://kubernetes.io/docs/concepts/overview/kubernetes-api/)). A client asks what exists instead of inferring it from a release number.
 
@@ -63,8 +63,8 @@ That argument depends on a probe that has no consequence. A CLI that rejects unk
 | Fork or custom build | Version number copied from upstream, but behavior differs | Any version check |
 | Prerelease ordering | Prerelease sorts below the release but above earlier versions; range helpers may exclude it entirely | Semver comparison (see below) |
 | Unknown flags rejected | A wrong "yes" loses the call | Strict CLI parsers |
-| Unknown flags ignored | A wrong "yes" silently drops the feature, with no error to react to | Lenient parsers, protocols like LSP and Git v2 |
-| Stale answer | The version was true when read, and false by the time of the call | Cached or startup-time checks |
+| Unknown flags ignored | A wrong "yes" silently drops the feature, with no error to react to | Lenient parsers; LSP servers given unknown client capability properties in `initialize` |
+| Stale answer | The version was true when read, and false by the time of the call | Cached or startup-time checks; on a smaller scale, any gap between a per-call check and the call |
 
 The two rejection behaviors need different safeguards. If the host ignores unknown flags, sending too eagerly is harmless but invisible. If it rejects them, sending too eagerly is loud but destructive. That asymmetry is the argument for failing closed when delivery matters.
 
@@ -122,21 +122,22 @@ Fail closed has a cost that is bounded and visible in design: the feature is una
 
 ## Design Guidance for a Zylos-Style Component and Host
 
-The chosen design: on each call, resolve `zylos` on `PATH`, follow the real path to the installed package, read its `package.json` version, compare to a per-feature table of minimums keyed by major line (for example `sessionGroup: {1: '1.0.0-beta.1'}`), do not cache, do not spawn `zylos --version`, treat everything as unsupported if an upgrade-in-progress marker exists or cannot be checked, and treat an unreadable or invalid version as unsupported.
+The chosen design: on each call, resolve `zylos` on `PATH`, follow the real path to the installed package, read its `package.json` version, compare to a per-feature table of minimums keyed by major line (for example `sessionGroup: {1: '1.0.0-beta.1'}`), do not cache, do not spawn `zylos --version`, treat everything as unsupported if an upgrade-in-progress marker, at a fixed location that the host's upgrader and the component agree on, exists or cannot be checked, and treat an unreadable or invalid version as unsupported.
 
 **Where it is strong**
 
 - **It matches the cost of a wrong yes.** Because old hosts reject unknown flags, try-and-fall-back is unsafe and a wrong yes loses the message. Failing closed is consistent with the conservative gating CockroachDB and RabbitMQ use.
 - **Reading metadata is cheap and side-effect free.** About 0.04 ms against about 49 ms in our measurement, with no hang risk and no host code executed.
-- **No cache means no stale answer** for a long-lived PM2 process, and the cost of rereading is negligible.
+- **No cache means no answer carried over from an earlier read** in a long-lived PM2 process, and the cost of rereading is negligible. It does not remove the short gap between this call's read and its use (see the limits below).
 - **Keying minimums by major line** follows the Terraform protocol-version idea: compatibility is a property of a generation. A `2.0.0-beta.1` host passes a bare `gte` against `1.0.0-beta.1` (see the table above), yet a new major version is where breaking changes are permitted under semver, so a flag from the 1.x line cannot be assumed to survive. With a table keyed by major, an unlisted major line is unsupported until someone adds it.
-- **The upgrade marker covers the known mixed state** that version files cannot show. It is the component-level analogue of "do not enable until finalization."
-- **Unreadable or invalid means unsupported** is the rule LSP encodes: "A missing property should be interpreted as an absence of the capability."
+- **The upgrade marker covers the mixed state of an upgrade that writes it**, which version files cannot show, provided both sides use the same marker location. It is the component-level analogue of "do not enable until finalization." It narrows the window between check and call but does not close it, and it does nothing for upgrades that do not write it (see the limits below).
+- **Unreadable or invalid means unsupported** is the rule LSP encodes for client capabilities: "A missing property should be interpreted as an absence of the capability."
 
 **Implementation details that decide whether it works**
 
 - Compare with `semver.gte` on parsed versions within the matching major, not ranges (`satisfies` rejects `1.0.1-beta.1` against `>=1.0.0-beta.1`) and not `coerce`. Test the table with concrete strings: `1.0.0-alpha.9` (below), `1.0.0-beta.1`, `1.0.0-beta.2`, `1.0.0-rc.1`, `1.0.0`, `1.0.1-beta.1`, `2.0.0-beta.1` (no table entry), `v1.0`, and an empty string.
-- Do not use `fs.existsSync` for the marker. Node documents it as returning `true` if the path exists and `false` otherwise ([fs docs](https://nodejs.org/docs/latest/api/fs.html)), and we confirmed locally that it returns `false` for a file inside a directory with permissions `000`, even though the file exists. The same path under `statSync` throws `EACCES`. Use `statSync` or `lstatSync` and treat only `ENOENT` as "absent"; every other error means "cannot determine", which is "unsupported".
+- Do not use `fs.existsSync` for the marker. Node documents it as returning `true` if the path exists and `false` otherwise ([fs docs](https://nodejs.org/docs/latest/api/fs.html)), and we confirmed locally that it returns `false` for a file inside a directory with permissions `000`, even though the file exists. The same path under `statSync` throws `EACCES`. Use `statSync` or `lstatSync` and treat only `ENOENT` as "absent" (and only after the location check below); every other error means "cannot determine", which is "unsupported".
+- `ENOENT` alone does not prove the marker is absent. We confirmed locally that `lstatSync` throws `ENOENT` in three cases: the marker is missing from an existing directory, the marker's parent directory is missing, and an intermediate path component is a symlink whose target is gone. Only the first means "no upgrade in progress". So the marker needs a stable location that the host's upgrader and the component both use, for example a fixed state directory the host documents and never removes during an upgrade, rather than a path derived from the resolved package path that an upgrade replaces. Check first that this directory exists and is a directory (`statSync(dir).isDirectory()`); any error or a non-directory there means "cannot determine". Only then treat `ENOENT` for the marker file itself as "absent".
 - Resolve and invoke the same binary. Pass the resolved path to the process launcher, or verify that `PATH` resolution is identical at both points.
 
 **Honest limits**
@@ -147,7 +148,11 @@ The chosen design: on each call, resolve `zylos` on `PATH`, follow the real path
 - **Closed-by-default needs visibility.** A new major line with no table entry silently disables features. Log one concise reason per decision so that "feature off" is diagnosable, as Chrome's silent update stop shows.
 - **It does not handle downgrades or a partially applied rollback** any better than other version gates do; the marker is the only guard.
 
-**A better long-term direction.** Add an advertised capability list to the host and read it with the same cheap file read: for example a documented `features` array in the host's package metadata or a small manifest shipped beside it. Treat the version table as the fallback for hosts that predate the field. This follows Git's and LSP's model, where the host publishes what it supports and the client ignores what it does not know, and it handles backports and forks directly. It also avoids the need to spawn the host. It does not remove the need for the fail-closed rules above: a missing or unreadable list must still mean "no".
+**A better long-term direction.** Add an advertised capability list to the host and read it with the same cheap file read: for example a documented `features` array in the host's package metadata or a small manifest shipped beside it. This follows Git's and LSP's model, where the host publishes what it supports and the client ignores what it does not know, and it handles backports and forks directly. It also avoids the need to spawn the host. It does not remove the need for the fail-closed rules above, and the reader has to keep three cases apart so that the fallback cannot override an explicit "no":
+
+- **A valid list is present**, even an empty one: it is authoritative. A feature not in the list is unsupported, and the version table is not consulted.
+- **Readable, valid metadata positively identifies a host that predates the field** (the field is absent and the version parses as earlier than the release that introduced it): only here does the version table apply as the fallback.
+- **Metadata is unreadable or invalid** (the file cannot be read or parsed, the field has the wrong type, or the field is absent from a version that should have it): this is an error, which means "unsupported", not a reason to fall back.
 
 ## Conclusions
 
@@ -178,4 +183,4 @@ Primary documentation:
 - Python, [argparse](https://docs.python.org/3/library/argparse.html); Commander.js, [README](https://github.com/tj/commander.js)
 - Node.js, [fs API](https://nodejs.org/docs/latest/api/fs.html)
 
-Local checks (not benchmarks): node-semver 7.8.5 comparison table above; `fs.existsSync` versus `statSync` on an unreadable directory; and a read-versus-spawn timing using npm as a stand-in host CLI, all run on Node 24 on Linux.
+Local checks (not benchmarks): node-semver 7.8.5 comparison table above; `fs.existsSync` versus `statSync` on an unreadable directory; `lstatSync` errors for a missing marker, a missing parent directory, and a dangling intermediate symlink; and a read-versus-spawn timing using npm as a stand-in host CLI, all run on Node 24 on Linux.
