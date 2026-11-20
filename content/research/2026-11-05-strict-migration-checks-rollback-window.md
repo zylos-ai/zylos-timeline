@@ -137,7 +137,7 @@ Candidate designs and what each costs:
 | F. Down migrations | Each up migration has a reversal (sqlx `-r`, Rails reversible `change`, Flyway undo) | Doubles the surface to maintain and test. Flyway's own docs say "Rollback scripts (aka undo scripts) are no substitute for having a robust backup/restore strategy" and that dropped data cannot be restored by undo scripts |
 | G. Point-in-time recovery | Base backup plus archived WAL | Lets you rewind to a chosen moment, but the PostgreSQL docs say `pg_dump` dumps "cannot be used as part of a continuous-archiving solution"; PITR is a separate setup |
 
-Flyway's rollback page frames the choice: "Rolling back restores a previous schema state as if the later schema state never happened. Rolling forward acknowledges that the later state (v4) occurred, and migrates ahead to a new distinct version (v5) that just happens to correspond to a previous state (v3)."
+Flyway's rollback page frames the choice: "Rolling back restores a previous schema state as if the later schema state never happened." By contrast, "Rolling forward acknowledges that the later state (v4) occurred, and migrates ahead to a new distinct version (v5) that just happens to correspond to a previous state (v3)."
 
 ### Recommendation
 
