@@ -147,8 +147,16 @@ Add a boundary test for the probe-to-text conversion itself, since that is where
 const cfg = afterRepair;
 const a = renderStatus(cfg, fixed(40 * GiB));
 const b = renderStatus(cfg, fixed(40 * GiB - 1));
-assert.notEqual(a, b);                 // the quantization is real...
-assert.equal(scrub(a), scrub(b));      // ...and confined to the disk line
+function assertDiskBoundary(a, b) {
+  const linesA = a.split('\n');
+  const linesB = b.split('\n');
+  assert.equal(linesA[2], 'Disk: 40 GiB available');
+  assert.equal(linesB[2], 'Disk: 39 GiB available');
+  assert.deepStrictEqual(
+    linesA.filter((_, i) => i !== 2),
+    linesB.filter((_, i) => i !== 2));
+}
+assertDiskBoundary(a, b); // only the disk line changes; timestamp stays exact
 ```
 
 ### 2. Scrub what you cannot inject
