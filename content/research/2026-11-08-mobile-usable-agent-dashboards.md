@@ -36,7 +36,7 @@ In the experiment, with a prior history entry present, pressing browser Back fro
 
 The chat input pattern is a rounded text field that starts at one line and grows to a cap, with an attach control on one side and Send on the other, both staying level with the last line as the field grows. Controls centered against the whole field drift upward into the middle of a four-line message, which looks broken and moves the Send target while the user is typing.
 
-CSS now covers the growing part without script. MDN's [`field-sizing`](https://developer.mozilla.org/en-US/docs/Web/CSS/field-sizing) says `content` makes a form control size to its content, stopping at its maximum size limit, after which it scrolls. `fixed` is the default. MDN lists the property as Baseline 2026 "newly available" since June 2026. The compatibility data records Chrome 123, Firefox 152 and Safari 26.2, with iOS Safari mirroring desktop Safari. "Newly available" is not "widely available": plan a fallback for older browsers.
+CSS now covers the growing part without script. MDN's [`field-sizing`](https://developer.mozilla.org/en-US/docs/Web/CSS/field-sizing) says `content` makes a form control size to its content, stopping at its maximum size limit, after which it scrolls. `fixed` is the default. MDN lists the property as Baseline 2026 "Newly available" since June 2026. The compatibility data records Chrome 123, Firefox 152 and Safari 26.2, with iOS Safari mirroring desktop Safari. "Newly available" is not widely available: plan a fallback for older browsers.
 
 ```css
 .composer { display: flex; gap: 8px; align-items: flex-end; }
@@ -57,7 +57,7 @@ The figures people quote are not interchangeable.
 
 | Source | Value | What it actually is |
 | --- | --- | --- |
-| Apple HIG, [Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons) | 44×44 pt | "General rule" hit region for buttons; 60×60 pt in visionOS |
+| Apple HIG, [Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons) | 44×44 pt | "general rule" hit region for buttons; 60×60 pt in visionOS |
 | Apple HIG, [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility) | 44×44 pt default, 28×28 pt minimum (iOS, iPadOS) | Recommended control sizes; about 12 pt of padding around bezeled elements |
 | Android, [Accessibility guidance](https://developer.android.com/guide/topics/ui/accessibility/apps) and [Touch target size](https://support.google.com/accessibility/android/answer/7101858) | 48×48 dp | Recommended touch target; may be larger than the visible icon; at least 8 dp separation suggested; roughly 9 mm |
 | [WCAG 2.5.8 Target Size (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html) | 24×24 CSS px | Level AA, WCAG 2.2; exceptions for spacing, equivalent control, inline text, user-agent controls, essential presentation |
