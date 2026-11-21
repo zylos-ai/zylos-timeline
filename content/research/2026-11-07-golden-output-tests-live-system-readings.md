@@ -20,7 +20,7 @@ This article surveys how Jest, Go, Node's built-in runner, ApprovalTests, Verify
 4. **Assert the invariant you care about** instead of the whole output. "The repair changed nothing except fields on a named allowlist" is a better test than "all bytes equal."
 5. **Triage failures with evidence**: rerun the single test in isolation, replay the order, diff against a baseline, and only then call it flaky.
 
-Local experiments (Node v24.22.1, Linux, one NVMe filesystem) are included to put numbers on the problem. They show that a quantized disk reading flakes at roughly `churn / granularity`, which is rare enough to survive review and common enough to wreck a busy CI day.
+Local experiments (Node v24.22.1, Linux, one NVMe filesystem) are included to put numbers on the problem. They demonstrate quantization arithmetic; they do not establish a flake rate for independent runs or a busy CI system.
 
 ## Anatomy of the Failure
 
@@ -35,15 +35,15 @@ assert.equal(after, before); // "nothing visible changed"
 
 `renderStatus` does `fs.statfs`, floors the available bytes to GiB, and prints it. Between the two calls, anything else on the same filesystem that allocates or frees blocks can move the number. Because the output is quantized to whole GiB, the flip happens only when free space crosses a GiB boundary during the gap.
 
-That quantization is what makes this class of bug hard to diagnose. A reading that changes on every call fails immediately and gets fixed on day one. A reading that changes with probability `delta / 1 GiB` passes for weeks.
+That quantization is what makes this class of bug hard to diagnose. A reading that changes on every call fails immediately and gets fixed on day one. For a fixed net change `delta` whose magnitude is smaller than one GiB, the boundary-crossing probability is `abs(delta) / 1 GiB` **if the starting free-space remainder modulo one GiB is approximately uniform**. That is a model assumption, not a property guaranteed by the filesystem; predicting failure counts across separate pairs also requires accounting for their dependence.
 
-A small simulation makes the arithmetic concrete. It calls the renderer, appends 1 MiB to a file with `fsync`, and calls it again, 3,000 times:
+A small local experiment makes the arithmetic concrete. It calls the renderer, appends 1 MiB to the same file with `fsync`, and calls it again, 3,000 times on the same filesystem:
 
-| Pairs | Churn between calls | Disk line changed | Observed | Predicted (1 MiB / 1 GiB) |
+| Pairs | Write between calls | Disk line changed | Observed fraction | Uniform-remainder model (1 MiB net / 1 GiB) |
 |---|---|---|---|---|
 | 3,000 | 1 MiB | 3 | 0.10% | 0.10% |
 
-Scale that up. A parallel suite whose neighbors write tens or hundreds of MiB inside the window sees a per-pair rate near 1 to 10%, and with hundreds of assertions of this shape a run fails regularly. Delayed allocation matters too: in a first attempt, buffered `writeFileSync` calls without `fsync` produced zero visible change, which is consistent with the filesystem not having allocated blocks yet (an inference; not checked further). The number you print reflects the filesystem's accounting, not your program's intent.
+These pairs are strongly dependent: cumulative writes of about 3 GiB sweep across consecutive thresholds, so roughly three crossings can arise without independent or uniformly distributed starting points. The observed count demonstrates the arithmetic, rather than validating a statistical flake-rate estimate. Bytes written are not necessarily the net change in available space; concurrent allocation, freeing and filesystem accounting all matter. No CI flake percentage follows from this experiment. Delayed allocation matters too: in a first attempt, buffered `writeFileSync` calls without `fsync` produced zero visible change, which is consistent with the filesystem not having allocated blocks yet (an inference; not checked further). The number you print reflects the filesystem's accounting, not your program's intent.
 
 The same experiment surfaced a second, unplanned flake source. The naive test also printed an ISO timestamp with millisecond precision, and the pure-equality version failed in 2 of 10 repeated runs from the clock line alone. The fix for the disk line would not have been enough.
 
@@ -51,7 +51,7 @@ The same experiment surfaced a second, unplanned flake source. The naive test al
 
 ### Snapshot and golden-file practice
 
-**Jest** states the responsibility plainly: "You're responsible for making sure your generated snapshots do not include platform specific or other non-deterministic data." Its [snapshot guide](https://jestjs.io/docs/snapshot-testing) offers three levers: mock the source (`Date.now = jest.fn(() => 1_482_363_367_071)`), replace the random part of a string before snapshotting, or use *property matchers*, where an asymmetric matcher such as `expect.any(Date)` is checked before the snapshot is written or compared and stored as `Any<Date>`. Non-matcher values are still compared exactly. The same page insists on treating snapshots as code, and warns against "the habit of regenerating snapshots when test suites fail instead of examining the root causes." Jest's [`--ci` flag](https://jestjs.io/docs/cli) fails on a missing snapshot rather than writing it silently, which closes one more route for unreviewed baselines.
+**Jest** states the responsibility plainly: "You're responsible for making sure your generated snapshots do not include platform specific or other non-deterministic data." Its [snapshot guide](https://jestjs.io/docs/snapshot-testing) offers three levers: mock the source (`Date.now = jest.fn(() => 1_482_363_367_071)`), replace the random part of a string before snapshotting, or use *property matchers*, where an asymmetric matcher such as `expect.any(Date)` is checked before the snapshot is written or compared and stored as `Any<Date>`. Non-matcher values are still compared exactly. The same page insists on treating snapshots as code, and warns against "the habit of regenerating snapshots when test suites fail instead of examining the root causes of their failure." Jest's [`--ci` flag](https://jestjs.io/docs/cli) fails on a missing snapshot rather than writing it silently, which closes one more route for unreviewed baselines.
 
 **Go golden files** live in `testdata/` (ignored by the standard tools), are compared byte-for-byte, and are refreshed with an `-update` flag. [goldie](https://pkg.go.dev/github.com/sebdah/goldie/v2) documents exactly that: "The actual response data will be byte compared with the golden file and the test will fail if there is a difference." It also supports `AssertWithTemplate`, where the golden file contains template fields such as `{{ .Type }}` filled from test data. This is a useful middle path: the volatile token stays *in the golden file* as an explicit hole, not as an invisible regex in the test.
 
@@ -63,7 +63,7 @@ The same experiment surfaced a second, unplanned flake source. The naive test al
 
 ### Why determinism beats scrubbing when you can get it
 
-Martin Fowler's [Eradicating Non-Determinism in Tests](https://martinfowler.com/articles/nonDeterminism.html) lists the usual causes (lack of isolation, asynchrony, remote services, time, resource leaks) and the remedy for time: "Always wrap the system clock, so it can be easily substituted for testing." Disk space is the same species of dependency: an ambient, shared, mutable resource read through a global API. His second recommendation, quarantining a nondeterministic test so it does not erode trust in the rest, is the right short-term move while you fix the cause.
+Martin Fowler's [Eradicating Non-Determinism in Tests](https://martinfowler.com/articles/nonDeterminism.html) lists the usual causes (lack of isolation, asynchrony, remote services, time, resource leaks) and the remedy for time: "always wrap the system clock with routines that can be replaced with a seeded value for testing." Disk space is the same species of dependency: an ambient, shared, mutable resource read through a global API. His second recommendation, quarantining a nondeterministic test so it does not erode trust in the rest, is the right short-term move while you fix the cause.
 
 Go has pushed this furthest with [`testing/synctest`](https://pkg.go.dev/testing/synctest), which gives a "bubble" its own fake clock (starting at 2000-01-01 UTC) that advances only when every goroutine in the bubble is durably blocked. Sleeps cost no real time and the result is the same on every run. The principle generalizes: the best fix for a nondeterministic input is to own the input.
 
@@ -87,7 +87,7 @@ Before choosing a technique, list what the output actually reads. A status or do
 | Environment and version strings | `process.version`, package version | Change with upgrades | Scrub or exclude from the golden |
 | Line endings | `\r\n` vs `\n` | Platform | Normalize before comparison |
 
-Two notes on this table. First, `fs.statfs` returns `bavail` as "free blocks available to unprivileged users" and you multiply by `bsize` for bytes ([Node fs docs](https://nodejs.org/api/fs.html)); whether you use `bavail` or `bfree` is itself a source of machine-to-machine difference. POSIX [`df -P`](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/df.html) defines the "Available" column as the space available to unprivileged users and rounds values up to the next unit, so even cross-tool comparison depends on rounding rules. Second, [`NO_COLOR`](https://no-color.org/) says that when the variable is present and not an empty string, ANSI color should not be added; the [CLI guidelines](https://clig.dev/) add checking TTY status separately for stdout and stderr and treat `TERM=dumb` as a no-color signal. In tests, set these explicitly instead of relying on the runner's environment.
+Two notes on this table. First, `fs.statfs` returns `bavail` as "Free blocks available to unprivileged users." and you multiply by `bsize` for bytes ([Node fs docs](https://nodejs.org/api/fs.html)); whether you use `bavail` or `bfree` is itself a source of machine-to-machine difference. POSIX [`df -P`](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/df.html) defines the "Available" column as the space available to unprivileged users and rounds values up to the next unit, so even cross-tool comparison depends on rounding rules. Second, [`NO_COLOR`](https://no-color.org/) says that when the variable is present and not an empty string, ANSI color should not be added; the [CLI guidelines](https://clig.dev/) add checking TTY status separately for stdout and stderr and treat `TERM=dumb` as a no-color signal. In tests, set these explicitly instead of relying on the runner's environment.
 
 ## Techniques for Node.js CLIs
 
@@ -111,7 +111,7 @@ export const liveProbes = {
 export function renderStatus(cfg, probes = liveProbes) {
   const gib = Math.floor(probes.diskAvailableBytes(cfg.dir) / GiB);
   return [
-    `Config: ${cfg.ok ? 'valid' : 'repaired'}`,
+    `Config: ${cfg.ok ? 'valid' : 'needs repair'}`,
     `Dir: ${cfg.dir}`,
     `Disk: ${gib} GiB available`,
     `Checked: ${probes.now().toISOString()}`,
@@ -125,14 +125,26 @@ const fixed = (bytes) => ({
   now: () => new Date('2026-01-01T00:00:00Z'),
 });
 const p = fixed(40 * 1024 ** 3);
-assert.equal(renderStatus(afterRepair, p), renderStatus(beforeRepair, p)); // exact, stable
+// Repair removes an obsolete key; both fixtures have valid effective config.
+const beforeRepair = { dir: '.', ok: true, obsolete: true };
+const afterRepair = { dir: '.', ok: true };
+assert.equal(renderStatus(afterRepair, p), renderStatus(beforeRepair, p));
+
+// If repair changes validity, assert the transition instead of full equality.
+const invalid = { dir: '.', ok: false };
+const beforeLines = renderStatus(invalid, p).split('\n');
+const afterLines = renderStatus(afterRepair, p).split('\n');
+assert.equal(beforeLines[0], 'Config: needs repair');
+assert.equal(afterLines[0], 'Config: valid');
+assert.deepStrictEqual(afterLines.slice(1), beforeLines.slice(1));
 ```
 
-This keeps the byte-for-byte assertion honest: with the probes pinned, the *only* thing that can differ is the code under test. For clocks without a refactor, Node's [`mock.timers`](https://nodejs.org/api/test.html) with `apis: ['Date']` and a `now` option fixes `Date.now()`, and `t.mock` scopes the mock to a single test so it is restored automatically. Note the documented limitation: destructured imports of timer functions are not mocked.
+The first fixture pair asserts a persistent invariant: removing an obsolete key preserves the effective validity, directory and rendered status. The second asserts a legitimate visible transition from invalid to valid while the remaining lines stay equal. Fixed probes remove ambient differences; they cannot make different semantic states equal. For clocks without a refactor, Node's [`mock.timers`](https://nodejs.org/api/test.html) with `apis: ['Date']` and a `now` option fixes `Date.now()`, and `t.mock` scopes the mock to a single test so it is restored automatically. Note the documented limitation: destructured imports of timer functions are not mocked.
 
 Add a boundary test for the probe-to-text conversion itself, since that is where the original surprise lived. In the experiment, `40 GiB` and `40 GiB - 1 byte` produced different disk lines and otherwise identical output, which is exactly the property you want pinned:
 
 ```js
+const cfg = afterRepair;
 const a = renderStatus(cfg, fixed(40 * GiB));
 const b = renderStatus(cfg, fixed(40 * GiB - 1));
 assert.notEqual(a, b);                 // the quantization is real...
@@ -144,9 +156,24 @@ assert.equal(scrub(a), scrub(b));      // ...and confined to the disk line
 When the reading comes from deep inside a dependency, or you are testing a real process end to end, normalize the output with a scrubber. In Node's runner it fits the serializer slot:
 
 ```js
-const scrub = (s) => String(s)
-  .replace(/^Disk: .*$/m, 'Disk: <n> GiB available')
-  .replace(/^Checked: .*$/m, 'Checked: <ts>');
+function scrub(value) {
+  const lines = String(value).replace(/\r\n?/g, '\n').split('\n');
+  assert.equal(lines.filter((line) => line.startsWith('Disk:')).length, 1);
+  assert.equal(lines.filter((line) => line.startsWith('Checked:')).length, 1);
+  return lines.map((line) => {
+    if (line.startsWith('Disk:')) {
+      assert.match(line, /^Disk: (0|[1-9]\d*) GiB available$/);
+      return line.replace(/^(Disk: )(0|[1-9]\d*)( GiB available)$/, '$1<n>$3');
+    }
+    if (line.startsWith('Checked:')) {
+      const match = /^(Checked: )(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/.exec(line);
+      assert.ok(match, 'expected an ISO timestamp');
+      assert.equal(new Date(match[2]).toISOString(), match[2]);
+      return `${match[1]}<ts>`;
+    }
+    return line;
+  }).join('\n');
+}
 
 test('status golden', (t) => {
   t.assert.snapshot(renderStatus(cfg), { serializers: [scrub] });
@@ -158,7 +185,7 @@ The generated snapshot (verified with `--test-update-snapshots`, then re-run wit
 - **Anchor the pattern to the field** (`^Disk: ...$`), not to a bare number. A greedy `\d+` scrubber hides real regressions in unrelated lines.
 - **Keep placeholders readable** in the stored file, so a reviewer can see what was normalized. This is the property that Jest's `Any<Date>` and goldie's template fields share.
 - **Preserve identity.** If the same temp dir appears three times, map it to the same `<TMP>` each time; use numbered placeholders (`<PID_1>`, `<PID_2>`) as ApprovalTests does for GUIDs.
-- **Validate before you erase.** insta's dynamic redactions can assert a value's format before replacing it. A scrubber that also checks `Disk: \d+ GiB available` matched at least once will fail if the line disappears, instead of silently comparing two outputs that both lack it.
+- **Validate before you erase.** insta's dynamic redactions can assert a value's format before replacing it. A scrubber that also checks `Disk: \d+ GiB available` matched exactly once with the expected unit and suffix will fail if the line disappears, instead of silently comparing two outputs that both lack it.
 - **Normalize newlines first**, as Verify does.
 - Never scrub in the *production* renderer to make a test pass. Scrubbing belongs in the test harness.
 
@@ -201,17 +228,17 @@ Node's runner, per its [documentation](https://nodejs.org/api/test.html), runs e
 
 ## Telling a Flaky Assertion from a Real Regression
 
-A failing golden test has two explanations: the code changed behavior, or the assertion depended on something other than the code. Procedure:
+A failing golden test can expose a behavior change, an uncontrolled dependency, or an interaction between them. A new race or resource interaction can be both intermittent and a regression. Procedure:
 
 1. **Read the diff before anything else.** Does the differing text correspond to a volatile input? A one-line difference in `Disk:` or a timestamp is a strong hint. A diff in a field the change touched is not.
-2. **Rerun the single test in isolation**, with the same seed. For Node: `node --test --test-name-pattern="status golden" path/to/file.test.mjs`. Pass in isolation but fail in the full run points to a shared-state or timing cause.
+2. **Rerun the single test in isolation**, with the same seed. For Node: `node --test --test-name-pattern="status golden" path/to/file.test.mjs`. Pass in isolation but fail under suite load suggests shared state or timing; a candidate-only race remains possible.
 3. **Rerun the full suite with reduced concurrency** (`--test-concurrency=1`). Disappearance of the failure suggests contention.
 4. **Replay the order.** If you ran with `--test-randomize`, rerun with the printed `--test-random-seed`. Node also has `--test-rerun-failures <file>`, which persists run state and reruns only tests that have not yet passed, but its own documentation warns it should be used when tests run in a deterministic order.
-5. **Compare against a baseline.** Run the same test on the parent commit (or `git stash`) several times under the same load. A real regression fails every time on the new code and never on the old; a flaky assertion fails on both at some rate. For quantized readings, estimate the rate you expect (`churn / granularity`), then check the observed frequency against it.
+5. **Compare against a baseline.** Run the same test on the parent commit (or `git stash`) several times under the same load. Use matched loads, seeds, environment and repetitions on the baseline and candidate, and inspect the failing diff. A candidate-only intermittent failure can be a regression; failures on both versions suggest a pre-existing dependency but do not rule out the candidate making it worse. Report counts and conditions, and whether they support a new failure mode or a pre-existing dependency; finite passing runs cannot prove absence. For quantized readings, use `abs(net change) / granularity` only with an approximately uniform starting remainder and a known net change smaller than one bucket. A dependent threshold sweep is not an estimate of independent-run probability.
 6. **Loop it.** Run the failing test 50 to 200 times under artificial load; one failure in a loop proves nondeterminism but not its source, so pair it with step 1.
 7. **Decide, then fix the cause.** Quarantine briefly if needed, as Fowler suggests, but record why. Do not "fix" it by regenerating the golden or by retrying until green: Jest's guidance about not regenerating snapshots without understanding the failure applies equally to retries.
 
-A rerun that passes is evidence of flakiness, not of correctness. Say so in the commit message or report: "Failure was in the disk line; passes in isolation; assertion replaced with X."
+A passing rerun demonstrates intermittency for those conditions; it does not clear a possible regression. Say so in the commit message or report: "Failure was in the disk line; passes in isolation; assertion replaced with X."
 
 For agent runners specifically, treat a test failure like any other tool outcome that needs evidence. Record the failing diff, the isolated rerun result, and the conclusion. A report that says "flaky, reran, green" without the diff is indistinguishable from a model papering over a real failure.
 
@@ -232,7 +259,7 @@ When adding or reviewing a golden or snapshot test for a CLI:
 
 ## Limits of This Study
 
-The experiments are small and local: Node v24.22.1 on Linux, one NVMe-backed filesystem, synthetic churn of 1 MiB per pair, 3,000 pairs for the disk simulation and ten repeated suite runs for the clock observation. They illustrate the quantization arithmetic and are not a measurement of any particular CI system. Filesystem accounting differs across ext4, XFS, btrfs, ZFS, tmpfs, and container overlays, and reservations or snapshots can make free space move without your process writing anything. Details of some libraries (Verify's default date and GUID scrubbers, insta's regex filters) were not confirmed from primary documentation here and should be checked against the current docs before relying on them. The Google flakiness figures are quoted from the 2016 blog post's summary and may not reflect current numbers. Node's randomized ordering is documented as early development, and API names or stability can change between releases.
+The experiments are small and local: Node v24.22.1 on Linux, one NVMe-backed filesystem, synthetic churn of 1 MiB per pair, 3,000 pairs for the disk simulation and ten repeated suite runs for the clock observation. The disk pairs form a dependent threshold sweep; they illustrate quantization arithmetic and are not a measurement of independent-run probabilities or any particular CI system. The disk and timestamp counts are the original reported observations, not measurements rerun for these corrections. Filesystem accounting differs across ext4, XFS, btrfs, ZFS, tmpfs, and container overlays, and reservations or snapshots can make free space move without your process writing anything. Details of some libraries (Verify's default date and GUID scrubbers, insta's regex filters) were not confirmed from primary documentation here and should be checked against the current docs before relying on them. The Google flakiness figures are quoted from the 2016 blog post's summary and may not reflect current numbers. Node's randomized ordering is documented as early development, and API names or stability can change between releases.
 
 ## Sources
 
