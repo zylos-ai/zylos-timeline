@@ -13,10 +13,10 @@ An AI-agent framework ships as a global npm package. Its `postinstall` script sy
 The main findings of this research are:
 
 - **Install hooks are the one place where code runs with the installer's authority before any human has looked at what it does.** Every mature packaging ecosystem has therefore moved toward narrowing what install-time code may touch. Nix runs builds in a sandbox. Python wheels are unpacked, not executed. pnpm, Yarn and (since npm 12) npm stop running dependency scripts by default. Debian and RPM policy demand idempotent, non-interactive maintainer scripts that never clobber local configuration.
-- **None of these mechanisms protects a script from itself.** `postinstall` of the package you explicitly asked for still runs on `npm install -g`, as an ordinary process with your user's privileges and `HOME`. Where its writes land is entirely the script author's decision.
+- **None of these mechanisms protects a script from itself.** When policy allows it, even the explicitly named global package's `postinstall` runs as an ordinary process with your user's privileges and `HOME`. npm 12 blocks an unreviewed global package's lifecycle scripts by default; an explicit allowance enables them. Where its writes land is entirely the script author's decision.
 - **The "implicit target" failure class** (env var with a default, HOME-relative paths) is correct in the common case and silently wrong in the rare one. It is wrong exactly when more than one candidate target exists.
 - **The fix is structural, not a better default.** Install the code at install time. Deploy into an instance with an explicit command that names its target, prints a plan, backs up, stamps versions, and refuses to guess when more than one candidate exists. An opt-out env var is weaker than opt-in because the failure mode of opt-out is the operator forgetting something.
-- **It is cheap to test.** Install into a sandbox `HOME` that contains a decoy default instance, fingerprint it before and after, and fail the build if anything changed. I ran a minimal version of this harness during research to confirm the mechanics (see section 4).
+- **It is cheap to test.** Install into a sandbox `HOME` that contains a decoy default instance, fingerprint it before and after, and fail the build if anything changed. I ran a minimal version of this harness during research to confirm the mechanics (see section 5).
 
 ## 1. The incident, abstracted
 
@@ -41,13 +41,15 @@ The damage is not the 35 files. It is the loss of provenance: with no manifest o
 
 ### npm
 
-The npm docs list the hooks that run on `npm install`: `preinstall`, `install`, `postinstall`, `prepublish`, `preprepare`, `prepare` and `postprepare`. The scripts page states "These also run when you run `npm install -g <pkg-name>`", and that "Scripts are run from the root of the package folder" ([npm scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)). The same page says "The only valid use of `install` or `preinstall` scripts is for compilation", which makes a skills-syncing postinstall off-label by the docs' own standard. It also carries a relevant piece of guidance: scripts should "Inspect the env to determine where to put things", and its example is that if `npm_config_binroot` is set then "don't try to install executables into `/usr/local/bin`", because "the user probably set it up that way for a reason."
+The npm docs list the hooks that run on `npm install`: `preinstall`, `install`, `postinstall`, `prepublish`, `preprepare`, `prepare` and `postprepare`. The scripts page states "These also run when you run `npm install -g <pkg-name>`", and that "Scripts are run from the root of the package folder" ([npm scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)). The same page says "The only valid use of `install` or `preinstall` scripts is for compilation", which is advice about those two hooks, not a direct prohibition on `postinstall`. Separating deployment from installation is the recommendation here, based on target safety. It also carries a relevant piece of guidance: scripts should "Inspect the env to determine where to put things", and its example is that if `npm_config_binroot` is set then "don't try to install executables into `/usr/local/bin`", because "the user probably set it up that way for a reason."
 
 What npm guarantees about *where* side effects land: only that the package files go under `{prefix}/lib/node_modules` for global installs ([npm folders](https://docs.npmjs.com/cli/v10/configuring-npm/folders)). The script is an ordinary child process. The docs say that when npm runs as root, scripts run "with the effective uid and gid of the working directory owner" ([npm scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)), and nothing confines their filesystem writes.
 
 `--ignore-scripts` (the `ignore-scripts` config, default `false`) makes npm skip scripts defined in `package.json` files ([npm config](https://docs.npmjs.com/cli/v10/using-npm/config)). It is a blunt tool: it turns off *all* hooks, including legitimate native-module builds.
 
-**The npm 12 shift (check your version).** The npm CLI documentation for v11 now documents an `allow-scripts` config and a `strict-allow-scripts` config, and describes `allow-scripts` as "meant for one-off and global contexts such as `npm exec`, `npx`, and `npm install -g`" ([npm config, v11](https://docs.npmjs.com/cli/v11/using-npm/config)). Secondary reports say npm 12 (reported as released 8 July 2026) makes dependency install scripts opt-in via `allowScripts` ([InfoQ](https://www.infoq.com/news/2026/08/npm-12-released/); [DEV Community report](https://dev.to/mr_manushukla/npm-12-shipped-on-8-july-2026-with-install-scripts-off-by-default-the-ci-fix-5289)). I could not read InfoQ's full text. Neither those sources nor the docs I read say whether the *top-level* package of a global install is blocked by default. I tested this locally. On npm 11.19.1, `npm install -g` of a tiny package with a `postinstall` printed an `install-scripts` warning ("Run `npm install -g --allow-scripts=demo-agent` to allow these scripts once...") and **still ran the script**. So on that version it is warning-mode, not blocking. Whether npm 12 changes this for the top-level global package is unverified here. Either way, a design that relies on the package manager's policy to prevent a wrong-target write is relying on a control that its own users can switch off with one flag.
+**npm 12 default versus an allowed hook.** The [v12.0.0 release notes](https://github.com/npm/cli/releases/tag/v12.0.0) state that dependency lifecycle scripts are blocked by default. This includes the package explicitly named in a global install: the tagged [install command](https://github.com/npm/cli/blob/v12.0.0/lib/commands/install.js#L137-L189) passes it to Arborist as an `add`, while the separate root lifecycle branch runs only for a bare local install. Arborist's [queue policy](https://github.com/npm/cli/blob/v12.0.0/workspaces/arborist/lib/arborist/rebuild.js#L195-L225) permits lifecycle scripts only when policy allows them (or an explicit bypass applies). For global installs, [policy resolution](https://github.com/npm/cli/blob/v12.0.0/lib/utils/resolve-allow-scripts.js) consults CLI/environment and npmrc layers, skipping the project's `package.json#allowScripts`. An operator can authorize a named package with `--allow-scripts=demo-agent`; `--ignore-scripts` still suppresses hooks. These controls govern whether a hook runs, not where an allowed hook writes.
+
+The earlier author experiment used **npm 11.19.1**, which warned about a tiny global package's `postinstall` and still ran it. That is a version-specific observation, not npm 12 behavior. The isolated fixture below separately checks npm 12's default and explicit allowance. The safety conclusion is conditional: whenever a hook is allowed to run, the package author must prevent wrong-target writes.
 
 ### pnpm
 
@@ -70,7 +72,7 @@ The relevant guarantee is the *convention*: package-owned files go in package-ow
 
 ### RPM
 
-The RPM scriptlet documentation specifies that scripts receive an instance count as `$1` ("1 on initial install, and 0 on final removal"; other values indicate upgrade), that "Scriptlets should be designed to always return with zero exit code" since RPM cannot roll back, and that "Scriptlets cannot be interactive, and should not rely on their output to be seen by users" ([RPM scriptlets](https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7)). It recommends keeping scriptlets to package-specific actions. The "should not rely on output being seen" line is the RPM-world version of the incident's "nothing logged where the operator would look".
+The RPM scriptlet documentation specifies that scripts receive an instance count as `$1` ("1 on initial install, and 0 on final removal"; other values indicate upgrade), that "Scriptlets should be designed to always return with zero exit code" since RPM cannot roll back, and that "Scriptlets cannot be interactive, and should not rely on their output to be seen by users" ([RPM scriptlets](https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7)). It recommends keeping scriptlets to package-specific actions. That warning about unseen output parallels the incident's lack of a log where the operator would look.
 
 ### Homebrew
 
@@ -88,7 +90,7 @@ Nix's `sandbox` setting, when true, runs builds "isolated from the normal file s
 
 | Ecosystem | Install-time code? | Where may side effects land? | Enforcement |
 |---|---|---|---|
-| npm | yes (`postinstall`, also on `-g`) | anywhere the user can write | none beyond uid; policy opt-in/out flags |
+| npm | npm 12: unreviewed lifecycle scripts off, including named global packages; allowed hooks run | anywhere the user can write, if allowed | script policy gates execution; no write confinement beyond uid |
 | pnpm / Yarn | dependencies: off by default | same, if allowed | allowlist |
 | Debian | maintainer scripts | convention: package paths, `/etc` conffiles | policy, review |
 | RPM | scriptlets | convention | policy, no rollback |
@@ -103,7 +105,7 @@ Nix's `sandbox` setting, when true, runs builds "isolated from the normal file s
 A script resolves *where to act* by a rule instead of by a statement from the caller. Common forms:
 
 - `process.env.X || ~/default` (the incident).
-- `os.homedir()`. Node documents that on POSIX it "uses the `$HOME` environment variable if defined," and only otherwise looks up the effective UID ([Node os.homedir](https://nodejs.org/api/os.html#oshomedir)). So "home" depends on the *environment of the process*, which npm inherited from the shell.
+- `os.homedir()`. Node documents that on POSIX it "uses the `$HOME` environment variable if defined." Otherwise it looks up the effective UID ([Node os.homedir](https://nodejs.org/api/os.html#oshomedir)). So "home" depends on the *environment of the process*, which npm inherited from the shell.
 - The current working directory, or `INIT_CWD`. The npm docs say scripts run from the package folder, while `INIT_CWD` "holds the full path you were in when you ran `npm run`" ([npm scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)).
 - "The only instance", discovered by globbing or by a well-known path.
 
@@ -172,7 +174,9 @@ Keep a marker in the *instance*, not just in the package, saying which package v
   "schema": 7 }
 ```
 
-Rules that follow: re-running the same version is a no-op (the Debian idempotency requirement); **skip, and warn, when the instance's recorded version is newer than or incompatible with the package** (downgrade or cross-line sync); and upgrade code and state together or not at all. In the incident, the files and the database/config diverged because the sync updated one half. A single `schema` stamp that the deploy step checks both before and after makes that detectable and, ideally, refused.
+A clean, completed same-version deployment whose files and schema match the marker can be a no-op. An interrupted attempt to deploy that same version is different: the old marker does not prove the files are unchanged. Check the journal and actual files/schema before deciding to skip. **Skip, and warn, when the instance's recorded version is newer than or incompatible with the package** (downgrade or cross-line sync).
+
+A backup and a marker written last provide **detection and recoverability, not atomic deployment**. A crash after a file write and before migration or stamping can leave mixed versions visible. A tool claiming that users never encounter this state must first make the target unavailable, stop its readers/writers, and keep startup blocked across a deploy-process crash. Before reopening it, resume the journaled work only if the migration supports safe resumption, or restore the matching files and state backup; validate hashes and schema, then commit the marker. Repeating a partially applied migration is not automatically safe. Without such an availability gate and recovery path, describe only the narrower recoverability guarantee; a schema stamp alone cannot provide all-or-nothing behavior.
 
 ### 4.6 Opt-in beats opt-out
 
@@ -207,11 +211,14 @@ AFTER=$(fp "$SB/home/agent")
 echo "PASS"
 ```
 
-I ran a reduced version of this against a naive `postinstall` of the same shape as the incident (on Node 24.22.1 / npm 11.19.1). The decoy file changed from `v1` to `v2` and the harness reported `MUTATED`, which confirms the negative control can fail. A harness that has never been seen to fail proves nothing, so keep a deliberately naive fixture package in your test suite.
+The earlier author run used a reduced version of this against a naive `postinstall` of the same shape as the incident (on Node 24.22.1 / npm 11.19.1). The decoy file changed from `v1` to `v2` and the harness reported `MUTATED`, which shows the clean-install invariant can detect a mutation. The deliberately naive package is a positive control (known-bad fixture): assert its hook executed, rather than accepting an unchanged decoy when policy suppressed the hook.
+
+A new isolated check under a dedicated OS user ran Node 24.22.1 with npm 12.0.0 against local fixture tarballs. With default policy, the naive hook was reported blocked and both instances stayed unchanged. With the exact `file:` allowance, foreground output confirmed the hook ran and only the default instance changed. The safe fixture's allowed notice-only hook changed neither instance, both with the target unset and with B configured. In each safe case, a separate explicit deploy then changed only B. These checks exercise the install/deploy boundary, not production migration or crash recovery.
 
 Extensions worth adding:
 
-- **Positive control.** The same install with the target explicitly given must deploy correctly, so the test cannot pass by the hook doing nothing at all.
+- **Install/deploy split.** With two decoy instances, fingerprint both. Install the safe package once with no target and once with `AGENT_DIR` set to B: neither install may change either instance. Then run the explicit deploy command against B: only B must change. Successful deploy proves that suppressed or no-op hooks do not prevent the supported deployment route.
+- **Known-bad control under an allowed policy.** Run the local-tarball naive fixture with npm 12's `--allow-scripts=file:/absolute/path/demo-agent-naive-2.0.0.tgz` and require both a foreground lifecycle execution record and the decoy mutation. A registry package uses its registry name instead: the tagged identity matcher does not let a name-only registry allowance authorize a file tarball. Separately, the default-policy run must leave the decoy unchanged and report the script as blocked. This distinguishes a safe package from a package manager that never executed the code being tested.
 - **Several decoys.** Create two or three plausible instances and assert that the tool refuses and names all of them.
 - **sudo / HOME variants.** Run once with `HOME` unset and once as root in a container. Do not assume the sudo behaviour; test it on your CI image.
 - **Downgrade test.** Install an older package over a newer instance; assert skip plus warning.
@@ -225,18 +232,18 @@ Extensions worth adding:
 3. If a target is inferred, it is inferred only when exactly one candidate exists; zero or many means refuse and list candidates.
 4. `--plan` / `--dry-run` shows adds, changes, removals and locally modified files, driven by a shipped manifest with hashes.
 5. A backup is written before any mutation; failure to back up aborts.
-6. Each instance has a deploy-state marker (package version, per-file origin, schema version). Same version is a no-op; newer-than-package or schema mismatch is a refusal.
-7. Code assets and state migrations are applied together or not at all, and the marker is updated last.
+6. Each instance has a deploy-state marker (package version, per-file origin, schema version). Only a verified completed same-version deployment is a no-op; an interrupted same-version attempt requires recovery checks. Newer-than-package or incompatible schema is a refusal.
+7. Update the marker last, and describe the guarantee accurately: backups and journals support recovery. To prevent use of mixed code/state, keep the target unavailable across interruption and recover it before reopening.
 8. Results are logged to stdout and to a log file inside the instance, with the target path as the first line.
 9. The tool works with `--ignore-scripts` and under pnpm / npm policies that skip scripts. Do not make correctness depend on the hook running.
 10. An opt-out env var may exist for CI, but safety must not depend on it.
-11. CI includes the decoy-instance negative control, its positive control and a deliberately naive fixture that proves the harness can fail.
+11. CI checks that installs leave both decoys unchanged even with a target configured, that explicit deploy changes only its target, and that an allowed naive hook is detected as a mutation.
 12. Operators' runbooks say: install ≠ deploy; after installing, run `plan` against the intended instance.
 
 ## 7. Caveats and what I could not verify
 
 - The incident reconstruction (code shape, the env-var default) is taken from the brief given to me, not from source I read. Snippets labelled "illustrative" are mine.
-- npm 12's exact behaviour for top-level global installs is unverified; secondary sources say dependency scripts are opt-in, my local npm 11.19.1 warns but still runs a global package's postinstall.
+- npm 12's global-policy conclusion is grounded in its v12.0.0 tagged source and isolated fixture checks, separate from the earlier npm 11.19.1 author run. The fixture does not validate a production deploy transaction or crash recovery.
 - Shai-Hulud details and the date of the Ubuntu `HOME` default change come from secondary sources and are flagged where used.
 - The Fedora packaging guidelines and Debian Policy sections on user home directories did not yield statements I could quote, so I make no claim about them.
 - Homebrew's documentation appears to have changed recently (declarative `post_install_steps`); older descriptions of `post_install` in blog posts may no longer match.
@@ -248,7 +255,7 @@ Extensions worth adding:
 - npm config, v11 (`allow-scripts`, `strict-allow-scripts`): https://docs.npmjs.com/cli/v11/using-npm/config
 - npm install, v11: https://docs.npmjs.com/cli/v11/commands/npm-install
 - npm folders: https://docs.npmjs.com/cli/v10/configuring-npm/folders
-- npm 12 coverage (secondary): https://www.infoq.com/news/2026/08/npm-12-released/ and https://dev.to/mr_manushukla/npm-12-shipped-on-8-july-2026-with-install-scripts-off-by-default-the-ci-fix-5289
+- npm 12 primary release and tagged source: https://github.com/npm/cli/releases/tag/v12.0.0 · https://github.com/npm/cli/blob/v12.0.0/lib/commands/install.js · https://github.com/npm/cli/blob/v12.0.0/workspaces/arborist/lib/arborist/rebuild.js · https://github.com/npm/cli/blob/v12.0.0/lib/utils/resolve-allow-scripts.js
 - pnpm v10.0.0 release notes: https://github.com/pnpm/pnpm/releases/tag/v10.0.0
 - pnpm build settings: https://pnpm.io/settings/build
 - Yarn `enableScripts`: https://yarnpkg.com/configuration/yarnrc
