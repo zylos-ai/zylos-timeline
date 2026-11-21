@@ -65,7 +65,7 @@ The figures people quote are not interchangeable.
 
 The 24 px WCAG criterion is a conformance floor with a spacing escape hatch: undersized targets pass if a 24 px circle centered on each one does not intersect another target or another undersized target's circle. The 44 px figures from Apple and WCAG 2.5.5 are design targets, and 2.5.5 is Level AAA, which many organizations do not adopt as a requirement. Apple's own page also names a 28 pt minimum, so "Apple says 44" is the default, not the only number. Points, dp and CSS pixels are different units, so treat 44 CSS px as a practical translation, not an equivalence defined by any of these documents.
 
-A defensible rule for an operator console: at least 44 CSS px for anything on the primary path, never below 24 plus spacing, and extra separation between a routine action and a destructive one. In the toy page the flawed table used 22 px-high buttons, which fail even the WCAG 24 px size test with no help from spacing. The fixed buttons measured at least 44×44.
+The project rule proposed here is at least 44×44 CSS px for primary-path controls, with extra separation between routine and destructive actions. This is a local design threshold, not a WCAG AA conformance test. The flawed toy table used 22 px-high buttons, so they miss both this project threshold and WCAG 2.5.8's size branch. Spacing was not measured for that toy, so its WCAG result is undetermined: the spacing or another applicable exception must be assessed before calling it a failure. The fixed buttons measured at least 44×44.
 
 One limit on the tests: `getBoundingClientRect()` returns the element's own box including padding and border, per [MDN](https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect). A control whose hit area is extended by a pseudo-element will appear smaller than it behaves. Measure the box you actually style, or add an explicit hit-test with `elementFromPoint`.
 
@@ -73,7 +73,7 @@ One limit on the tests: `getBoundingClientRect()` returns the element's own box 
 
 A table with eight columns does not fit in 390 px. The options are horizontal scrolling inside the table, hiding columns, or restructuring rows as cards.
 
-WCAG 1.4.10 [Reflow](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html) requires content to work at a width equivalent to 320 CSS px without two-dimensional scrolling, with exceptions. Its note lists "data tables (not individual cells)" among the content for which two-dimensional scrolling is acceptable. That makes a scrolling table conformant. It does not make it usable. Conformance and operability are different questions on a phone.
+WCAG 1.4.10 [Reflow](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html) requires content to work at a width equivalent to 320 CSS px without two-dimensional scrolling, with exceptions. Its note lists "data tables (not individual cells)" among the content for which two-dimensional scrolling is acceptable. This is an exception to Reflow for content that requires a two-dimensional layout for usage or meaning, not a blanket conformance claim for any scrolling table. Individual cells and surrounding content still need to meet Reflow, and other WCAG criteria still apply. The exception alone does not establish usability on a phone.
 
 Which approach fits depends on what the operator does with the row:
 
@@ -105,7 +105,7 @@ Practical tactics:
 
 Viewport units need a decision as well. MDN's [length](https://developer.mozilla.org/en-US/docs/Web/CSS/length) page describes the `dv*` units as following the browser's dynamic interface, and warns that their sizes are not stable and can cause content to resize while scrolling, with a performance cost. Compatibility data lists `dvh` from Chrome 108, Firefox 101 and Safari 15.4. A pinned app shell can reasonably use `100dvh`, because it sits in a fixed frame, while scrolling content should usually avoid depending on it. Add `env(safe-area-inset-bottom)` padding for the composer on devices with a home indicator; that detail is described in Apple's [Layout](https://developer.apple.com/design/human-interface-guidelines/layout) guidance on safe areas and was not exercised in the Chromium emulation.
 
-WCAG's Reflow note also lists "interfaces where it is necessary to keep toolbars in view while manipulating content" among legitimate two-dimensional cases. This is a reasonable argument for a pinned composer, and not for a pinned everything-bar.
+WCAG's Reflow note also lists "interfaces where it is necessary to keep toolbars in view while manipulating content" among legitimate two-dimensional cases. That exception applies only where the two-dimensional layout is necessary for usage or meaning; pinning a composer does not by itself establish that it qualifies. Check that it does not obscure content or controls.
 
 ## Verifying It Automatically
 
@@ -115,31 +115,67 @@ Screenshots at both widths are review evidence: they show spacing, truncation an
 
 ```js
 const m = await page.evaluate(() => {
+  const input = document.querySelector('#msg');
   const r = s => document.querySelector(s).getBoundingClientRect();
   const ta = r('#msg'), send = r('#send');
   const cs = getComputedStyle(document.querySelector('#msg'));
   const lastLineCenter = ta.bottom - parseFloat(cs.borderBottomWidth)
     - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2;
-  return { drift: Math.abs(send.top + send.height / 2 - lastLineCenter) };
+  return { uncapped: input.scrollHeight <= input.clientHeight + 1
+      && input.scrollTop === 0,
+    drift: Math.abs(send.top + send.height / 2 - lastLineCenter) };
 });
+expect(m.uncapped).toBe(true);
 expect(m.drift).toBeLessThanOrEqual(1);
 ```
 
-The test types four lines first, since one-line alignment passes on the flawed page too: with one line, the flawed composer's centers differed by 0.0 px. The same pattern covers the other checks:
+Type four lines first and ensure the field still grows to fit them. This is an **uncapped geometric check**: the formula places the last line against the bottom padding and does not locate the caret. It is inapplicable once the textarea scrolls internally; the guard rejects that case. One-line alignment passes on the flawed page too: with one line, the flawed composer's centers differed by 0.0 px.
+
+Reachability needs more than a rectangle. Open the intended detail view at its initial horizontal scroll position, then run the following against a harmless fixture: `#delete` only increments `window.deleteRequests`, initialized to zero, and never deletes data. No locator action runs before measurement. Hit-test the center and inset corners, then send a coordinate tap that cannot automatically scroll the target into view:
+
+```js
+const hit = await page.evaluate(() => {
+  const button = document.querySelector('#delete');
+  const r = button.getBoundingClientRect();
+  const points = [
+    [r.left + r.width / 2, r.top + r.height / 2],
+    [r.left + 2, r.top + 2], [r.right - 2, r.top + 2],
+    [r.left + 2, r.bottom - 2], [r.right - 2, r.bottom - 2],
+  ];
+  const inViewport = r.width > 4 && r.height > 4 && r.left >= 0
+    && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+  return {
+    inViewport,
+    clear: inViewport && points.every(([x, y]) => {
+      const top = document.elementFromPoint(x, y);
+      return top === button || button.contains(top);
+    }),
+    enabled: !button.disabled,
+    x: points[0][0], y: points[0][1],
+  };
+});
+expect(hit.inViewport && hit.clear && hit.enabled).toBe(true);
+await page.touchscreen.tap(hit.x, hit.y);
+expect(await page.evaluate(() => window.deleteRequests)).toBe(1);
+```
+
+Use a touch-enabled context and reset the fixture for each case. This samples the hit area, rather than proving every pixel is clear; the harmless action also confirms that the handler ran. A real application's test must assert its expected result in an isolated fixture. `locator.click()` or `locator.tap()` may scroll first, masking the initial failure. In an independent 390 px Chromium control, both a clipping ancestor and a covering overlay left the button's rectangle inside the viewport, but failed the hit-test; neither control was tapped. The unobscured control passed and recorded one request, with all scroll offsets unchanged. These controls test the assertion, not a real product.
+
+The checks have different scopes:
 
 | Check | Assertion | Flawed page | Fixed page |
 | --- | --- | --- | --- |
 | Overflow in any scroller | Scan finds nothing outside an allowlist | `detail`, `tablewrap` (+773 px) | none |
-| Tap targets | Visible controls at least 44×44 (and 24×24 as a hard floor) | 6 under 44 px; 4 under 24 px | 0 |
-| Composer alignment | Controls within 1 px of last-line center | 36 px drift | 0 |
-| Destructive action reachable | Delete's rect within the viewport without scrolling | outside viewport | inside |
+| Project tap-target rule | Visible primary controls at least 44×44 CSS px; WCAG exceptions assessed separately | 6 under 44 px; 4 under the WCAG size branch (conformance undetermined) | 0 under project threshold |
+| Uncapped composer geometry | Four lines fit without internal scrolling; controls within 1 px of last-line center | 36 px drift | 0 |
+| Action reachability | Initial-view rect, sampled hit-tests and harmless action, without automatic scrolling | Original toy rect outside viewport; independent clipped/covered controls rejected | Independent unobscured control: one request, no scrolling |
 | Sticky budget | Summed sticky heights as a share of viewport | 19% | 7% |
 
-Chromium emulation does not model a soft keyboard or a retracting browser toolbar. MDN documents an `interactive-widget` viewport option that controls whether the keyboard resizes the visual viewport, layout viewport, or neither, defaulting to resizing only the visual viewport. I did not check its browser support, and no automated screenshot replaces typing into the composer on a real phone. Keep one manual device check in the release routine.
+Chromium emulation does not model a soft keyboard or a retracting browser toolbar. MDN documents an `interactive-widget` viewport option that controls whether the keyboard resizes the visual viewport, layout viewport, or neither, defaulting to resizing only the visual viewport. I did not check its browser support, and no automated screenshot replaces typing into the composer on a real phone. Keep a real-device check in the release routine: type past the cap, scroll within the textarea, move the caret, and confirm that the active line, Send and the thread remain accessible with the keyboard open and safe-area padding applied. The uncapped formula above cannot establish any of this. No real-device keyboard, capped-scrolling or safe-area behavior was verified here.
 
 ## Validation Scope and Sources
 
-The experiment used a single static HTML page with a flawed and a fixed variant, Playwright 1.58.2 and Chromium 145, at 390×844 and 1280×800. It ran on Linux. It covered one browser engine and does not test iOS Safari, Android Chrome or any real product. Numbers such as 19% and 36 px describe that page only. Source pages were fetched during this research; MDN compatibility values came from the `@mdn/browser-compat-data` repository.
+The experiment used a single static HTML page with a flawed and a fixed variant, Playwright 1.58.2 and Chromium 145, at 390×844 and 1280×800. It ran on Linux. It covered one browser engine and does not test iOS Safari, Android Chrome or any real product. Numbers such as 19% and 36 px describe that page only and remain author-reported from the original experiment. The additional clipping, overlay and unobscured controls, and the four-line uncapped geometry snippet, were independently reproduced in a separate harmless static fixture using the same Playwright version; they do not remeasure the original toy. Source pages were fetched during this research; MDN compatibility values came from the `@mdn/browser-compat-data` repository.
 
 Primary references:
 
