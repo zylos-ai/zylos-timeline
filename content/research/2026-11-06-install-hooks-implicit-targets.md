@@ -188,7 +188,7 @@ Write the plan and result to stdout *and* to a log file inside the instance. Be 
 
 ## 5. How to test for it
 
-The test is a negative control: prove that an install with no target specified touches nothing that looks like an instance.
+The shell block below is a **default-policy smoke test**: PASS means only that this install left the decoy unchanged under the active policy. On npm 12 even the known-bad fixture can pass when its hook is blocked; it does not prove the package's own no-write rule. To test that rule, use the explicitly allowed safe-hook and known-bad controls described immediately after the block, checking foreground lifecycle execution as well as both instance fingerprints.
 
 ```bash
 #!/usr/bin/env bash
@@ -208,7 +208,7 @@ HOME="$SB/home" env -u AGENT_DIR \
 
 AFTER=$(fp "$SB/home/agent")
 [ "$BEFORE" = "$AFTER" ] || { echo "FAIL: install mutated default instance"; exit 1; }
-echo "PASS"
+echo "PASS: decoy unchanged under active/default policy; hook execution not established"
 ```
 
 The earlier author run used a reduced version of this against a naive `postinstall` of the same shape as the incident (on Node 24.22.1 / npm 11.19.1). The decoy file changed from `v1` to `v2` and the harness reported `MUTATED`, which shows the clean-install invariant can detect a mutation. The deliberately naive package is a positive control (known-bad fixture): assert its hook executed, rather than accepting an unchanged decoy when policy suppressed the hook.
@@ -221,7 +221,7 @@ Extensions worth adding:
 - **Known-bad control under an allowed policy.** Run the local-tarball naive fixture with npm 12's `--allow-scripts=file:/absolute/path/demo-agent-naive-2.0.0.tgz` and require both a foreground lifecycle execution record and the decoy mutation. A registry package uses its registry name instead: the tagged identity matcher does not let a name-only registry allowance authorize a file tarball. Separately, the default-policy run must leave the decoy unchanged and report the script as blocked. This distinguishes a safe package from a package manager that never executed the code being tested.
 - **Several decoys.** Create two or three plausible instances and assert that the tool refuses and names all of them.
 - **sudo / HOME variants.** Run once with `HOME` unset and once as root in a container. Do not assume the sudo behaviour; test it on your CI image.
-- **Downgrade test.** Install an older package over a newer instance; assert skip plus warning.
+- **Downgrade test.** Install the older package into a separate package prefix, leaving every instance untouched. Run its explicit deploy command against a newer instance; assert skip plus warning and unchanged files/state.
 - **Snapshot more than files.** Also fingerprint the database and config, since the incident's damage was a cross-artefact skew. A `schema` stamp check is a cheap invariant.
 - **Run with and without `--ignore-scripts`.** The deploy command must work in both, since users who harden installs will hit the second path.
 
