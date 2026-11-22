@@ -251,11 +251,11 @@ Two designs for Undo:
 
 Remove the row immediately for responsiveness, but keep what you need to put it back (item data and its index or neighbor id). If the server rejects the request, reinsert at the original position and show an error toast.
 
-**[Inference]** A failed request is not always a rejection. If the server commits the delete and the response is then lost (network drop, timeout, a proxy answering 5xx), the client sees an error although the conversation is deleted; reinserting the row and saying "restored" would then be wrong. So the sketch separates three results, under one stated contract: `DELETE` on an already deleted conversation and `restore` on an already restored one return 2xx, and a 4xx response means the server made no change.
+**[Inference]** A failed request is not always a rejection. If the server commits the delete and the response is then lost (network drop, timeout, a proxy answering 5xx), the client sees an error although the conversation is deleted; reinserting the row and saying "restored" would then be wrong. So the sketch separates three results, under one stated contract: `DELETE` on an already deleted conversation and `restore` on an already restored one return 2xx, and a 4xx response to a request means that request made no change.
 
 - **Done** (2xx): the change happened.
-- **Rejected** (4xx): the server answered and made no change, so the client may roll back.
-- **Unconfirmed** (no response, timeout, 5xx): the change may or may not have happened. Repeat the same request once; by the contract a repeat after a committed change also returns 2xx, so the repeat's answer settles it. If the repeat is unconfirmed too, the client does not guess: the row stays as the screen shows it, an alert says the result could not be confirmed, a queued Undo is not applied (the alert says so), and the next list refresh shows the server's state.
+- **Rejected** (4xx to the first attempt): the server answered and made no change, so the client may roll back.
+- **Unconfirmed** (no response, timeout, 5xx): the change may or may not have happened. Repeat the same request once; by the contract a repeat after a committed change also returns 2xx, so a 2xx to the repeat settles it. Any other answer to the repeat leaves the result unconfirmed, including a 4xx: a 401 from an authentication layer, for example, shows only that the repeat was refused, not what happened to the first attempt. Treat such a 4xx as a rejection only if the response states the outcome of the original operation (a durable receipt or an authoritative state check), which the plain idempotency contract does not promise. If the result is still unconfirmed, the client does not guess: the row stays as the screen shows it, an alert says the result could not be confirmed, a queued Undo is not applied (the alert says so), and the next list refresh shows the server's state.
 
 The client also needs exactly one delete transition per conversation id, with a defined answer to four races:
 
@@ -268,14 +268,15 @@ The client also needs exactly one delete transition per conversation id, with a 
 const ops = new Map();   // id -> one delete transition: { snap, state, undo, closed, done }
 let ackSeq = 0;          // bumped whenever a DELETE or restore settles
 
-// 'done' (2xx), 'rejected' (4xx: no change made) or 'unknown'. A lost response,
-// timeout or 5xx proves nothing, so the idempotent request is repeated once.
+// 'done' (2xx), 'rejected' (4xx to the first attempt: no change made) or 'unknown'.
+// A lost response, timeout or 5xx proves nothing, so the idempotent request is
+// repeated once. A 4xx to the repeat says nothing about the first attempt.
 async function outcome(request) {
   for (let attempt = 1; ; attempt++) {
     try { await request(); return 'done'; }
     catch (err) {                                 // api sets err.status when the server answered
-      if (err.status >= 400 && err.status < 500) return 'rejected';
       if (attempt === 2) return 'unknown';
+      if (err.status >= 400 && err.status < 500) return 'rejected';
     }
   }
 }
@@ -285,7 +286,7 @@ function deleteConversation(id) {
   const op = { snap: store.snapshot(id), state: 'deleting', undo: false, closed: false };
   ops.set(id, op);
   store.remove(id);
-  toast.show('Conversation deleted', { action: 'Undo', onAction: () => undo(id),
+  toast.show('Deleting conversation', { action: 'Undo', onAction: () => undo(id),
     onClose: () => { op.closed = true; if (op.state === 'deleted') ops.delete(id); } });
   op.done = outcome(() => api.delete(`/conversations/${id}`)).then((result) => {   // soft delete
     ackSeq++;
@@ -331,7 +332,7 @@ async function refreshList() {
 }
 ```
 
-**[Inference]** `store`, `api` and `toast` are app-specific (the toast calls `onClose` when it is dismissed or replaced, and `api` rejects with an error carrying the HTTP `status` when the server answered, without one on a network error or timeout). The sketch was run against stubbed `api`, `store` and `toast` objects with manually resolved promises and a stub server that records whether each request was applied, not in a browser. Observed: a double activation sent one `DELETE` and showed one toast; Undo pressed while the `DELETE` was pending sent `restore` only after the `DELETE` succeeded and put the row back at its original index; Undo followed by a rejected (409) `DELETE` sent no `restore` and restored the row once; a rejected `restore` left the row removed with the Trash alert; when the server applied the `DELETE` and the response was lost, the repeated `DELETE` returned 2xx and the row stayed deleted, and a queued Undo then restored it; when both attempts were lost, the row stayed removed (matching the server), the alert said the delete could not be confirmed and, with Undo queued, that Undo was not applied, and no `restore` was sent; two 503s without a change gave the same alert and the next list refresh brought the row back; a `restore` applied with its response lost was settled by the repeat and the row returned, and with both attempts lost the alert said the restore could not be confirmed and the next refresh showed the row; a list response containing the row arrived while the `DELETE` was pending and did not show it; a list request started before the delete and answered after the acknowledgement was discarded and refetched, and the row stayed gone. Not covered by the snippet: push events from other clients (`conversation.deleted`/`restored`, Section 5.5; ordering those against local actions needs something like a per-conversation version from the server), focus and draft handling (Section 5.4), and a cap on refetches if acknowledgements keep arriving during a list request.
+**[Inference]** `store`, `api` and `toast` are app-specific (the toast calls `onClose` when it is dismissed or replaced, and `api` rejects with an error carrying the HTTP `status` when the server answered, without one on a network error or timeout). The sketch was run against stubbed `api`, `store` and `toast` objects with manually resolved promises and a stub server that records whether each request was applied, not in a browser. Observed: a double activation sent one `DELETE` and showed one toast; Undo pressed while the `DELETE` was pending sent `restore` only after the `DELETE` succeeded and put the row back at its original index; Undo followed by a rejected (409) `DELETE` sent no `restore` and restored the row once; a rejected `restore` left the row removed with the Trash alert; when the server applied the `DELETE` and the response was lost, the repeated `DELETE` returned 2xx and the row stayed deleted, and a queued Undo then restored it; when the response was lost and the repeat got a 401, the result stayed unconfirmed: the row stayed removed (matching the server), the alert said so, and a queued Undo was not applied; when both attempts were lost, the row stayed removed (matching the server), the alert said the delete could not be confirmed and, with Undo queued, that Undo was not applied, and no `restore` was sent; two 503s without a change gave the same alert and the next list refresh brought the row back; a `restore` applied with its response lost was settled by the repeat and the row returned, and when both attempts were lost, or the repeat got a 401, the alert said the restore could not be confirmed and the next refresh showed the row; a list response containing the row arrived while the `DELETE` was pending and did not show it; a list request started before the delete and answered after the acknowledgement was discarded and refetched, and the row stayed gone. Not covered by the snippet: push events from other clients (`conversation.deleted`/`restored`, Section 5.5; ordering those against local actions needs something like a per-conversation version from the server), focus and draft handling (Section 5.4), and a cap on refetches if acknowledgements keep arriving during a list request.
 
 ### 5.4 Deleting the conversation that is currently open
 
@@ -446,7 +447,7 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 | 19 | Delete the currently open conversation | No silent jump; focus and draft handled |
 | 20 | Same conversation deleted in another tab/device | Open copy shows banner; list updates (push handling; not in the 5.3 snippet) |
 | 21 | List refresh started before a delete, answered after its acknowledgement | Response discarded and refetched; row stays deleted |
-| 22 | `DELETE` or `restore` gets no confirmed answer (offline, timeout, 5xx, or the server applied it and the response was lost) | The same request is repeated once and its 2xx settles the result. If the repeat is unconfirmed too, the row stays as shown, an alert says the result could not be confirmed, a queued Undo is not applied and the alert says so, and the next list refresh shows the server's state |
+| 22 | `DELETE` or `restore` gets no confirmed answer (offline, timeout, 5xx, or the server applied it and the response was lost) | The same request is repeated once and a 2xx settles the result. If the repeat is unconfirmed too or gets a 4xx (for example a 401 from the authentication layer), the row stays as shown, an alert says the result could not be confirmed, a queued Undo is not applied and the alert says so, and the next list refresh shows the server's state |
 | 23 | Mouse and trackpad on desktop | No drag swipe; hover "more" button and context menu work |
 | 24 | Keyboard only | Tab reaches "more"; menu operable; Escape closes; Delete works; focus lands sensibly after |
 | 25 | Screen reader | Hidden delete not announced while closed; result and Undo announced |
