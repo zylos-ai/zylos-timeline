@@ -82,20 +82,20 @@ A breakdown at 100,000 records: `JSON.stringify` took about 141 ms, `writeFileSy
 
 ## 2. How established systems treat terminal objects
 
-**Every mature system I looked at separates "things still in motion" from "things that finished", and gives the second group a bounded lifetime.** None of them rely on every consumer re-scanning all history.
+**Every mature system I looked at separates "things still in motion" from "things that finished", and offers mechanisms to keep the second group out of hot work and to bound its retention.** These are mechanisms, not guarantees: retention is bounded only when someone configures it, and some of them still re-process objects they already hold.
 
 ### Kubernetes
 
-- **Controllers are level-triggered and work from a cache plus a queue.** The upstream [controller-writing guide](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md) says controllers are "level driven, not edge driven": your controller may be off for an indeterminate time, and on return it can only rely on the state it now observes, not on having seen each transition. That makes reconcile idempotent by design. The same guide notes that informers can periodically "resync", calling the update handler for every cached object, and suggests comparing versions to skip no-op work when you know there is nothing to do. In other words, even Kubernetes warns about re-processing everything on a timer. See also the [controller concept page](https://kubernetes.io/docs/concepts/architecture/controller/) and the [API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/) on list and watch.
-- **Finished Jobs have an explicit cleanup mechanism.** The Job docs say [finished Jobs are usually no longer needed and keeping them around puts pressure on the API server](https://kubernetes.io/docs/concepts/workloads/controllers/job/). The [TTL-after-finished controller](https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/) deletes a Job `.spec.ttlSecondsAfterFinished` seconds after it becomes Complete or Failed.
+- **Controllers are level-triggered and work from a cache plus a queue.** One of the guidelines in the upstream [controller-writing guide](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md) reads "Level driven, not edge driven": your controller may be off for an indeterminate time, and on return it can only rely on the state it now observes, not on having seen each transition. That makes reconcile idempotent by design. The same guide notes that informers can periodically "resync", calling the update handler for every cached object, and suggests comparing versions to skip no-op work when you know there is nothing to do. In other words, the cache-plus-queue design does not by itself make work proportional to change: a resync re-processes every cached object, and skipping the no-op ones is the controller author's job. See also the [controller concept page](https://kubernetes.io/docs/concepts/architecture/controller/) and the [API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/) on list and watch.
+- **Finished Jobs have an explicit cleanup mechanism.** The Job docs say [finished Jobs are usually no longer needed and keeping them around puts pressure on the API server](https://kubernetes.io/docs/concepts/workloads/controllers/job/). The [TTL-after-finished controller](https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/) makes a Job eligible for deletion `.spec.ttlSecondsAfterFinished` seconds after it becomes Complete or Failed, but only if that field is set. It is configured per Job, or by a cluster policy such as a mutating admission webhook that sets the field; per the Job docs, "If the field is unset, this Job won't be cleaned up by the TTL controller after it finishes."
 - **Finished Pods are garbage collected by count.** Per the [Pod lifecycle docs](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/), PodGC cleans up terminated Pods (phase Succeeded or Failed) when their number exceeds `terminated-pod-gc-threshold` in the kube-controller-manager, "to avoid a resource leak". See also the general [garbage collection concepts](https://kubernetes.io/docs/concepts/architecture/garbage-collection/).
 - **Deletion in caches is represented explicitly.** client-go's [`DeletedFinalStateUnknown`](https://pkg.go.dev/k8s.io/client-go/tools/cache#DeletedFinalStateUnknown) is a marker type that tells a handler "this object was deleted, but its final state was missed". It is a built-in acknowledgment that deletions and gaps are normal and need a defined representation.
 
-The lesson is not "copy Kubernetes". The lesson is that the TTL is a first-class field, deletion is a separate controller's job, and the main reconcile path is never asked to walk the graveyard.
+The lesson is not "copy Kubernetes". The lesson is that the TTL is a first-class field you have to set, deletion is a separate controller's job rather than the main reconcile path's, and even a cache-driven design needs explicit work to avoid re-processing what did not change.
 
 ### Job queues
 
-- **BullMQ** offers `removeOnComplete` and `removeOnFail`, as `true`, a count, or an age. The [docs](https://docs.bullmq.io/guide/queues/auto-removal-of-jobs) suggest keeping "a handful" of completed jobs and a much larger number of failed jobs, a deliberate asymmetry: failures are the ones you will want to inspect.
+- **BullMQ** offers `removeOnComplete` and `removeOnFail`, as `true`, a count, or an age. The [docs](https://docs.bullmq.io/guide/queues/auto-removal-of-jobs) suggest keeping "a handful" of completed jobs and a much larger number of failed jobs, a deliberate asymmetry: failures are the ones you will want to inspect. Removal is lazy, so these options bound retention only while jobs keep finishing: the docs say "jobs are not removed unless a new job completes or fails, since that is when the auto-removal takes place."
 - **Sidekiq** moves jobs that exhausted retries to a Dead set, and per its [error-handling wiki](https://github.com/sidekiq/sidekiq/wiki/Error-Handling) that set is limited by default to 10,000 jobs or 6 months so it does not grow indefinitely.
 - **Celery** stores results with a `result_expires` setting. The [configuration docs](https://docs.celeryq.dev/en/stable/userguide/configuration.html) say the default is one day, that the stored "task tombstones" are deleted by a built-in periodic cleanup task, and that this requires the beat scheduler to be running. A subtle operational point: expiry is itself a job that someone has to run.
 
@@ -109,7 +109,7 @@ Temporal keeps closed workflow executions for a per-Namespace [retention period]
 |---|---|---|
 | Active set drives work | informer cache plus workqueue | pending/active lists, task queues |
 | Terminal objects | Succeeded/Failed Pods, Complete/Failed Jobs | completed/failed/dead sets, closed executions |
-| Bounded lifetime | TTL field, count threshold | `removeOnComplete`, dead-set limits, `result_expires`, retention period |
+| Retention controls (when configured) | TTL field, count threshold | `removeOnComplete`, dead-set limits, `result_expires`, retention period |
 | Who cleans up | separate controller | background task or storage-level expiry |
 
 Applying this to a bridge daemon: keep an **active index** (the only thing the poll/reconcile loop iterates), a **terminal index** keyed by id (for dedup), and a **bounded archive** (for audit).
@@ -149,23 +149,36 @@ class Store {
 
 ### Atomic replace: temp file plus rename
 
-If you keep a snapshot file, write it atomically so a crash never leaves half a file. The standard recipe is: write a temp file in the same directory, flush it, `rename` over the target. The npm [write-file-atomic](https://github.com/npm/write-file-atomic) package implements this and also serializes concurrent writes to the same path. A minimal version:
+If you keep a snapshot file, write it atomically so a crash never leaves half a file. The standard recipe is: write a temp file in the same directory, flush it, `rename` over the target, then sync the directory so the rename itself is durable. The npm [write-file-atomic](https://github.com/npm/write-file-atomic) package implements the first three steps, gives each call its own temporary name (process id plus an invocation counter), and serializes concurrent writes to the same path; its source syncs the temporary file before the rename but does not sync the directory. A minimal version:
 
 ```js
 import fs from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 async function atomicWrite(path, text) {
-  const tmp = `${path}.${process.pid}.tmp`;
-  const fh = await fs.open(tmp, 'w');
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`; // unique per call
+  const fh = await fs.open(tmp, 'wx');
   try {
     await fh.writeFile(text);
-    await fh.sync();          // durability for the data
+    await fh.sync();               // the data is on disk before it gets the name
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
   } finally {
     await fh.close();
   }
-  await fs.rename(tmp, path); // atomic replace on POSIX filesystems
+  await fs.rename(tmp, path);      // atomic replace on POSIX filesystems
+  const dir = await fs.open(dirname(path), 'r');
+  try {
+    await dir.sync();              // makes the rename itself survive power loss
+  } finally {
+    await dir.close();
+  }
 }
 ```
+
+Two details matter. The unique temporary name keeps two overlapping calls from writing into, or renaming away, the same temp file: in my test, 20 rounds of two concurrent calls of a same-PID-name version failed one call per round with `ENOENT`, while this version failed none. Unique names do not order the writes, though. The last rename wins, which may be the older snapshot, so keep a single writer per file (one compaction at a time, or a promise queue like write-file-atomic's). Second, `fh.sync()` plus `rename` makes the file's contents durable, but the new directory entry lives in the directory, so the directory needs its own `fsync` to survive power loss. I ran this on Linux; directory sync support differs on other platforms, so check yours (inference).
 
 Use the async API. `fs.promises` does the I/O off the main thread, though note that `JSON.stringify` of the whole state still runs on it, which is why the layout below matters more than sync versus async.
 
@@ -175,23 +188,70 @@ On `fsync` storms: my test showed little extra cost per sync on a fast SSD, but 
 
 ### Append-only journal with periodic compaction
 
-A single JSON document forces an O(file) cost for any change. The alternative that several storage systems use is an **append-only log plus compaction**. Redis's AOF persistence [rewrites the log in the background](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/): it builds a new file with the minimal set of operations needed to recreate the current data set, then switches over, while appends continue to the old file during the rewrite. SQLite's [write-ahead log](https://www.sqlite.org/wal.html) follows the same idea: changes are appended to a log and periodically checkpointed into the main file.
+A single JSON document forces an O(file) cost for any change. The alternative that several storage systems use is an **append-only log plus compaction**. Redis's AOF persistence [rewrites the log in the background](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/). Before Redis 7.0 there was a single AOF: the rewrite built a new file with the minimal set of operations needed to recreate the current data set while appends continued to the old file, then switched the two. Since 7.0 the AOF is split into a base file and incremental files tracked by a manifest; when a rewrite starts, the parent opens a new incremental file for ongoing writes, the child writes a new base file, and Redis atomically replaces the manifest once both are ready. SQLite's [write-ahead log](https://www.sqlite.org/wal.html) follows the same idea: changes are appended to a log and periodically checkpointed into the main file.
 
 For a bridge daemon, a simple version looks like this:
 
 ```js
-async flush() {
-  if (this.dirty.size === 0) return;                       // no-op tick: no I/O
-  const lines = [...this.dirty]
-    .map(id => JSON.stringify(this.records.get(id)))
-    .join('\n') + '\n';
-  this.dirty.clear();
-  await fs.appendFile(this.journalPath, lines);            // O(changed), not O(history)
+flushing = Promise.resolve();
+journalBytes = 0;     // length of the journal's acknowledged prefix
+uncertain = false;    // an append failed: the file may end in a partial batch
+
+flush() {             // serialized: overlapping calls queue behind each other
+  const run = this.flushing.catch(() => {}).then(() => this.flushOnce());
+  this.flushing = run;
+  return run;
+}
+
+async flushOnce() {
+  if (this.dirty.size === 0) return;                         // no-op tick: no I/O
+  const batch = [...this.dirty].map(id => this.records.get(id)); // capture, do not clear yet
+  const text = batch.map(r => JSON.stringify(r)).join('\n') + '\n';
+  if (this.uncertain) await fs.truncate(this.journalPath, this.journalBytes); // drop partial tail
+  this.uncertain = true;
+  const fh = await fs.open(this.journalPath, 'a');
+  try {
+    await fh.appendFile(text);                               // O(changed), not O(history)
+    await fh.datasync();                                     // success = durable, not just accepted
+  } finally {
+    await fh.close();
+  }
+  this.uncertain = false;
+  this.journalBytes += Buffer.byteLength(text);
+  for (const r of batch) {                                   // acknowledge only what was written
+    if (this.records.get(r.id) === r) this.dirty.delete(r.id); // a newer change stays dirty
+  }
   if (this.journalBytes > COMPACT_AT) this.scheduleCompaction();
 }
 ```
 
-Replay on startup is last-write-wins by id, so duplicate lines are harmless. Compaction writes a fresh snapshot (temp plus rename) and then retires the journal segment. It is still O(history), but it runs rarely, off the tick path, ideally with a rotated journal segment so appends during compaction are not lost. In my benchmark, appending one small record to a log file took a few microseconds (page-cache, median of 50 appends), versus ~174 ms to rewrite a 39 MB snapshot.
+The rules this encodes:
+
+- **Acknowledge after persistence.** The batch is captured but stays in `dirty` until the append succeeds. A tempting shorter version clears `dirty` before appending; when I ran it with a writer that rejected once, the dirty set was already empty and the next flush never called the writer, so a terminal marker was silently lost.
+- **A failed or uncertain append is retried whole.** A failed append may still have written part of the batch, so the next flush first truncates the journal back to the last acknowledged length. Without that, the retried batch is glued onto the partial line and replay later throws (both observed in my harness).
+- **Newer changes survive an in-flight append.** A record is removed from `dirty` only if it is still the exact object that was written; a change made while the append was in flight stays dirty and goes out on the next flush.
+- **Overlapping calls are serialized.** A second `flush()` waits for the first, then writes only what is still dirty, so two appends never interleave.
+- **Success means durable here.** `flush()` resolves after `datasync` returned, not merely after the write was accepted into the page cache. Dropping the `datasync` gives page-cache acceptance: it survives a process crash but not power loss. Choose per data class, as in the durability caution above. If the journal file is newly created, sync its directory once too, as above.
+
+Replay on startup is last-write-wins by id, so duplicate lines are harmless. Only newline-terminated lines count; bytes after the last newline are a torn append from a crash, so replay ignores them and truncates them away before new appends. A malformed line in the middle is corruption, not a torn append, and should stop startup. Redis [takes the same approach](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/) to a truncated AOF by default, "discarding the last non well formed command in the file".
+
+```js
+async function replay(journalPath) {
+  const text = await fs.readFile(journalPath, 'utf8');
+  const complete = text.slice(0, text.lastIndexOf('\n') + 1); // after the last '\n' = torn append
+  const records = new Map();
+  for (const line of complete.split('\n')) {
+    if (line) { const r = JSON.parse(line); records.set(r.id, r); } // last write wins; a bad
+  }                                                                // complete line throws
+  const journalBytes = Buffer.byteLength(complete);
+  if (complete.length < text.length) await fs.truncate(journalPath, journalBytes);
+  return { records, journalBytes };
+}
+```
+
+I ran these snippets against a real file with injected faults: reject once then succeed, a partial write followed by a rejection, a change during an in-flight append, three overlapping `flush()` calls, and a torn final line. In each case the journal replayed to the latest in-memory state with nothing left dirty. Newline framing will not catch every kind of damage; a per-line checksum would (inference).
+
+Compaction writes a fresh snapshot (temp plus rename) and then retires the journal segment. It is still O(history), but it runs rarely, off the tick path, ideally with a rotated journal segment so appends during compaction are not lost. In my benchmark, appending one small record to a log file took a few microseconds (page-cache, median of 50 appends), versus ~174 ms to rewrite a 39 MB snapshot. That figure does not include the per-flush `datasync` above.
 
 Even simpler and often enough: **split by lifecycle**. Keep `active.json` small and rewritten on change, and move records to an append-only `terminal.ndjson` the moment they become terminal. The hot file's size now tracks concurrency, not age.
 
@@ -217,21 +277,23 @@ This is the same reason payment APIs keep idempotency keys. Stripe's [idempotenc
 - **Retention with explicit semantics.** Write down what expiry means: "terminal records are kept in full for 30 days, tombstones for 180 days, and the platform is known not to return tasks older than 90 days". Then the expiry of the tombstone is safe by construction. Without that last clause, you are guessing (inference: I have not seen a platform contract for this in the public docs I read; check yours).
 - **Make side effects idempotent at the receiver where possible.** Send an idempotency key (the dispatch id plus action) with notices. Then even if your local memory is lost, duplicates are absorbed downstream.
 - **Retain asymmetrically.** As BullMQ suggests, failures deserve longer retention than successes, because they are what humans investigate.
-- **Make the poll itself O(active).** If the platform API supports it, ask for active items or items changed since a cursor rather than the full list. Kubernetes' list-then-watch model (see its [API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)) is the canonical version of this. If it does not, you can still bound your own processing by looking up each returned id in the terminal index and discarding hits in O(1).
+- **Make the poll itself O(active).** A tick's cost is the work over three sets: the records the remote returns, the active records it reconciles, and the changed records it writes. The terminal index only makes each returned record cheap; it does not shrink the set. So bound the returned set explicitly: ask for active items or items changed since a cursor rather than the full list. Kubernetes' list-then-watch model (see its [API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)) is the canonical version of this. If the platform can only return the full list, the terminal index still keeps finished records free of side effects, but each tick stays O(history) in lookups; poll the full list less often than the active work instead.
 
-A reconcile loop built this way looks like:
+A reconcile loop built this way does O(returned + active + changed) work per tick, which is O(active + changed since the last tick) once the query is bounded:
 
 ```js
-async function tick() {
-  const remote = await platform.list({ updatedSince: cursor });
-  for (const t of remote) {
+async function tick(platform, store) {
+  // Bounded query: only tasks changed since the cursor, never the full history.
+  const { items, cursor } = await platform.list({ updatedSince: store.cursor });
+  for (const t of items) {                     // O(returned) = O(changed)
     if (store.isTerminal(t.id)) continue;      // O(1) lookup: finished, ignore
     store.apply(t.id, toLocal(t));
   }
-  for (const id of store.active) {             // O(active) only
+  for (const id of store.active) {             // O(active)
     await reconcile(store.records.get(id));
   }
-  await store.flush();                          // no-op when nothing is dirty
+  await store.flush();                         // O(changed); no-op when nothing is dirty
+  store.cursor = cursor;                       // advance only after the flush succeeded
 }
 ```
 
@@ -243,28 +305,41 @@ One more benefit: the cancellation path. If the active set is small, you can aff
 
 ### Per-tick work is O(active)
 
-Inject the I/O and count operations. Run the same tick against a small and a huge history with the same active set and assert the counts are equal.
+Inject the I/O and count every kind of work the tick does: records the remote returned, terminal-index lookups, reconcile calls, and journal lines written. Assert exact, nonzero expected counts for a small and a huge history. Equal counts alone are not enough: a tick that lists everything and discards finished records through the terminal index reconciles and writes exactly as much as a good one, and two zero counts are always equal. So the suite includes that scan-all tick as a known-bad control that must fail the check.
 
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-function harness(historySize, activeCount) {
-  const stats = { reconciled: 0, writes: 0, notices: [] };
-  const store = new Store({ writeFile: async () => { stats.writes++; } });
-  for (let i = 0; i < historySize; i++) store.seedTerminal(`old-${i}`);
-  for (let i = 0; i < activeCount; i++) store.apply(`live-${i}`, { status: 'running' });
-  return { store, stats };
+// setup() puts `historySize` finished tasks and 5 running ones on a fake platform and in
+// the store, flushes, sets the cursor, and returns counters: records the platform returned,
+// terminal-index lookups, reconcile calls, and journal lines written.
+async function oneTick(historySize, tickImpl) {
+  const { platform, store, stats } = await setup({ historySize, running: 5 });
+  platform.update('live-0', { status: 'cancel_requested' });  // two remote changes
+  platform.update('live-1', { status: 'completed' });
+  await tickImpl(platform, store);
+  return stats;
 }
+const expected = { returned: 2, terminalLookups: 2, reconciled: 4, written: 2 };
 
-test('tick cost is independent of history size', async () => {
-  const small = harness(1_000, 5);
-  const huge  = harness(200_000, 5);
-  await tick(small.store, small.stats);
-  await tick(huge.store,  huge.stats);
-  assert.equal(huge.stats.reconciled, small.stats.reconciled);   // 5 == 5
+test('per-tick work tracks changed and active records, not history', async () => {
+  for (const historySize of [1_000, 200_000]) {
+    assert.deepEqual(await oneTick(historySize, tick), expected);
+  }
+});
+
+test('control: a scan-all tick fails the same check', async () => {
+  // scanAllTick is tick() with the filter removed: platform.list({})
+  await assert.rejects(async () => {
+    for (const historySize of [1_000, 200_000]) {
+      assert.deepEqual(await oneTick(historySize, scanAllTick), expected);
+    }
+  }, assert.AssertionError);
 });
 ```
+
+Run against the code above, both tests pass. Pointed at `scanAllTick` instead, the first test fails at the 1,000-record history with `returned: 1005, terminalLookups: 1005` against the expected 2, while `reconciled` and `written` match: exactly the gap that equal-count assertions miss.
 
 ### A no-op tick writes nothing
 
@@ -272,10 +347,11 @@ Counting writes through an injected writer is more reliable than watching `mtime
 
 ```js
 test('no-op tick performs zero writes', async () => {
-  const { store, stats } = harness(10_000, 0);
-  await tick(store, stats);
-  await tick(store, stats);
-  assert.equal(stats.writes, 0);
+  const { platform, store, stats } = await setup({ historySize: 10_000, running: 5 });
+  await tick(platform, store);
+  await tick(platform, store);
+  assert.equal(stats.written, 0);
+  assert.equal(stats.reconciled, 10);          // the ticks did run: 5 records, twice
 });
 ```
 
