@@ -186,13 +186,13 @@ These recommendations are inference built on the mechanisms above, for fleets of
 
 Record the obligation before the announcement goes out, not after it succeeds. A record written only after a successful post leaves a gap: if the producer crashes between posting and recording, nothing durable says a handoff is owed, and no deadline can expire. The order is:
 
-1. Durably write the handoff in state `pending` with a stable `id`, and set `ack_deadline` now (in the same transaction as the producer's own "implementation done" update, if it has one).
+1. Durably write the handoff in state `pending` with a stable `id` and `created_at`, and set `ack_deadline` now (in the same transaction as the producer's own "implementation done" update, if it has one). Allow at most one open handoff per repository, PR, head commit and reviewer: if one is already open for that tuple, reuse it instead of opening a second, so that a review on that tuple can only belong to one obligation.
 2. Produce the send (the comment, the review request, the dispatch), carrying the handoff `id`.
 3. Record what came back as `trigger_evidence` and move to `triggered`.
 
 ```
 handoff {
-  id, task_id, artifact_ref (PR number + head commit),
+  id, task_id, artifact_ref (repo, pr, artifact_commit: the head commit),
   from_agent, to_role / to_agent (the owner of the next step),
   state: pending | triggered | started | completed | cancelled,
   created_at, triggered_at, started_at, ack_deadline, reminder_at,
@@ -201,20 +201,23 @@ handoff {
 }
 ```
 
-A producer that restarts and finds a `pending` record does not know whether its send went out. It looks for the send by the handoff `id` (a card comment carrying it, a review request on `artifact_ref` for `to_agent`, a dispatcher entry keyed by it), records the evidence if it finds one, and sends only if it finds none. Because `ack_deadline` was set in step 1, a `pending` record that nobody resolves still goes overdue.
+A producer that restarts and finds a `pending` record does not know whether its send went out. It looks for the send by the handoff `id` (a card comment carrying it, a dispatcher entry keyed by it, or a review request for `to_agent` on the same repository, PR and head commit made at or after the handoff's `created_at`; an older request left over from an earlier handoff does not count), records the evidence if it finds one, and sends only if it finds none. Because `ack_deadline` was set in step 1, a `pending` record that nobody resolves still goes overdue.
 
 This is the same move Gerrit makes with the attention set and Pub/Sub makes with the ack deadline: the obligation is data, and the deadline travels with it. It is also what makes a per-entity "never started" query possible, in contrast with the series-existence semantics of `absent()`. `artifact_ref` should include the commit, because Prow's retracted `lgtm` and Gerrit's treatment of outdated votes both encode the same rule: a new head commit changes what was reviewed, so the earlier evidence no longer applies, while Gerrit separately notes that merely uploading a patch set is not a relevant event for the attention set. Choose deliberately which behavior fits your fleet.
 
 ### 2. Detect "trigger without a following review start"
 
-The core query: open handoffs (state `pending` or `triggered`) where `now > ack_deadline` and no start evidence bound to the handoff exists. The start predicate is where such a detector most easily goes wrong. A GitHub review request is producer-side evidence: "You can request a review from a person or team with read access to the repository, and they receive a notification" ([GitHub: Requesting a pull request review](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/requesting-a-pull-request-review)). The reviewer does not have to open the PR for the request to exist. A review request, a resolved mention, or a delivered notification therefore moves a handoff to `triggered` and never to `started`; if it counted as a start, every handoff with an open request would be excluded from the very alert meant to catch it. Start evidence is an event produced by the assigned reviewer's own work on this handoff: a reviewer session that carries the handoff `id` reports that it began, or the reviewer submits a review on the artifact commit (`artifact_commit` below, the commit in `artifact_ref`). A generic comment, or a session the reviewer already had open for other work, is not bound to the handoff and does not count.
+The core query: open handoffs (state `pending` or `triggered`) where `now > ack_deadline` and no start evidence bound to the handoff exists. The start predicate is where such a detector most easily goes wrong. A GitHub review request is producer-side evidence: "You can request a review from a person or team with read access to the repository, and they receive a notification" ([GitHub: Requesting a pull request review](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/requesting-a-pull-request-review)). The reviewer does not have to open the PR for the request to exist. A review request, a resolved mention, or a delivered notification therefore moves a handoff to `triggered` and never to `started`; if it counted as a start, every handoff with an open request would be excluded from the very alert meant to catch it. Start evidence is an event produced by the assigned reviewer's own work on this handoff: a reviewer session that carries the handoff `id` reports that it began, or the reviewer submits a review on this handoff's repository, PR and head commit after the handoff was created (`repo`, `pr` and `artifact_commit` below are the parts of `artifact_ref`). The bounds matter because GitHub reports the PR separately from the review: the `pull_request_review` webhook carries both a `review` and a `pull_request` object, and the REST review object has its own `commit_id` and `submitted_at` ([GitHub: webhook events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request_review), [GitHub REST: reviews](https://docs.github.com/en/rest/pulls/reviews#get-a-review-for-a-pull-request)). A commit match alone also accepts a review on a different PR that shares the head commit, or a review of this PR and head submitted before this handoff existed. A generic comment, or a session the reviewer already had open for other work, is not bound to the handoff and does not count.
 
 ```js
 // An event counts as a start only if the assigned reviewer produced it for this handoff.
 function isStart(e, h) {
   if (e.actor !== h.to_agent) return false;
   if (e.kind === 'reviewer_session_started') return e.handoff_id === h.id;
-  if (e.kind === 'review_submitted') return e.commit === h.artifact_commit;
+  if (e.kind === 'review_submitted')
+    return e.repo === h.repo && e.pr === h.pr &&
+      e.commit === h.artifact_commit &&
+      e.submitted_at >= h.created_at; // earlier reviews belong to earlier handoffs
   return false; // review_requested, mention_resolved, comment, ...
 }
 
@@ -226,7 +229,7 @@ function overdue(handoffs, events, now) {
 }
 ```
 
-Test the predicate with controls before trusting it. Past the deadline, a handoff whose review request exists but whose reviewer never started must be returned; so must one where the reviewer only posted a generic comment, one where the reviewer's only session belongs to another task, and a `pending` handoff that was never triggered. A handoff with a bound session start, or a review submitted on its commit, must not be returned, and nothing is returned before the deadline.
+Test the predicate with controls before trusting it. Past the deadline, a handoff whose review request exists but whose reviewer never started must be returned; so must one where the reviewer only posted a generic comment, one where the reviewer's only session belongs to another task, and a `pending` handoff that was never triggered. So must one where the reviewer's only review on that head commit was submitted on another PR that shares it, and one where the only review of this PR and head was submitted before the handoff was created. A handoff with a bound session start, or a review submitted on its PR and head after it was created, must not be returned, and nothing is returned before the deadline.
 
 Follow Temporal's split of timeouts:
 
