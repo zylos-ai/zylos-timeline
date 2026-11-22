@@ -19,7 +19,7 @@ The last two were found only by running real models in a sandbox.
 The conclusion is a layered stack, each layer cheap enough to run at its natural frequency:
 
 - **Always (milliseconds):** required-clause assertions, keyword negative assertions (a lexical heuristic, not a check of meaning), and structural checks (links resolve, placeholders are defined, examples parse).
-- **On review (minutes):** a deliberate round of "mutants", meaning small prose edits that should make the suite fail. A surviving mutant is a candidate gap. It becomes a new test once you have established that it changes behavior in a way that matters, and equivalent survivors go on a watch list instead.
+- **On review (minutes):** a deliberate round of "mutants", meaning small prose edits that should make the suite fail. A surviving mutant is a candidate gap. It becomes a new test once you have established that it changes behavior in a way that matters; survivors without that evidence go on a watch list instead.
 - **Only when a change can alter the agent's behavior (dollars):** real-model acceptance in a throwaway sandbox, triggered by changes to agent-facing text or to the loader, model, tools or harness that execute it. It uses fixed scenario fixtures and asserts on tool calls and the final state, with a hard cost cap and re-runs scoped to the scenarios the change can affect.
 
 Hash pins on generated templates are a blunt fifth tool. They work as a "someone edited this" alarm but not as a behavior test.
@@ -142,11 +142,11 @@ I found no established, widely used tool that does classical mutation testing of
 1. Take a doc that has green tests.
 2. Produce mutants of three kinds: *delete* a required clause; *weaken* it ("must" to "may"); *re-introduce* a withdrawn behavior in different words.
 3. Run the suite. A mutant that stays green is a candidate gap, not yet a missing test.
-4. Establish whether the mutant changes behavior in a way that matters: does it permit a withdrawn behavior or drop a required step? Decide from the text, and from a real-model run when the text leaves it unclear. If it does, add a test for the *concept*, not the mutant's exact words, then re-run. If it does not, it is equivalent and goes on the watch list below.
+4. Establish whether the mutant changes behavior in a way that matters: does it permit a withdrawn behavior or drop a required step? Decide from the text where you can. When the text leaves it unclear and the distinction matters, run the affected scenarios repeatedly on the baseline doc and on the mutant and compare the results; a single run cannot show that there is no difference. If it does change behavior, add a test for the *concept*, not the mutant's exact words, then re-run. If not, it goes on the watch list below, labelled for what was actually shown (see the next paragraph).
 
 Deletion and weakening mutants are usually caught. The re-introduction kind is the one that survives, because the test author wrote negative patterns from memory of the original wording. An LLM can generate such paraphrased mutants cheaply. That is my suggestion, and I did not find a source for it in this setting.
 
-**The equivalent-mutant problem carries over.** In code, some mutants do not change behavior, and deciding that is hard (the survey above covers it). For prose, a paraphrase may or may not change what a model does. A mutant that survives the *static* suite and the *real-model* run is probably equivalent for that model. It may not be for the next one, so keep these mutants as a small "watch list".
+**The equivalent-mutant problem carries over.** In code, some mutants do not change behavior, and deciding that is hard (the survey above covers it). For prose, a paraphrase may or may not change what a model does. A mutant that survives the *static* suite and a *real-model* run has shown only that no difference was observed in the scenarios and trials that were run. That is not equivalence. Outputs vary between runs (section 2.6): a mutant that independently fails 10% of trials still looks clean on a single trial 90% of the time, and on 20 trials about 12% of the time. Reserve "equivalent" for a reasoned determination from the text that the change cannot alter behavior; where the distinction matters, run repeated baseline-versus-mutant trials of the same scenarios. Either label holds at most for the model that was tested, so keep these mutants as a small "watch list" with the label and the trials run.
 
 ## 4. Practical playbook
 
