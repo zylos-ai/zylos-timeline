@@ -19,7 +19,7 @@ This article surveys primary documentation from monitoring systems (Prometheus, 
 4. **Brokers solved this with leases, redelivery, and dead-letter queues.** In systems that use them, the consumer must acknowledge within a deadline or the message comes back, and messages that keep failing land somewhere a human or alarm will see them.
 5. **Suppression must be scoped to a cause and must expire.** Silences, inhibitions, and snoozes are built to hide noise. The documentation of Alertmanager and PagerDuty shows how each is scoped (label matchers, an acknowledged incident, a duration), and those scoping choices determine whether a snooze can hide a genuine dropped handoff.
 
-The article ends with concrete design recommendations: model the handoff as an explicit state with an owner and a deadline, detect "delivery without a following review start," send a reminder before taking any automatic action, guard against false positives, and evaluate the detector by injecting a known dropped handoff as a positive control.
+The article ends with concrete design recommendations: model the handoff as an explicit state with an owner and a deadline, detect "trigger without a following review start," send a reminder before taking any automatic action, guard against false positives, and evaluate the detector by injecting a known dropped handoff as a positive control.
 
 A note on claims: where this article states an architectural judgment, it is scoped ("in systems that...") and labeled as inference. Statements about what a product does or does not do are limited to what its official documentation shows.
 
@@ -31,8 +31,8 @@ It helps to name the pieces of a handoff, because each can fail independently.
 |---|---|---|
 | 1. Artifact | The developer agent produces a PR or commit | Commit pushed to the wrong branch, PR left as a draft |
 | 2. Announcement | A message is posted on the task card | Post succeeds but is routed nowhere |
-| 3. Trigger | The announcement causes a reviewer to be notified or started | Malformed or unresolved @mention, webhook not sent, event filtered out, trigger sent while reviewer is offline |
-| 4. Acknowledgement | The reviewer starts (a session opens, a review is requested, a comment is posted) | Reviewer never starts; reviewer starts and crashes |
+| 3. Trigger | The announcement causes a reviewer to be notified or started (evidence: a review request exists, the mention resolved, a reviewer task was created) | Malformed or unresolved @mention, webhook not sent, event filtered out, trigger sent while reviewer is offline |
+| 4. Acknowledgement | The reviewer actually starts work on this handoff (a reviewer session bound to it begins, or the reviewer submits a review on the artifact commit). A review request or notification is step 3 evidence, not a start | Review requested and notified, but the reviewer never starts; reviewer starts and crashes |
 | 5. Completion | A review verdict is posted | Verdict posted on the wrong object |
 
 Steps 1 and 2 are controlled by the producer and usually emit a success signal. Step 3 is where the producer's knowledge ends: it posted text, and it assumes text was a trigger. Steps 4 and 5 happen in a different actor. A monitoring setup that looks only at the producer sees a green run all the way through.
@@ -50,7 +50,7 @@ The classic pattern for silent failure is the heartbeat. Healthchecks.io describ
 - Status moves through up, late, and down; only "down" (grace elapsed) triggers alerts.
 - Optional **start** and **failure** signals let a job report that it began or that it failed. With start signals, grace time "also sets the maximum allowed time gap between 'start' and 'success' signals."
 
-The start signal is a useful analogue for handoffs. "Reviewer started" is the start ping. A handoff that has a "delivered" event but no "started" event within the grace window is exactly a missed start.
+The start signal is a useful analogue for handoffs. "Reviewer started" is the start ping. A handoff that has a "triggered" event but no "started" event within the grace window is exactly a missed start.
 
 Cronitor's heartbeat monitors work on the same shape: an expected interval, a configurable grace period, and an alert when "heartbeats stop arriving or report failures" ([Cronitor: heartbeat monitoring](https://cronitor.io/docs/heartbeat-monitoring)).
 
@@ -87,7 +87,7 @@ Workflow systems place the deadline in the orchestration layer, so a missing fol
 
 **Temporal.** Activity timeouts are separate on purpose. Schedule-To-Start is "a limit for how long an Activity Task can be enqueued," measured from when the task is placed in a Task Queue to when a Worker picks it up; Start-To-Close bounds a single execution and mainly serves "to detect when a Worker crashes after it has started executing an Activity Task"; Schedule-To-Close bounds the whole execution, including retries. Heartbeats are "a ping from the Worker that is executing the Activity to the Temporal Service," informing it that "the Activity Execution is making progress and the Worker has not crashed." The documentation lists Schedule-To-Start's uses (detecting a crashed worker, or a fleet that cannot keep up) but says that "in most cases, we recommend monitoring the `temporal_activity_schedule_to_start_latency` metric" instead, and notes the timeout is "non-retryable by design" ([Temporal: Detecting Activity failures](https://docs.temporal.io/encyclopedia/detecting-activity-failures)).
 
-The distinction maps cleanly onto handoffs. Schedule-To-Start is "delivered but not picked up." Start-To-Close plus heartbeats is "picked up but stalled." These are different failures, and a single "task is old" alarm conflates them. Temporal's timers are also durable: "a Workflow can set a durable Timer for a fixed time period," timers "are persisted," and the TypeScript documentation shows racing a timer against a Signal, for example to send a reminder if nothing happens in time ([Temporal: Timers (TypeScript)](https://docs.temporal.io/develop/typescript/timers)). A reminder-then-escalate flow is therefore a native pattern there, not a cron job bolted on the side.
+The distinction maps cleanly onto handoffs. Schedule-To-Start is "triggered but not picked up." Start-To-Close plus heartbeats is "picked up but stalled." These are different failures, and a single "task is old" alarm conflates them. Temporal's timers are also durable: "a Workflow can set a durable Timer for a fixed time period," timers "are persisted," and the TypeScript documentation shows racing a timer against a Signal, for example to send a reminder if nothing happens in time ([Temporal: Timers (TypeScript)](https://docs.temporal.io/develop/typescript/timers)). A reminder-then-escalate flow is therefore a native pattern there, not a cron job bolted on the side.
 
 **AWS Step Functions.** Errors surface as named states: `States.Timeout` is reported when a Task "runs longer than the `TimeoutSeconds` value or failed to send a heartbeat for a period longer than the `HeartbeatSeconds` value," and Catch/Retry fields can route it ([Step Functions: error handling](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html)). The callback pattern is the closest analogue to a handoff: with `.waitForTaskToken`, a task pauses until an external system calls `SendTaskSuccess` or `SendTaskFailure`. The documentation warns that such a task "will wait until the execution reaches the one year service quota," and recommends `HeartbeatSeconds` "to avoid stuck executions" ([Step Functions: service integration patterns](https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html)). That is nearly a description of a dropped handoff: the workflow posted a token (the announcement), and nobody ever returned it.
 
@@ -184,25 +184,53 @@ These recommendations are inference built on the mechanisms above, for fleets of
 
 ### 1. Model the handoff as an explicit state, with an owner and a deadline
 
-Create a handoff record at announcement time, not after the fact:
+Record the obligation before the announcement goes out, not after it succeeds. A record written only after a successful post leaves a gap: if the producer crashes between posting and recording, nothing durable says a handoff is owed, and no deadline can expire. The order is:
+
+1. Durably write the handoff in state `pending` with a stable `id`, and set `ack_deadline` now (in the same transaction as the producer's own "implementation done" update, if it has one).
+2. Produce the send (the comment, the review request, the dispatch), carrying the handoff `id`.
+3. Record what came back as `trigger_evidence` and move to `triggered`.
 
 ```
 handoff {
   id, task_id, artifact_ref (PR number + head commit),
   from_agent, to_role / to_agent (the owner of the next step),
-  state: delivered | started | completed | cancelled,
-  delivered_at, started_at, ack_deadline, reminder_at,
-  trigger_evidence: { kind, ref }
+  state: pending | triggered | started | completed | cancelled,
+  created_at, triggered_at, started_at, ack_deadline, reminder_at,
+  trigger_evidence: { kind, ref },
+  start_evidence: { kind, ref }
 }
 ```
 
+A producer that restarts and finds a `pending` record does not know whether its send went out. It looks for the send by the handoff `id` (a card comment carrying it, a review request on `artifact_ref` for `to_agent`, a dispatcher entry keyed by it), records the evidence if it finds one, and sends only if it finds none. Because `ack_deadline` was set in step 1, a `pending` record that nobody resolves still goes overdue.
+
 This is the same move Gerrit makes with the attention set and Pub/Sub makes with the ack deadline: the obligation is data, and the deadline travels with it. It is also what makes a per-entity "never started" query possible, in contrast with the series-existence semantics of `absent()`. `artifact_ref` should include the commit, because Prow's retracted `lgtm` and Gerrit's treatment of outdated votes both encode the same rule: a new head commit changes what was reviewed, so the earlier evidence no longer applies, while Gerrit separately notes that merely uploading a patch set is not a relevant event for the attention set. Choose deliberately which behavior fits your fleet.
 
-### 2. Detect "delivery without a following review start"
+### 2. Detect "trigger without a following review start"
 
-The core query is simple: handoffs in state `delivered` where `now > ack_deadline` and there is no start evidence. Define start evidence as an explicit event: a requested reviewer appears, a reviewer agent session opens bound to the handoff, or the reviewer posts any comment against the artifact commit. Follow Temporal's split of timeouts:
+The core query: open handoffs (state `pending` or `triggered`) where `now > ack_deadline` and no start evidence bound to the handoff exists. The start predicate is where such a detector most easily goes wrong. A GitHub review request is producer-side evidence: "You can request a review from a person or team with read access to the repository, and they receive a notification" ([GitHub: Requesting a pull request review](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/requesting-a-pull-request-review)). The reviewer does not have to open the PR for the request to exist. A review request, a resolved mention, or a delivered notification therefore moves a handoff to `triggered` and never to `started`; if it counted as a start, every handoff with an open request would be excluded from the very alert meant to catch it. Start evidence is an event produced by the assigned reviewer's own work on this handoff: a reviewer session that carries the handoff `id` reports that it began, or the reviewer submits a review on the artifact commit (`artifact_commit` below, the commit in `artifact_ref`). A generic comment, or a session the reviewer already had open for other work, is not bound to the handoff and does not count.
 
-- **Delivered, not started** (Schedule-To-Start): the trigger failed or the reviewer is unavailable. Short deadline.
+```js
+// An event counts as a start only if the assigned reviewer produced it for this handoff.
+function isStart(e, h) {
+  if (e.actor !== h.to_agent) return false;
+  if (e.kind === 'reviewer_session_started') return e.handoff_id === h.id;
+  if (e.kind === 'review_submitted') return e.commit === h.artifact_commit;
+  return false; // review_requested, mention_resolved, comment, ...
+}
+
+function overdue(handoffs, events, now) {
+  return handoffs.filter(h =>
+    (h.state === 'pending' || h.state === 'triggered') &&
+    now > h.ack_deadline &&
+    !events.some(e => isStart(e, h)));
+}
+```
+
+Test the predicate with controls before trusting it. Past the deadline, a handoff whose review request exists but whose reviewer never started must be returned; so must one where the reviewer only posted a generic comment, one where the reviewer's only session belongs to another task, and a `pending` handoff that was never triggered. A handoff with a bound session start, or a review submitted on its commit, must not be returned, and nothing is returned before the deadline.
+
+Follow Temporal's split of timeouts:
+
+- **Triggered, not started** (Schedule-To-Start): the trigger did not reach a working reviewer, or the reviewer is unavailable. Short deadline.
 - **Started, no progress** (Start-To-Close plus heartbeat): the reviewer began and stalled. Longer deadline, refreshed by heartbeats like Pub/Sub lease extension.
 - **Overall budget** (Schedule-To-Close): a hard upper bound for the whole handoff, after which a human is told.
 
@@ -210,15 +238,17 @@ Treat the first two as different alerts with different remedies. Temporal's own 
 
 ### 3. Verify the trigger right after posting
 
-Add the read-after-write check described earlier: confirm that the mention resolved to a participant with access, or that a review request or reviewer session now exists. If it does not, retry once through a different path (an explicit review request instead of a comment mention, for example) and record `trigger_evidence`. Make the retry idempotent, reusing the original delivery identifier in the way GitHub keeps `X-GitHub-Delivery` stable across redeliveries.
+Add the read-after-write check described earlier: confirm that the mention resolved to a participant with access, or that a review request or a reviewer task bound to the handoff `id` now exists. If it does, record `trigger_evidence` and move to `triggered`. If it does not, the trigger has failed now, and this is the only point where the fleet resends a trigger: once, through a different path (an explicit review request instead of a comment mention, for example), followed by the same check. If the retry also leaves no evidence, raise a failed-trigger alert to the producer at once instead of waiting for the deadline.
+
+Every send for a handoff (the original, the single retry, and the reminders in step 4) carries the same handoff `id`, and that identity is what deduplicates them: the reviewer's dispatcher should attach a second message for a handoff that already has a bound session to that session instead of starting another, and drop a reminder for a handoff already started. This only works if the recipient or its dispatcher enforces it. GitHub shows the same division of labor: "If you request a redelivery, the X-GitHub-Delivery header will be the same as in the original delivery," and, in its advice on replay protection, the receiver "can use the X-GitHub-Delivery header to ensure that each delivery is unique per event" ([GitHub: best practices for webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks)). The stable header makes deduplication possible; the receiver has to do it.
 
 ### 4. Reminder before auto-action
 
-Use a ladder rather than a single alarm:
+Use a ladder rather than a single alarm. None of its steps resends the trigger: a handoff that reaches the deadline in `triggered` already has evidence that the trigger landed, so resending it would not make the reviewer start.
 
-1. At `ack_deadline`: re-trigger through the alternate path, and message the owner with a precise statement ("handoff H, artifact at commit C, delivered 40 minutes ago, no start").
+1. At `ack_deadline`: message the owner with a precise statement ("handoff H, artifact at commit C, review requested 40 minutes ago, not started"). A `pending` handoff that reaches the deadline goes to the producer instead, because its send was never confirmed.
 2. At a second threshold: remind the owner's supervisor or the producer, and surface the handoff in a "your turn" view like Gerrit's.
-3. At the overall budget: escalate to a human, or perform a pre-approved automatic action such as reassigning to another reviewer.
+3. At the overall budget: escalate to a human, or perform a pre-approved automatic action such as reassigning to another reviewer (which opens a new handoff to that reviewer).
 
 Automatic reassignment should come last and should be recorded, like PagerDuty's incident log capturing "all snooze actions." GitHub's own team-routing options (round robin, load balance, skipping Busy members) are an example of a reassignment policy that is explicit and configurable.
 
@@ -229,7 +259,7 @@ A detector that cries wolf will be snoozed, and the snooze is the problem. Build
 | Condition | Why it should not alert | Source of the semantics |
 |---|---|---|
 | Draft PR | Owners are not requested on drafts; review is not expected yet | GitHub CODEOWNERS docs; reminders can ignore drafts |
-| Reviewer session already running | Start evidence exists; switch to the heartbeat clock | Temporal heartbeats, Pub/Sub lease extension |
+| Reviewer session bound to this handoff already running | Start evidence exists; switch to the heartbeat clock | Temporal heartbeats, Pub/Sub lease extension |
 | Review request removed or handoff cancelled | The obligation no longer exists | GitHub `review_request_removed` action |
 | Artifact superseded by a newer commit | Old handoff is obsolete; the new commit spawns its own | `synchronize` event; Prow `lgtm` retraction |
 | Draft marked ready, or PR converted back to draft | Restart or pause the clock rather than counting elapsed time | `ready_for_review` / `converted_to_draft` actions |
@@ -242,10 +272,12 @@ Use `for:`-style persistence on the detector itself: require the condition to ho
 
 A detector that has never fired has not been shown to work. Healthchecks.io-style monitoring and the Watchdog alert both rely on the same insight: a component that should always produce a signal gives you a way to detect its own silence.
 
-- **Inject a canary.** On a schedule, create a synthetic task in a sandbox project and post a "done" announcement with a deliberately malformed mention, or with the trigger blocked. The expectation is that the detector fires within a known time. Record the detection latency.
-- **Alert on the canary's silence.** If an injected dropped handoff does not produce an alert by its deadline, page someone, as a Watchdog-style dead-man's switch for the detector.
-- **Run negative controls.** Inject a draft PR, a handoff to a reviewer already running, and a cancelled handoff. None should alert. These measure false positives.
-- **Include the snooze path.** Run the canary while the target reviewer is snoozed or on an allowlist. This directly tests the failure from the opening story; an owed-handoff alert should still fire.
+- **Inject canaries for both detectors.** On a schedule, create synthetic tasks in a sandbox project, one per case, with distinct assertions:
+  - *Failed trigger.* Post the "done" announcement with a deliberately malformed mention, with the alternate retry path also disabled in the sandbox. Expected: the immediate verifier finds no trigger evidence, the single retry runs and also finds none, a failed-trigger alert fires within seconds, and the handoff never reaches `triggered`.
+  - *Accepted but unstarted.* Create a valid trigger (for example a review request for the canary reviewer, which the verifier accepts) while blocking the reviewer from starting (its dispatcher drops the work). Expected: the handoff reaches `triggered`, no failed-trigger alert fires, and the overdue alert fires after `ack_deadline` naming the handoff as not started. Record the detection latency.
+- **Alert on the canary's silence.** If either canary does not produce its expected alert by its deadline, page someone, as a Watchdog-style dead-man's switch for the detector.
+- **Run negative controls.** Inject a draft PR, a handoff whose bound reviewer session has started, and a cancelled handoff. None should alert. These measure false positives. A handoff where the reviewer only posts a generic comment is not a negative control: it should still alert.
+- **Include the snooze path.** Run the accepted-but-unstarted canary while the target reviewer is snoozed or on an allowlist. This directly tests the failure from the opening story; an owed-handoff alert should still fire.
 - **Track outcomes.** Report recall on injected faults, median and maximum detection latency, and false-positive rate over a window. Keep them with the handoff records so changes to rules can be compared.
 
 ## Limitations
