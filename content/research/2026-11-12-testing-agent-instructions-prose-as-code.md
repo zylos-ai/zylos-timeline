@@ -2,7 +2,7 @@
 date: "2026-11-12"
 time: "09:00"
 title: "Testing the Instructions You Give Agents"
-description: "When a Markdown procedure is the agent's behavior, a green unit suite is weak evidence. A layered approach covering clause assertions, semantic negative checks, structural checks, judges, mutation review and sandboxed real-model acceptance, and which layer catches which failure."
+description: "When a Markdown procedure is the agent's behavior, a green unit suite is weak evidence. A layered approach covering clause assertions, keyword negative checks, structural checks, judges, mutation review and sandboxed real-model acceptance, and which layer catches which failure."
 tags: ["research", "testing", "prompts", "agents", "evals", "mutation-testing", "reliability"]
 ---
 
@@ -18,9 +18,9 @@ The last two were found only by running real models in a sandbox.
 
 The conclusion is a layered stack, each layer cheap enough to run at its natural frequency:
 
-- **Always (milliseconds):** required-clause assertions, semantic negative assertions, and structural checks (links resolve, placeholders are defined, examples parse).
-- **On review (minutes):** a deliberate round of "mutants", meaning small prose edits that should make the suite fail. Every surviving mutant becomes a new test.
-- **Only when agent-facing text changes (dollars):** real-model acceptance in a throwaway sandbox. It uses fixed scenario fixtures and asserts on tool calls and the final state, with a hard cost cap and narrow re-runs.
+- **Always (milliseconds):** required-clause assertions, keyword negative assertions (a lexical heuristic, not a check of meaning), and structural checks (links resolve, placeholders are defined, examples parse).
+- **On review (minutes):** a deliberate round of "mutants", meaning small prose edits that should make the suite fail. A surviving mutant is a candidate gap. It becomes a new test once you have established that it changes behavior in a way that matters, and equivalent survivors go on a watch list instead.
+- **Only when a change can alter the agent's behavior (dollars):** real-model acceptance in a throwaway sandbox, triggered by changes to agent-facing text or to the loader, model, tools or harness that execute it. It uses fixed scenario fixtures and asserts on tool calls and the final state, with a hard cost cap and re-runs scoped to the scenarios the change can affect.
 
 Hash pins on generated templates are a blunt fifth tool. They work as a "someone edited this" alarm but not as a behavior test.
 
@@ -30,7 +30,7 @@ Three properties make agent-facing prose behave like code, and in some ways wors
 
 **It is executed.** A model reads the procedure on each run and turns it into tool calls. A changed sentence changes those calls. Anthropic's guidance on agent evals makes the same point from the other side: "When we evaluate 'an agent,' we're evaluating the harness and the model working together" ([Anthropic, Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)). The doc is part of the harness.
 
-**Its semantics are fuzzy and sensitive.** There is direct evidence that wording alone can move results a lot. Sclar et al. found accuracy differences of up to 76 points across semantically equivalent prompt formats on one open model, and sensitivity persisted with larger models, more few-shot examples and instruction tuning ([Sclar et al., ICLR 2024](https://arxiv.org/abs/2310.11324)). PromptRobust (published as PromptBench) perturbed instructions at character, word, sentence and semantic levels, and reported that "contemporary LLMs are not robust to adversarial prompts" ([Zhu et al.](https://arxiv.org/abs/2306.04528)). Both studies measured benchmark tasks, not procedure files. They justify caution, not a specific effect size for your document.
+**Its semantics are fuzzy and sensitive.** There is direct evidence that wording alone can move results a lot. Sclar et al. found accuracy differences of up to 76 points across semantically equivalent prompt formats on one open model, and sensitivity persisted with larger models, more few-shot examples and instruction tuning ([Sclar et al., ICLR 2024](https://arxiv.org/abs/2310.11324)). PromptRobust, an arXiv technical report (v5; versions 1-4 were titled PromptBench), applied adversarial attacks to task prompts at character, word, sentence and semantic levels, designed to keep the prompts' meaning, and reported that "contemporary LLMs are not robust to adversarial prompts" ([Zhu et al., arXiv 2306.04528v5](https://arxiv.org/abs/2306.04528v5)). Both studies measured benchmark tasks, not procedure files. They justify caution, not a specific effect size for your document.
 
 **Review is hard.** A diff that removes "never" or adds "unless the owner agrees" looks like a style edit. Reviewers read the new sentence, not the behaviors it permits. A withdrawn behavior can come back in a paraphrase and no line-level diff tool will flag it.
 
@@ -50,24 +50,29 @@ Where it falls short:
 
 Write required-clause patterns around the *invariant*: the command name, the flag, the ordering constraint. Do not pin the surrounding prose.
 
-### 2.2 Negative (forbidden-behavior) assertions: literal vs. semantic
+### 2.2 Negative (forbidden-behavior) assertions: literal words vs. concept keywords
 
-Negative checks say the doc must not instruct behavior X. The difference between a literal and a semantic negative check was the biggest lesson in our project.
+Negative checks say the doc must not instruct behavior X. The difference between matching a few literal words and matching a keyword list for the whole concept was the biggest lesson in our project. Both are lexical: they look for strings, not meaning.
 
 Our first version matched four literal words. Reviewers' mutants that *deleted* required clauses were caught by the positive tests. Mutants that *re-introduced* withdrawn behavior survived, each one using different words:
 
-| Re-introduced behavior | Mutant wording (generic) | Literal check | Meaning-based pattern |
+| Re-introduced behavior | Mutant wording (generic) | Literal check | Concept keyword pattern |
 |---|---|---|---|
 | Owner gate | "ask the owner once and wait for agreement" | passes (no banned word) | `consent\|agree\|declin\|wait for (the )?owner` |
 | Recency heuristic | "treat sections updated in the last 30 days as in progress" | passes | `30 days\|in progress\|progress page` |
 | Single-session scope | "read only one session's state" | passes | patterns for scope-narrowing words around "session" |
 | Manual checklist | "work through this checklist before each step" | passes | `checklist` |
 
-The fix was to write each negative pattern around the *concept* and its common synonyms. Use stems (`agree`, `declin`) and the distinctive numbers or nouns (`30 days`, `checklist`, `progress page`), not the exact phrase that was first removed.
+The fix was to widen each negative pattern to the *concept's* vocabulary: stems (`agree`, `declin`) and the distinctive numbers or nouns (`30 days`, `checklist`, `progress page`), not only the exact phrase that was first removed. That caught the mutants reviewers had found. It does not make the check semantic. A paraphrase that avoids every listed keyword still passes, and an allowed sentence that uses one still fails. Running the owner-gate pattern above on two sentences shows both:
 
-Promptfoo documents the same primitive: every assertion type can be negated by prepending `not-` (for example `not-regex`, `not-contains`) ([promptfoo, assertions](https://www.promptfoo.dev/docs/configuration/expected-outputs/)). The tooling is there. The work is choosing patterns that track meaning.
+| Sentence | Should the check fail? | Owner-gate pattern |
+|---|---|---|
+| "obtain the operator's go-ahead before continuing" | Yes (reworded owner gate) | No match, so it passes |
+| "proceed without a request for owner consent" | No (it forbids the gate) | Matches `consent`, so it fails |
 
-Semantic negative checks have a cost, which is false positives. A pattern like `agree` also matches "disagree" and "agreed-upon format". Keep a short allowlist test showing legitimate uses that must still pass, so the next editor knows where the boundary is.
+Promptfoo documents the same primitive: every assertion type can be negated by prepending `not-` (for example `not-regex`, `not-contains`) ([promptfoo, assertions](https://www.promptfoo.dev/docs/configuration/expected-outputs/)). The tooling is there. The work is choosing keyword lists that cover the paraphrases you expect, knowing they cannot track meaning. Questions of meaning belong to a judge (section 2.5) or a real-model run (section 2.6).
+
+Concept keyword checks also cost false positives. A pattern like `agree` also matches "disagree" and "agreed-upon format". Keep paraphrase controls in pairs with allowed sentences that contain the same words: a reworded withdrawn behavior the check must reject, next to a legitimate sentence using the same keyword that must still pass. A paraphrase the list cannot catch without banning allowed text is recorded as a known miss, not claimed as coverage. The pairs show the next editor where the boundary is.
 
 ### 2.3 Snapshot and hash pins
 
@@ -124,11 +129,11 @@ A caution on grading: read the transcripts. A failed trial can be a grader rejec
 
 ## 3. Mutation testing applied to prompts and docs
 
-**What the literature says.** Mutation testing introduces small deliberate faults ("mutants") into a program and checks whether the test suite fails. A surviving mutant is a gap in the tests. The standard survey is Jia and Harman's [An Analysis and Survey of the Development of Mutation Testing](https://dblp.org/rec/journals/tse/JiaH11.html) (IEEE TSE, 2011). At Google, an analysis of almost 15 million mutants found that developers who saw mutants wrote more tests, and that mutants were coupled with real faults ([Petrović et al., ICSE 2021](https://arxiv.org/abs/2103.07189)). A related line of work argues that coverage alone is a weak proxy for suite quality: [Inozemtseva and Holmes (ICSE 2014)](https://dl.acm.org/doi/10.1145/2568225.2568271) found that once suite size is controlled for, the correlation between coverage and effectiveness is typically low to moderate. The prose analogue is that "the doc contains these sentences" is like line coverage. It says nothing about whether the suite notices a *wrong* sentence.
+**What the literature says.** Mutation testing introduces small deliberate faults ("mutants") into a program and checks whether the test suite fails. A surviving mutant that changes behavior (a non-equivalent one) is a gap in the tests. The standard survey is Jia and Harman's [An Analysis and Survey of the Development of Mutation Testing](https://dblp.org/rec/journals/tse/JiaH11.html) (IEEE TSE, 2011). At Google, an analysis of almost 15 million mutants found that developers who saw mutants wrote more tests, and that mutants were coupled with real faults ([Petrović et al., ICSE 2021](https://arxiv.org/abs/2103.07189)). A related line of work argues that coverage alone is a weak proxy for suite quality: [Inozemtseva and Holmes (ICSE 2014)](https://dl.acm.org/doi/10.1145/2568225.2568271) found that once suite size is controlled for, the correlation between coverage and effectiveness is typically low to moderate. The prose analogue is that "the doc contains these sentences" is like line coverage. It says nothing about whether the suite notices a *wrong* sentence.
 
 **What exists for prompts.** The most relevant preprint I could verify is AgentAssay ([Bhardwaj, arXiv 2603.02601](https://arxiv.org/abs/2603.02601)). Its abstract lists agent-specific mutation-testing operators, metamorphic relations, and statistical (PASS/FAIL/INCONCLUSIVE) regression verdicts for agent changes in prompts, tools, models or orchestration. It is a single-author preprint, and I could verify only the abstract, not the specific operator definitions. Treat it as an early signal, not an established method.
 
-PromptRobust/PromptBench ([Zhu et al.](https://arxiv.org/abs/2306.04528)) perturbs instructions at character, word, sentence and semantic levels. Its purpose is measuring *model* robustness to prompt variation, not test-suite adequacy. Its four levels are still a useful vocabulary for the kinds of mutants worth trying.
+PromptRobust ([Zhu et al., arXiv 2306.04528v5](https://arxiv.org/abs/2306.04528v5)) perturbs instructions at character, word, sentence and semantic levels. Its purpose is measuring *model* robustness to prompt variation, not test-suite adequacy. Its four levels are still a useful vocabulary for the kinds of mutants worth trying.
 
 I found no established, widely used tool that does classical mutation testing of Markdown procedure files. Promptfoo, DeepEval and OpenAI Evals ([repo](https://github.com/openai/evals)) provide assertions, graders and registries, not a mutate-and-check loop.
 
@@ -136,8 +141,8 @@ I found no established, widely used tool that does classical mutation testing of
 
 1. Take a doc that has green tests.
 2. Produce mutants of three kinds: *delete* a required clause; *weaken* it ("must" to "may"); *re-introduce* a withdrawn behavior in different words.
-3. Run the suite. Every mutant that stays green is a missing test.
-4. Add a test for the *concept*, not the mutant's exact words, then re-run.
+3. Run the suite. A mutant that stays green is a candidate gap, not yet a missing test.
+4. Establish whether the mutant changes behavior in a way that matters: does it permit a withdrawn behavior or drop a required step? Decide from the text, and from a real-model run when the text leaves it unclear. If it does, add a test for the *concept*, not the mutant's exact words, then re-run. If it does not, it is equivalent and goes on the watch list below.
 
 Deletion and weakening mutants are usually caught. The re-introduction kind is the one that survives, because the test author wrote negative patterns from memory of the original wording. An LLM can generate such paraphrased mutants cheaply. That is my suggestion, and I did not find a source for it in this setting.
 
@@ -147,11 +152,11 @@ Deletion and weakening mutants are usually caught. The re-introduction kind is t
 
 ### Which layer catches which failure
 
-| Failure class | Example | Literal clause | Semantic negative | Hash pin | Structural | LLM judge | Real-model run |
+| Failure class | Example | Literal clause | Keyword negative | Hash pin | Structural | LLM judge | Real-model run |
 |---|---|---|---|---|---|---|---|
 | Required clause deleted | Validation step removed | Catches | - | Catches | - | Maybe | Maybe |
 | Withdrawn behavior, same words | "ask the owner" returns | - | Catches | Catches | - | Catches | Maybe |
-| Withdrawn behavior, new words | "wait for agreement" | - | Catches if concept-based | Catches | - | Catches | Maybe |
+| Withdrawn behavior, new words | "wait for agreement" | - | Only if the new words contain a listed keyword | Catches | - | Catches | Maybe |
 | Any unreviewed edit to a template | Generator drift | - | - | Catches | - | - | - |
 | Broken link / missing spec | Format spec not linked | - | - | - | Catches | Maybe | Catches |
 | Ambiguous placeholder | `<page>` filled wrongly | - | - | - | Partly (flag unresolved placeholders) | Maybe | Catches |
@@ -159,11 +164,11 @@ Deletion and weakening mutants are usually caught. The re-introduction kind is t
 | Unsafe habit | Probe pages removed with `rm` | - | Partly | - | Partly | Maybe | Catches |
 | Instructions interact badly with a model | Ordering confusion | - | - | - | - | - | Only this |
 
-"Maybe" means the layer can catch it with a good rubric or scenario but does not reliably do so. Read the table as: no single column covers the rows, and the last two rows depend on the real-model layer.
+"Maybe" means the layer can catch it with a good rubric or scenario but does not reliably do so. The keyword-negative cells are conditional: a rewording outside the keyword list passes (section 2.2). Read the table as: no single column covers the rows, and the last two rows depend on the real-model layer.
 
 ### Keeping costs down
 
-- **Trigger on diff, not on schedule.** Run real-model acceptance only when a change touches agent-facing text: procedure files, skill docs, generated system templates. Code-only PRs skip it. A path filter in CI is enough.
+- **Trigger on behavior-affecting changes, not on schedule.** Run real-model acceptance when a change touches agent-facing text (procedure files, skill docs, generated system templates), and also when it changes what executes that text in a way that can invalidate a procedure's behavior: the loader that decides which docs reach the model, the model or its version, tool definitions or tool behavior, or the harness. The agent under test is the model and harness together (section 1), so an unchanged doc can behave differently, or stop being loaded at all, after such a change. A path filter in CI covers text-only changes; extend it to the loader, tool and harness paths and to the model setting. Re-run only the scenarios that exercise what changed. PRs that touch none of these skip it.
 - **Narrow re-runs.** After a fix, re-run only the scenario that failed, plus one smoke scenario, not the full set. Anthropic suggests starting small: "20-50 simple tasks drawn from real failures is a great start."
 - **Turn every real-model finding into a free test.** Missing link becomes a structural check. Wrong placeholder becomes a "no unresolved placeholders" check. Bare `rm` becomes a negative pattern. Over time the expensive layer finds fewer new classes.
 - **Cheap model for smoke, production model for sign-off.** Wording sensitivity varies by model ([Sclar et al.](https://arxiv.org/abs/2310.11324)), so the sign-off must use the model you ship.
@@ -173,16 +178,16 @@ Deletion and weakening mutants are usually caught. The re-introduction kind is t
 ### Suggested order of work for a new procedure file
 
 1. Write 5-10 required-clause assertions on invariants only.
-2. Write negative patterns for every behavior you have ever withdrawn, in concept form, plus an allowlist test.
+2. Write keyword negative patterns for every behavior you have ever withdrawn, covering the concept's vocabulary, each with paired controls: a reworded withdrawn behavior and an allowed sentence using the same words.
 3. Add structural checks: links, placeholders, example commands.
-4. Mutate once by hand (or with a model) and close the gaps.
+4. Mutate once by hand (or with a model) and close the gaps that change behavior.
 5. Run real-model acceptance on two or three fixtures. Read the transcripts. Convert findings into layers 1-3.
 
 ## 5. Pitfalls
 
 - **Over-literal tests freeze wording.** If an assertion needs the exact sentence, every clarity edit fails the build and people stop improving the doc. Assert the invariant (command, flag, order), not the phrase.
 - **Regexes so broad they ban legitimate words.** `agree` also matches "disagree", and `progress` matches "progress report" in an unrelated section. Scope patterns to the section where the behavior would live, and keep an allowlist test.
-- **Negative patterns that check only the original wording.** This was our failure. Write them from the concept, and revisit them whenever a reviewer finds a new paraphrase.
+- **Negative patterns that check only the original wording.** This was our failure. Widen them to the concept's vocabulary, revisit them whenever a reviewer finds a new paraphrase, and remember that a keyword list still misses paraphrases outside it.
 - **Hash pins as merge-conflict magnets.** Two PRs touching one template collide on one pin. Prefer targeted assertions, and if you keep pins, make them regenerable.
 - **Treating a green unit suite as evidence the prose works.** Our suite was green when workers were writing wrong paths and invalid status values. Static tests check the text, and only real-model runs check the behavior.
 - **LLM judges as silent gates.** They are non-deterministic and drift with the judge model. Use them to raise flags for a person.
@@ -192,7 +197,7 @@ Deletion and weakening mutants are usually caught. The re-introduction kind is t
 
 ## Conclusion
 
-Treat agent-facing prose as a program that happens to be written in English. Test it in layers: cheap and literal for invariants, meaning-based for forbidden behavior, structural for references, a judge for second opinions, and real-model sandboxes for what the text actually causes. Use mutants to find holes in the cheap layers, and keep the expensive layer narrow and triggered only by agent-facing changes. The most reliable improvement we made was a habit: every failure found by a real run becomes a new static test.
+Treat agent-facing prose as a program that happens to be written in English. Test it in layers: cheap and literal for invariants, keyword lists for forbidden behavior (lexical, so paired with controls), structural for references, a judge for second opinions, and real-model sandboxes for what the text actually causes. Use mutants to find holes in the cheap layers, and keep the expensive layer narrow, triggered by changes that can alter behavior: the agent-facing text, or the loader, model, tools and harness that run it, with re-runs scoped to the affected scenarios. The most reliable improvement we made was a habit: every failure found by a real run becomes a new static test.
 
 ## Sources
 
@@ -201,7 +206,7 @@ Treat agent-facing prose as a program that happens to be written in English. Tes
 - promptfoo, [Assertions and metrics](https://www.promptfoo.dev/docs/configuration/expected-outputs/): deterministic, model-graded and trajectory assertions, and the `not-` negation prefix.
 - DeepEval, [G-Eval](https://deepeval.com/docs/metrics-llm-evals): LLM-judged criteria, evaluation steps, run-to-run variance.
 - OpenAI, [openai/evals](https://github.com/openai/evals): eval framework and registry. The repo points to the dashboard-based Evals product.
-- Zhu et al., [PromptBench / PromptRobust, arXiv 2306.04528](https://arxiv.org/abs/2306.04528): robustness to adversarial prompts at four levels.
+- Zhu et al., [PromptRobust: Towards Evaluating the Robustness of Large Language Models on Adversarial Prompts](https://arxiv.org/abs/2306.04528v5), arXiv 2306.04528v5, technical report (v5, July 2024; v1-v4 were titled "PromptBench: ..."): adversarial prompt attacks at character, word, sentence and semantic levels.
 - Sclar et al., [Quantifying Language Models' Sensitivity to Spurious Features in Prompt Design, arXiv 2310.11324](https://arxiv.org/abs/2310.11324).
 - Jia and Harman, [An Analysis and Survey of the Development of Mutation Testing](https://dblp.org/rec/journals/tse/JiaH11.html), IEEE TSE 2011.
 - Petrović, Ivanković, Fraser and Just, [Does mutation testing improve testing practices?](https://arxiv.org/abs/2103.07189), ICSE 2021.
