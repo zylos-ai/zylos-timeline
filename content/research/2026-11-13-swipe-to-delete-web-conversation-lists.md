@@ -10,7 +10,7 @@ tags: ["research", "ux", "frontend", "accessibility", "pointer-events", "dashboa
 
 Picture an agent operator dashboard whose conversation list should support "swipe left to delete a conversation" on phones, while the same list is used with a mouse or trackpad on desktop. What follows is research to inform that design, not a design decision. In plain language:
 
-1. **Swipe-to-delete is feasible with plain Pointer Events and one CSS line (`touch-action: pan-y`).** The browser keeps vertical scrolling; your code sees only horizontal movement. The hard parts are around the swipe: not fighting browser gestures, not deleting by accident, and not excluding keyboard and screen-reader users.
+1. **Swipe-to-delete is feasible with plain Pointer Events and one CSS line (`touch-action: pan-y pinch-zoom`).** The browser keeps vertical scrolling and pinch zoom. Your code still receives pointer moves on both axes and must pick the axis itself; when the browser starts a vertical pan it takes the touch over and sends `pointercancel`. The hard parts are around the swipe: not fighting browser gestures, not deleting by accident, and not excluding keyboard and screen-reader users.
 2. **A swipe must never be the only way to delete.** WCAG 2.2 SC 2.5.1 (Level A) requires a single-pointer, non-path-based alternative, and SC 2.5.7 (AA) a non-dragging one. Apple's HIG says shortcut gestures should supplement standard ways to act. Every row needs a visible "more actions" button or context menu with Delete, on desktop and phone.
 3. **Prefer reveal-then-tap over full-swipe-commits.** Full swipe makes one imprecise movement destructive. (Inference.)
 4. **Make deletion recoverable instead of asking "Are you sure?".** NN/g reserves confirmation for serious actions and recommends undo; Material's snackbar guidance names Undo for amending a choice. The strongest version here is a **server-side soft delete plus an Undo toast**, which also works across tabs and devices. Keep real confirmation for permanent purge or conversations with a running agent task. (Inference.)
@@ -27,25 +27,25 @@ Pointer Events unify mouse, pen and touch into one event stream (`pointerdown`, 
 
 The key mechanism for swipes is the interaction between Pointer Events and `touch-action`. **[Sourced]** MDN: "By default, panning (scrolling) and pinching gestures are handled exclusively by the browser. An application using Pointer events will receive a `pointercancel` event when the browser starts handling a touch gesture." By declaring which gestures the browser should keep, "an application can supply its own behavior in `pointermove` and `pointerup` listeners for the remaining gestures" ([MDN: touch-action](https://developer.mozilla.org/en-US/docs/Web/CSS/touch-action)).
 
-`touch-action: pan-y` is defined as "Enable single-finger vertical panning gestures." MDN names swipe-to-dismiss rows inside a vertically scrolling page as a fit. The browser then scrolls vertically itself, and a horizontal drag keeps delivering pointer events to you.
+MDN defines `pan-y` as "Enable single-finger vertical panning gestures." The Pointer Events spec gives the matching use: "an image carousel may use pan-y to ensure it receives pointer events for any horizontal pan operations without interfering with vertical panning of the document" ([Pointer Events Level 3, touch-action](https://www.w3.org/TR/pointerevents3/#the-touch-action-css-property)). This reserves vertical panning for the browser; it does not filter the event stream down to horizontal moves. Your listeners still see `pointermove` with vertical components, which is why the sketch below locks the axis itself. Once the browser decides the touch is a vertical pan, it takes the touch over: the spec says the user agent "MUST suppress a pointer event stream" when "The pointer is subsequently used by the user agent to manipulate the page viewport (e.g. panning or zooming)", and suppression begins with a `pointercancel`. In a Chromium touch-emulation check (scratch harness, not a device test), a mostly vertical drag on a `pan-y pinch-zoom` row delivered `pointerdown`, one `pointermove` 17 px lower, then `pointercancel` while the page scrolled.
 
-Three details from the same page matter in practice:
+Three details from MDN's page matter in practice:
 
 - **[Sourced]** "After a gesture starts, changes to `touch-action` will not have any impact on the behavior of the current gesture." You cannot decide mid-drag to take over; set it up front.
 - **[Sourced]** The browser intersects `touch-action` of the touched element and its ancestors up to the scroller, so set it on the swiped element (or its row) and a descendant cannot re-enable what an ancestor removed.
-- **[Sourced]** `pan-y` alone drops `pinch-zoom` on that region (MDN notes that restricting `touch-action` may inhibit zooming). Use `touch-action: pan-y pinch-zoom` unless there is a reason not to, to avoid blocking users who zoom.
+- **[Sourced]** `pan-y` alone leaves `pinch-zoom` out of the allowed gestures on that region; MDN's accessibility note warns that `touch-action: none` "may inhibit operating a browser's zooming capabilities", and the same concern applies to a `pan-y`-only row. Use `touch-action: pan-y pinch-zoom`, as everywhere in this article, so users can still zoom. (`pinch-zoom` comes from MDN's syntax; the Level 3 spec's value grammar lists only `auto`, `none`, `pan-x`/`pan-y` and `manipulation`, so check MDN's compatibility table for your target browsers.)
 
 Touch Events are the older alternative: they need `preventDefault()` in non-passive listeners to take over a gesture, which can block scrolling. **[Inference]** With `touch-action` arbitrating declaratively, a Pointer Events implementation never calls `preventDefault()` on touch moves, so there is no scroll-blocking listener.
 
 ### 1.2 Pointer capture and cancellation
 
-`setPointerCapture(pointerId)` makes all later events for that pointer target your element "until capture is released (via `releasePointerCapture()` or the `pointerup` event is fired)." It lets a drag keep working when the pointer leaves the element ([MDN: setPointerCapture](https://developer.mozilla.org/en-US/docs/Web/API/Element/setPointerCapture)).
+`setPointerCapture(pointerId)` makes all later events for that pointer target your element "until capture is released (via `Element.releasePointerCapture()` or the `pointerup` event is fired)." It lets a drag keep working when the pointer leaves the element ([MDN: setPointerCapture](https://developer.mozilla.org/en-US/docs/Web/API/Element/setPointerCapture)).
 
-From the Pointer Events spec rather than the MDN page above (**[Sourced, secondary]**; I did not re-read the spec text):
+From the [Pointer Events Level 3](https://www.w3.org/TR/pointerevents3/) spec (**[Sourced]**, paraphrased):
 
-- Touch pointers are captured implicitly to the element that received `pointerdown`.
-- `pointercancel` means no further events are coming, no `pointerup` will follow, and capture is released. A swipe handler must treat it as "abort and snap back", never as "commit".
-- `lostpointercapture` fires after `pointerup`, `pointercancel`, manual release, or element removal. It is the most reliable single place for cleanup.
+- Direct-manipulation inputs such as touch should behave as if `setPointerCapture` had been called on the `pointerdown` target before any `pointerdown` listener runs (section 9.4, implicit capture).
+- `pointercancel` is the first step of suppressing the pointer's event stream, followed by `pointerout`, `pointerleave` and implicit release of capture (section 4.1.3.3). A swipe handler must treat it as "abort and snap back", never as "commit".
+- `lostpointercapture` fires whenever capture is released: after `pointerup` or `pointercancel` (section 9.5), on an explicit release, and, when the capturing node is removed from the document, at the document instead of the element. The sketch below does its cleanup in its `pointerup` and `pointercancel` handlers, which cover the release paths it creates; it does not listen for `lostpointercapture`. Add that listener if other code can release capture or re-render the row mid-drag.
 
 **[Inference]** Practical consequences: call `setPointerCapture` for mouse/pen only after you have decided the gesture is a horizontal drag (capturing at `pointerdown` can redirect the later click's target to the capturing element, a known source of "my row stopped being clickable" bugs), and always handle `pointercancel`. Cancellations are routine here: any vertical scroll start, a system gesture, an incoming call, or a notification pull-down can cancel the pointer mid-drag.
 
@@ -67,7 +67,7 @@ Three decisions: which axis, when to commit to the gesture, and when to settle o
 
 ### 2.1 Axis lock with a slop threshold
 
-With `touch-action: pan-y`, the browser already claims vertical movement and cancels your pointer. A small defensive check is still worthwhile for mouse/pen, for browsers that start the pan late, and for diagonal movement:
+With `touch-action: pan-y pinch-zoom`, the browser claims vertical pans and cancels your pointer once it starts one, but your code has already seen the first moves. A small defensive check is still worthwhile for mouse/pen, for browsers that start the pan late, and for diagonal movement:
 
 - Wait until the pointer has moved a small "slop" distance (commonly 8-10 px; this value is a convention, not a standard).
 - If the movement is mostly vertical, abandon the gesture and let scrolling win.
@@ -182,11 +182,13 @@ list.addEventListener('click', (e) => {
   }
 }, true);
 
-// Close on any outside tap or any scroll.
+// Close on any outside tap or any scroll. `scroll` does not bubble from elements,
+// so listen in the capture phase on document: page scroll and nested scrollers.
 document.addEventListener('pointerdown', (e) => {
   if (openRow && !openRow.contains(e.target)) settle(openRow, false);
 });
-list.addEventListener('scroll', () => openRow && settle(openRow, false), { passive: true });
+document.addEventListener('scroll', () => openRow && settle(openRow, false),
+  { capture: true, passive: true });
 ```
 
 Notes on the sketch (all **[Inference]**): `draggable="false"` and `user-select: none` stop the browser's native link/text drag from stealing the gesture; `inert` removes the hidden Delete button from the accessibility tree and tab order while closed; the click guard is needed because a finished drag can still produce a `click` on the link; the delete handler itself (the actual removal) is Section 5.
@@ -195,7 +197,7 @@ Notes on the sketch (all **[Inference]**): `draggable="false"` and `user-select:
 
 ### 3.1 Reveal-then-tap vs full-swipe-to-commit
 
-**[Sourced]** The iOS convention that web designers copy: trailing-edge swipe reveals actions, and the framework offers an option to let a full swipe trigger the first action (SwiftUI's `swipeActions(edge:allowsFullSwipe:)`; see the secondary guides in [Newly](https://newly.app/how-to/add-swipe-actions) and [UX Patterns Guide](https://uxpatternsguide.com/patterns/swipe-action/)). I could not retrieve Apple's HIG page text on swipe actions specifically: the HIG "Lists and tables" page I could read mentions swiping only in the context of paging between detail items, and one secondary source claims the HIG has no dedicated swipe-actions guidance. **[Not verified]** therefore: any claim of the form "Apple's HIG says full-swipe should be used only for X" should be treated as unconfirmed.
+**[Sourced]** The iOS convention that web designers copy: a swipe reveals row actions, and in SwiftUI a full swipe performs the first one unless the app turns that off. Apple's reference for `swipeActions(edge:allowsFullSwipe:content:)` says: "By default, the user can perform the first action for a given swipe direction with a full swipe." and "You can opt out of this behavior for an edge by setting the `allowsFullSwipe` parameter to `false`." It describes `allowsFullSwipe` as "A Boolean value that indicates whether a full swipe automatically performs the first action. The default is `true`." ([Apple: swipeActions](https://developer.apple.com/documentation/swiftui/view/swipeactions(edge:allowsfullswipe:content:))). So the native default is commit-on-full-swipe, and reveal-only is an explicit opt-out. I could not retrieve Apple's HIG page text on swipe actions specifically: the HIG "Lists and tables" page I could read mentions swiping only in the context of paging between detail items, and one secondary source claims the HIG has no dedicated swipe-actions guidance. **[Not verified]** therefore: any claim of the form "Apple's HIG says full-swipe should be used only for X" should be treated as unconfirmed.
 
 **[Sourced]** Ionic's `ion-item-sliding` shows how a widely used open-source component structures this: options revealed on the end side by default, up to two option groups (one per side), optional "expandable" options that fill the row when swiped past a threshold with an `ionSwipe` event, and `close()`/`closeOpened()` methods to keep a single row open ([Ionic docs](https://ionicframework.com/docs/api/item-sliding)). Its docs have no accessibility section, which is a reminder that the component alone does not solve the alternative-access requirement.
 
@@ -203,7 +205,7 @@ Notes on the sketch (all **[Inference]**): `draggable="false"` and `user-select:
 
 ### 3.2 Only one row open; closing behavior
 
-Opening one row should close the previous one, tapping elsewhere should close the open row, and scrolling should close it. Ionic's `closeOpened()` exists for exactly this. The sketch above implements all three. **[Inference]** Also close on route change and when a server push re-renders the list.
+Opening one row should close the previous one, tapping elsewhere should close the open row, and scrolling should close it. Ionic's `closeOpened()` exists for exactly this. The sketch above implements all three: its `pointerdown` handlers close the previous row and handle outside taps, and its capture-phase `scroll` listener on `document` closes the row whichever element scrolls, the page or a scrollable panel around the list. A listener on `.convo-list` itself would miss both, because the list is not a scroll container in this markup. **[Inference]** Also close on route change and when a server push re-renders the list.
 
 ### 3.3 Long-press and context menus
 
@@ -247,35 +249,59 @@ Two designs for Undo:
 
 ### 5.3 Optimistic removal with rollback and ordering
 
-Remove the row immediately for responsiveness, but keep what you need to put it back (item data and its index or neighbor id). If the request fails, reinsert at the original position and show an error toast. Two ordering hazards (**[Inference]**):
+Remove the row immediately for responsiveness, but keep what you need to put it back (item data and its index or neighbor id). If the request fails, reinsert at the original position and show an error toast. **[Inference]** The client needs exactly one delete transition per conversation id, with a defined answer to four races:
 
-- **Undo while the delete is still in flight.** Serialize operations per conversation id (a small promise chain per id) so `restore` is sent after `DELETE` settles, not concurrently.
-- **Late server events.** A list refresh or push event that arrives after the optimistic removal but before the server applies it can resurrect the row. Keep a short-lived "tombstone" set of locally deleted ids that the renderer filters, cleared once the server confirms.
+- **Double activation.** A second tap, swipe or keyboard Delete on the same id joins the transition already running: no second `DELETE`, no second toast. Server idempotency makes a duplicate request harmless, but it cannot stop the UI from issuing it twice.
+- **Undo while the delete is in flight.** Show Undo at once, together with the optimistic removal. If it is pressed before the `DELETE` returns, record the request and send `restore` only after the `DELETE` succeeds; if the `DELETE` fails, the rollback already brought the row back and no `restore` is sent.
+- **Failed restore.** The server still has the conversation soft-deleted, so the row stays removed and an alert says it is in Trash (where a Trash view can restore it later).
+- **Stale list responses.** A list request started before the server applied the delete can return after the delete acknowledgement and resurrect the row; a tombstone cleared at the acknowledgement does not stop it. Two rules do: while a transition for an id is in flight, the local state wins over any list response; and every `DELETE` or `restore` acknowledgement bumps a sequence number, so a list response whose request started before the latest acknowledgement is discarded and fetched again.
 
 ```js
-const queues = new Map();                       // id -> tail promise
-const run = (id, fn) => {
-  const next = (queues.get(id) ?? Promise.resolve()).then(fn, fn);
-  queues.set(id, next.catch(() => {}));
-  return next;
-};
+const ops = new Map();   // id -> one delete transition: { snap, state, undo, closed, done }
+let ackSeq = 0;          // bumped whenever a DELETE or restore settles
 
-async function deleteConversation(id) {
-  const snap = store.snapshot(id);              // { item, index }
-  store.remove(id); tombstones.add(id);
-  try {
-    await run(id, () => api.delete(`/conversations/${id}`));   // idempotent soft delete
-    toast.show('Conversation deleted', { action: 'Undo', onAction: () => undo(id, snap) });
-  } catch (err) {
-    tombstones.delete(id); store.insert(snap.item, snap.index);   // rollback
-    toast.show('Could not delete. It was restored.', { role: 'alert' });
-  }
+function deleteConversation(id) {
+  if (ops.has(id)) return ops.get(id).done;     // double activation joins the first transition
+  const op = { snap: store.snapshot(id), state: 'deleting', undo: false, closed: false };
+  ops.set(id, op);
+  store.remove(id);
+  toast.show('Conversation deleted', { action: 'Undo', onAction: () => undo(id),
+    onClose: () => { op.closed = true; if (op.state === 'deleted') ops.delete(id); } });
+  op.done = api.delete(`/conversations/${id}`).then(   // soft delete
+    () => { ackSeq++; op.state = 'deleted';
+            if (op.undo) return restore(id, op);       // Undo pressed while in flight
+            if (op.closed) ops.delete(id); },
+    () => { ackSeq++; ops.delete(id); store.insert(op.snap.item, op.snap.index);
+            toast.show('Could not delete. It was restored.', { role: 'alert' }); });
+  return op.done;
 }
-async function undo(id, snap) {
-  await run(id, () => api.post(`/conversations/${id}/restore`));
-  tombstones.delete(id); store.insert(snap.item, snap.index);
+
+function undo(id) {
+  const op = ops.get(id);
+  if (!op || op.undo) return;                    // rolled back already, or second Undo
+  op.undo = true;
+  if (op.state === 'deleted') return restore(id, op); // else restore runs after the ack
+}
+
+async function restore(id, op) {
+  op.state = 'restoring';
+  try {
+    await api.post(`/conversations/${id}/restore`);
+    store.insert(op.snap.item, op.snap.index);
+  } catch {
+    toast.show('Could not restore. It is still in Trash.', { role: 'alert' });
+  } finally { ackSeq++; ops.delete(id); }
+}
+
+async function refreshList() {
+  const seq = ackSeq;
+  const items = await api.get('/conversations');
+  if (seq !== ackSeq) return refreshList();      // started before an ack: may predate it
+  store.replace(items.filter((c) => !ops.has(c.id)));  // in-flight ids: local state wins
 }
 ```
+
+**[Inference]** `store`, `api` and `toast` are app-specific (the toast calls `onClose` when it is dismissed or replaced). The sketch was run against stubbed `api`, `store` and `toast` objects with manually resolved promises, not in a browser. Observed: a double activation sent one `DELETE` and showed one toast; Undo pressed while the `DELETE` was pending sent `restore` only after the `DELETE` succeeded and put the row back at its original index; Undo followed by a failed `DELETE` sent no `restore` and restored the row once; a failed `restore` left the row removed with an alert; a list response containing the row arrived while the `DELETE` was pending and did not show it; a list request started before the delete and answered after the acknowledgement was discarded and refetched, and the row stayed gone. Not covered by the snippet: push events from other clients (`conversation.deleted`/`restored`, Section 5.5; ordering those against local actions needs something like a per-conversation version from the server), focus and draft handling (Section 5.4), and a cap on refetches if acknowledgements keep arriving during a list request.
 
 ### 5.4 Deleting the conversation that is currently open
 
@@ -287,7 +313,7 @@ This is the dashboard-specific trap. **[Inference]** Reasoning for an operator t
 
 ### 5.5 Multi-tab and multi-device consistency
 
-**[Inference]** Same browser: `BroadcastChannel` can notify other tabs. Across devices: reuse whatever push channel the dashboard already uses (SSE/WebSocket) to emit `conversation.deleted` and `conversation.restored`. If another client has that conversation open when the event arrives, show an inline banner ("This conversation was deleted. Restore / Back to list") rather than removing the screen under the user. Make `DELETE` and `restore` idempotent, so duplicate taps and retries are safe, and let the server be the source of truth on conflicts (last write wins is acceptable here because the operations are inverses).
+**[Inference]** Same browser: `BroadcastChannel` can notify other tabs. Across devices: reuse whatever push channel the dashboard already uses (SSE/WebSocket) to emit `conversation.deleted` and `conversation.restored`. If another client has that conversation open when the event arrives, show an inline banner ("This conversation was deleted. Restore / Back to list") rather than removing the screen under the user. Make `DELETE` and `restore` idempotent, so retries and duplicates from other clients are safe (duplicate taps within one client are deduplicated in the client, Section 5.3), and let the server be the source of truth on conflicts (last write wins is acceptable here because the operations are inverses).
 
 ## 6. Accessibility
 
@@ -295,11 +321,11 @@ This is the dashboard-specific trap. **[Inference]** Reasoning for an operator t
 
 **[Sourced]** WCAG 2.2 SC 2.5.1 Pointer Gestures (Level A): "All functionality that uses multipoint or path-based gestures for operation can be operated with a single pointer" without a path-based gesture, unless essential. A swipe is a path-based gesture; acceptable alternatives include tap, click, double tap or long press; and "keyboard operability is not sufficient to conform to this success criterion" ([Understanding 2.5.1](https://www.w3.org/WAI/WCAG22/Understanding/pointer-gestures.html)). Gestures defined by the OS or browser, such as back/forward flicks and screen-reader swipes, are outside scope.
 
-**[Sourced]** SC 2.5.7 Dragging Movements (Level AA): "All functionality that uses a dragging movement for operation can be achieved by a single pointer without dragging." A swipe is not itself dragging, but the alternative "can't exclusively rely on a path-based gesture", and an action that combines both may fail both criteria ([Understanding 2.5.7](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)). Browser-native scrolling is exempt unless content suppresses it.
+**[Sourced]** SC 2.5.7 Dragging Movements (Level AA): "All functionality that uses a dragging movement for operation can be achieved by a single pointer without dragging, unless dragging is essential or the functionality is determined by the user agent and not modified by the author." The Understanding document separates the two criteria: dragging means "grabbing" an element and moving it, where "the direction of the dragging movement does not factor into the interaction at all", while for 2.5.1 pointer gestures "the direction of the pointer movement matters"; an action that involves both "may fail against the requirements of both success criteria". The alternative "can't exclusively rely on a path-based gesture, such as swiping or 'flicking'", and it "does not have to be the same component, so long as the functionality is equivalent" ([Understanding 2.5.7](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)). Browser-native scrolling is exempt unless content suppresses it or implements its own.
 
-**[Inference]** A row that follows your finger as it is dragged is a dragging movement and a left-ward swipe path, so treat both criteria as applying. The compliant and also best-practice fix is the same: a visible, single-tap "more actions" control that reaches Delete.
+**[Inference]** Classification depends on how the gesture is recognised, so apply it to the actual code. The sketch in Section 2.3 is direction-dependent: it starts only after a mostly horizontal move and settles open on a leftward flick or position, which makes it a path-based gesture under 2.5.1. Once locked, the row's top layer follows the finger and is released at a position, which resembles the grab-move-release pattern of 2.5.7. Neither 2.5.7 exception fits: dragging is not essential to deleting, and the gesture is implemented by the page, not the browser. A recogniser that triggered on any release distance regardless of direction, or on a pure flick with no tracking, would classify differently. In both readings the remedy is the same: a visible, single-tap "more actions" control that reaches Delete.
 
-Also, **[Not re-verified here]**: WCAG 2.2 SC 2.5.8 Target Size (Minimum) asks for at least 24 by 24 CSS px at AA, which applies to the Delete and "more" buttons.
+**[Sourced]** SC 2.5.8 Target Size (Minimum) (Level AA): "The size of the target for pointer inputs is at least 24 by 24 CSS pixels", except when one of five exceptions applies: Spacing, Equivalent, Inline, User Agent Control, or Essential. Under Spacing, an undersized target can still pass if "a 24 CSS pixel diameter circle" centered on it does not "intersect another target or the circle for another undersized target"; under Equivalent, "The function can be achieved through a different control on the same page that meets this criterion" ([Understanding 2.5.8](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)). **[Inference]** So the visible size of the "more" and Delete buttons does not settle conformance by itself: what is evaluated is each pointer target's area together with its spacing from neighbors (the row link, the other button), or, for the swipe-revealed Delete, whether the "more" menu's Delete is a conforming equivalent. Make the "more" button's hit area at least 24 by 24 CSS px, or space it so the 24 px circles do not overlap the row link.
 
 ### 6.2 Keyboard and screen readers
 
@@ -384,11 +410,12 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 | 11 | Open row A, then start swiping row B | A closes |
 | 12 | Scroll the list with a row open | Row closes |
 | 13 | Swipe starting at the left screen edge (iOS) | Browser back, not a row action |
-| 16 | Rapid double-tap on Delete | One delete, one toast |
-| 17 | Delete, then Undo before the request returns | Ends restored, in original position |
-| 18 | Delete fails (offline or 5xx) | Row returns at original index with an error message |
+| 16 | Rapid double-tap on Delete | One `DELETE` request, one toast (the second activation joins the first) |
+| 17 | Delete, then Undo before the request returns | `restore` sent only after the `DELETE` succeeds; row back at original index. If the `DELETE` fails instead, no `restore`, row back once. If `restore` fails, row stays removed with an alert |
+| 18 | Delete fails (offline or 5xx) | Row returns at original index with an error alert; no `restore` sent |
 | 19 | Delete the currently open conversation | No silent jump; focus and draft handled |
-| 20 | Same conversation deleted in another tab/device | Open copy shows banner; list updates |
+| 20 | Same conversation deleted in another tab/device | Open copy shows banner; list updates (push handling; not in the 5.3 snippet) |
+| 21 | List refresh started before a delete, answered after its acknowledgement | Response discarded and refetched; row stays deleted |
 | 23 | Mouse and trackpad on desktop | No drag swipe; hover "more" button and context menu work |
 | 24 | Keyboard only | Tab reaches "more"; menu operable; Escape closes; Delete works; focus lands sensibly after |
 | 25 | Screen reader | Hidden delete not announced while closed; result and Undo announced |
@@ -397,7 +424,7 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 
 ## 11. Limits of This Research
 
-- Apple's HIG text on swipe actions specifically could not be retrieved; swipe-action conventions rest on framework behavior and secondary guides. The HIG Gestures and Undo and redo pages were read directly.
+- Apple's HIG text on swipe actions specifically could not be retrieved; swipe-action conventions rest on Apple's SwiftUI `swipeActions` reference (framework behavior, not design guidance). The HIG Gestures and Undo and redo pages were read directly.
 - The NN/g pages and the Material snackbar page were reached through search summaries; Material's own swipe-to-dismiss list guidance was not retrieved.
 - The iOS edge-swipe findings are developer reports on specific iOS versions and may have changed.
 - Code was not run on devices. Treat the thresholds (8 px slop, 0.45 px/ms flick, 88 px reveal) as starting values.
@@ -405,6 +432,7 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 ## References
 
 - MDN, [touch-action](https://developer.mozilla.org/en-US/docs/Web/CSS/touch-action)
+- W3C, [Pointer Events Level 3](https://www.w3.org/TR/pointerevents3/)
 - MDN, [overscroll-behavior](https://developer.mozilla.org/en-US/docs/Web/CSS/overscroll-behavior)
 - MDN, [Element.setPointerCapture()](https://developer.mozilla.org/en-US/docs/Web/API/Element/setPointerCapture)
 - MDN, [wheel event](https://developer.mozilla.org/en-US/docs/Web/API/Element/wheel_event)
@@ -412,7 +440,9 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 - Chrome for Developers, [Take control of your scroll: customizing pull-to-refresh and overflow effects](https://developer.chrome.com/blog/overscroll-behavior)
 - W3C WAI, [Understanding SC 2.5.1 Pointer Gestures](https://www.w3.org/WAI/WCAG22/Understanding/pointer-gestures.html)
 - W3C WAI, [Understanding SC 2.5.7 Dragging Movements](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)
+- W3C WAI, [Understanding SC 2.5.8 Target Size (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)
 - Apple, [Human Interface Guidelines: Gestures](https://developer.apple.com/design/human-interface-guidelines/gestures) and [Undo and redo](https://developer.apple.com/design/human-interface-guidelines/undo-and-redo)
+- Apple, [SwiftUI swipeActions(edge:allowsFullSwipe:content:)](https://developer.apple.com/documentation/swiftui/view/swipeactions(edge:allowsfullswipe:content:))
 - Material Design 3, [Snackbar guidelines](https://m3.material.io/components/snackbar/guidelines)
 - NN/g, [Confirmation Dialogs Can Prevent User Errors](https://www.nngroup.com/articles/confirmation-dialog/); [Preventing User Errors](https://www.nngroup.com/articles/user-mistakes/)
 - web.dev, [Animations guide for high performance](https://web.dev/articles/animations-guide)
@@ -421,4 +451,3 @@ Emulators miss: iOS Safari's rubber-banding, collapsing address bar, edge-swipe-
 - Playwright, [Touchscreen](https://playwright.dev/docs/api/class-touchscreen)
 - Chrome DevTools Protocol, [Input domain](https://chromedevtools.github.io/devtools-protocol/tot/Input/)
 - Community reports on iOS edge-swipe: [Pqina](https://pqina.nl/blog/blocking-navigation-gestures-on-ios-13-4/), [Joel Malone](https://medium.com/@joelmalone/prevent-edge-swipe-gestures-in-your-html-game-but-only-in-safari-fba815a529a2), [Ionic issue #22299](https://github.com/ionic-team/ionic-framework/issues/22299)
-- Secondary guides on swipe actions: [Newly](https://newly.app/how-to/add-swipe-actions), [UX Patterns Guide](https://uxpatternsguide.com/patterns/swipe-action/)
