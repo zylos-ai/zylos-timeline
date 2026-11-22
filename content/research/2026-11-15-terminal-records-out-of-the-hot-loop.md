@@ -208,8 +208,8 @@ async flushOnce() {
   const batch = [...this.dirty].map(id => this.records.get(id)); // capture, do not clear yet
   const text = batch.map(r => JSON.stringify(r)).join('\n') + '\n';
   if (this.uncertain) await fs.truncate(this.journalPath, this.journalBytes); // drop partial tail
-  this.uncertain = true;
-  const fh = await fs.open(this.journalPath, 'a');
+  const fh = await fs.open(this.journalPath, 'a');           // creates the file on first use
+  this.uncertain = true;                                     // only now can the append touch the file
   try {
     await fh.appendFile(text);                               // O(changed), not O(history)
     await fh.datasync();                                     // success = durable, not just accepted
@@ -228,7 +228,7 @@ async flushOnce() {
 The rules this encodes:
 
 - **Acknowledge after persistence.** The batch is captured but stays in `dirty` until the append succeeds. A tempting shorter version clears `dirty` before appending; when I ran it with a writer that rejected once, the dirty set was already empty and the next flush never called the writer, so a terminal marker was silently lost.
-- **A failed or uncertain append is retried whole.** A failed append may still have written part of the batch, so the next flush first truncates the journal back to the last acknowledged length. Without that, the retried batch is glued onto the partial line and replay later throws (both observed in my harness).
+- **A failed or uncertain append is retried whole.** A failed append may still have written part of the batch, so the next flush first truncates the journal back to the last acknowledged length. Without that, the retried batch is glued onto the partial line and replay later throws (both observed in my harness). The tail is marked uncertain only after `open` has returned a handle, because only then can the append change the file. Marking it earlier breaks the first write: if the very first `open` fails while the journal does not exist yet, every retry would try to truncate a missing file and fail with `ENOENT` before reaching `open` again (also observed; with the flag set after `open`, the retry creates the file and writes the batch).
 - **Newer changes survive an in-flight append.** A record is removed from `dirty` only if it is still the exact object that was written; a change made while the append was in flight stays dirty and goes out on the next flush.
 - **Overlapping calls are serialized.** A second `flush()` waits for the first, then writes only what is still dirty, so two appends never interleave.
 - **Success means durable here.** `flush()` resolves after `datasync` returned, not merely after the write was accepted into the page cache. Dropping the `datasync` gives page-cache acceptance: it survives a process crash but not power loss. Choose per data class, as in the durability caution above. If the journal file is newly created, sync its directory once too, as above.
@@ -237,7 +237,8 @@ Replay on startup is last-write-wins by id, so duplicate lines are harmless. Onl
 
 ```js
 async function replay(journalPath) {
-  const text = await fs.readFile(journalPath, 'utf8');
+  const text = await fs.readFile(journalPath, 'utf8')
+    .catch(err => { if (err.code === 'ENOENT') return ''; throw err; }); // first start: no journal yet
   const complete = text.slice(0, text.lastIndexOf('\n') + 1); // after the last '\n' = torn append
   const records = new Map();
   for (const line of complete.split('\n')) {
@@ -249,7 +250,7 @@ async function replay(journalPath) {
 }
 ```
 
-I ran these snippets against a real file with injected faults: reject once then succeed, a partial write followed by a rejection, a change during an in-flight append, three overlapping `flush()` calls, and a torn final line. In each case the journal replayed to the latest in-memory state with nothing left dirty. Newline framing will not catch every kind of damage; a per-line checksum would (inference).
+I ran these snippets against a real file with injected faults: reject once then succeed, a partial write followed by a rejection, a change during an in-flight append, three overlapping `flush()` calls, a torn final line, a first `open` that fails while the journal does not exist yet, and a first start with no journal file. In each case the journal replayed to the latest in-memory state with nothing left dirty. Newline framing will not catch every kind of damage; a per-line checksum would (inference).
 
 Compaction writes a fresh snapshot (temp plus rename) and then retires the journal segment. It is still O(history), but it runs rarely, off the tick path, ideally with a rotated journal segment so appends during compaction are not lost. In my benchmark, appending one small record to a log file took a few microseconds (page-cache, median of 50 appends), versus ~174 ms to rewrite a 39 MB snapshot. That figure does not include the per-flush `datasync` above.
 
