@@ -12,7 +12,7 @@ A pull request was declared review-ready after its reviewers selected "the brows
 
 Both failures share a root cause: a skipped test produces no evidence, yet toolchains report a skip as something close to a pass. In my local runs Jest, Vitest, Playwright and pytest all exited 0 with tests skipped, and the skip count was one muted token in a summary line. That is the token a hurried human, or an AI agent, drops when writing "all tests passed."
 
-The main points: select tests by gate, not by filename; keep a generated inventory of gates; make unexpected skips fail CI with an allowlist and a preflight that names missing variables; diff skips between base and head; and treat "fails on baseline" as valid only when both runs had the same environment.
+The main points: select tests by gate, not by filename; keep a generated inventory of gates; make unexpected skips fail CI with a per-test allowlist and a preflight that names missing variables; check that every file of a required gate actually ran, because an omitted tier reports zero skips; diff skipped and executed tests between base and head; and treat "fails on baseline" as valid only when both runs had the same environment and failed the same way.
 
 All code in this article was run locally against Jest 30, Playwright (`@playwright/test`), Vitest 5.1 and pytest 9.2. Go behavior is taken from the official documentation.
 
@@ -46,7 +46,7 @@ Two behaviors matter for gating. First, `--list` still lists a test whose descri
 
 ### pytest
 
-`@pytest.mark.skipif(cond, reason=...)` is evaluated at collection time. By default, skip details are hidden "to avoid cluttering the output." Add `-rs` and pytest prints a `SKIPPED [n] file:line: reason` line for each one. The exit codes documented for pytest are 0 (all collected tests passed), 1 (failures), 2 (interrupted), 3 (internal error), 4 (usage error), 5 (no tests collected) and 6 (max warnings exceeded). There is no exit code for "some tests skipped."
+`@pytest.mark.skipif(cond, reason=...)` involves two evaluation points. When `cond` is an ordinary boolean expression, Python evaluates it once, when the decorator runs as the test module is imported during collection. pytest itself evaluates skip and skipif marks in its `pytest_runtest_setup` hook, so the test is reported as skipped in the setup phase, and a string condition is evaluated only then. A local probe printed the boolean condition before "collection finished" and the string condition after it, and both skip reports had `when="setup"`. By default, skip details are hidden "to avoid cluttering the output." Add `-rs` and pytest prints a `SKIPPED [n] file:line: reason` line for each one. The exit codes documented for pytest are 0 (all collected tests passed), 1 (failures), 2 (interrupted), 3 (internal error), 4 (usage error), 5 (no tests collected) and 6 (max warnings exceeded). There is no exit code for "some tests skipped."
 
 Markers are pytest's tagging system. Unregistered markers only emit a warning by default, a design intended "to avoid silently doing something surprising due to mistyped names." With `--strict-markers` (or `strict_markers` in config), unknown marks become errors. This is the nearest thing in these ecosystems to a defense against typos in a gate name, but it protects marker names only, not the environment variables inside `skipif` conditions.
 
@@ -64,7 +64,7 @@ pytest's JUnit output marks a skip as a child element of the testcase, including
 
 ## Failure Modes
 
-1. **Silent skips counted as green.** Jest, Vitest, Playwright and pytest all exit 0 on skips. In a public example, a Playwright suite called `test.skip()` when committed data held no matching record. The issue states the consequence directly: the case "stops exercising the browser and CI stays green with no signal at all."
+1. **Silent skips counted as green.** Jest, Vitest, Playwright and pytest all exit 0 on skips. In a public example, ten Playwright cases call `test.skip()` when committed data holds no matching record. The issue reporting this is about a latent hazard: "All ten currently run" at the checked commit. It describes what would happen the day a data refresh removes the last matching record: the case "stops exercising the browser and CI stays green with no signal at all."
 2. **Gate-variable typos.** `ZY_INTEGRATON=1` sets a variable nothing reads. The suite skips everything gated and is green. Marker-level strictness (`--strict-markers`) does not cover environment variable names.
 3. **Filename-based selection drift.** A test's name tells you what its author thought it was. The gate is what determines whether it runs. Filename patterns drift as files are added and renamed. This was the incident's primary cause.
 4. **"Baseline also fails" misdiagnosis.** A failure in a gated test under an incomplete environment (a missing required variable, a service that is not up) looks like a baseline bug. The comparison is only meaningful if both runs have identical environments.
@@ -75,29 +75,31 @@ pytest's JUnit output marks a skip as a child element of the testcase, including
 
 ### 1. Inventory by gate, not by filename
 
-Generate a table of gate variable to files, from a static scan of test sources (a regex for `process.env.NAME`, or an AST walk if the codebase is large) or from a runtime registry. A registry is better: define gates in exactly one helper, so no test can invent a private gate. The Jest helper below tags the describe title with `[gate:NAME]`, which makes skips attributable.
+Generate a table of gate variable to files, from a static scan of test sources (a regex for `process.env.NAME`, or an AST walk if the codebase is large) or from a runtime registry. A registry is better: define gates in exactly one helper, so no test can invent a private gate. The Jest helper below tags the describe title with `[gate:NAME]`, which makes skips attributable, and the inventory scan below reads gate names from the helper calls.
 
-One public project guards its skips with a unit test that scans spec files for `test.skip(` calls and matches them, by message, against a registered list, so any newly added skip fails the build.
+The project from the failure-mode example above then merged a unit guard (cncf/endusers PR 1185). It asserts that the committed data still satisfies each registered skip condition, and it scans spec files for `test.skip(` calls and matches them, by each skip's message, against a registered list. A newly added skip therefore fails the unit tests, which CI runs on every pull request.
 
 ### 2. Make unexpected skips fail, with an allowlist and reasons
 
-Skips are acceptable when they are expected: a platform-specific test on the wrong platform, a nightly-only browser tier. Keep expected skips in a committed allowlist with a reason for each. In CI, any skip not on the list fails the run.
+Skips are acceptable when they are expected: a platform-specific test on the wrong platform, a nightly-only browser tier. Keep expected skips in a committed allowlist with a reason for each. Key each entry by the specific test (file and full title, plus the project where the runner has projects), not by a suite title or a reason string: either of those also covers a new, unrelated skip that happens to sit in the same suite or reuse the same text. When an entry exists because a gate is off, record the gate and honor the entry only while that gate is actually off; with the gate enabled, the test must run. In CI, any skip not on the list fails the run.
 
 ### 3. Preflight that names missing variables
 
 Before any test runs, check that the variables the run requires are present, and fail with their names. This separates "environment misconfigured" from "test failed" and kills the baseline misdiagnosis in the incident.
 
+A preflight only proves that flags are set. It cannot tell whether the gated tests were selected at all: a run with every gate enabled that selects only an unrelated file reports zero skips and passes. So, after the run, compare what executed with what the required gates cover: every file in the gate inventory for a required gate must report at least one executed test.
+
 ### 4. Diff skip counts between base and head
 
-Run base and head, emit machine-readable results (`jest --json --outputFile`, JUnit XML, Playwright's JSON reporter) and fail when the set of skipped test IDs grows. Comparing sets of IDs, not just counts, catches a skip added while another is removed. A ten-line script over two Jest `--json` files (collect tests with `status: "pending"`, subtract the base set) did this in my test and exited 1 when two gated tests newly skipped.
+Run base and head, emit machine-readable results (`jest --json --outputFile`, JUnit XML, Playwright's JSON reporter) and fail when the set of skipped test IDs grows. Comparing sets of IDs, not just counts, catches a skip added while another is removed. Also fail when a test that executed on base is absent from head altogether, because a test that was not selected produces no skip record. A short script over two Jest `--json` files (collect skipped and executed IDs from each, then subtract) exited 1 in my test both when two gated tests newly skipped on head and when the gated file was left out of the head selection; the skipped-only comparison passed the second case. The diff cannot see a tier that both runs omitted, which is what the inventory check in practice 3 is for.
 
 ### 5. Full gated run before merge-approval for shared surfaces
 
-If a PR touches a shared surface (transport, persistence, startup, auth), the approval criterion is not "relevant tests pass" but "the full gated suite ran under the full environment and the skip report matches the allowlist." That costs one longer run. The incident cost a review cycle plus late-found regressions.
+If a PR touches a shared surface (transport, persistence, startup, auth), the approval criterion is not "relevant tests pass" but "the full gated suite ran under the full environment, every inventoried file of the required gates executed, and the skip report matches the allowlist." That costs one longer run. The incident cost a review cycle plus late-found regressions.
 
 ### 6. Paired A/B runs to separate flake from regression
 
-When a gated test fails, run the same selection in the same environment (verified by preflight) on base and head, several times each. Failing on head and passing on base every time is a regression. Failing on both is pre-existing, but only if the environments match. Alternating is a flake.
+When a gated test fails, run the same selection in the same environment (verified by preflight) on base and head, several times each. Failing on head and passing on base every time is a regression. Failing on both is pre-existing only if the environments match and the failure signatures match: the same test ID failing with the same error, compared by message and failing assertion or stack location. A different error in the same test on head is a new failure, not the old one. Alternating is a flake.
 
 ### 7. Treat tags and projects as organization, not assurance
 
@@ -105,7 +107,7 @@ Playwright tags, pytest markers and Jest projects organize tiers. They do not an
 
 ## Code
 
-### Jest: a gate helper, a skip-audit reporter, and a preflight
+### Jest: a gate helper, an inventory, a skip-audit reporter, and a preflight
 
 ```js
 // gated.js: the only place gates are defined
@@ -113,32 +115,62 @@ const enabled = (name) => process.env[name] === '1';
 function describeGated(gate, title, fn) {
   (enabled(gate) ? describe : describe.skip)(`[gate:${gate}] ${title}`, fn);
 }
-module.exports = { describeGated };
+module.exports = { enabled, describeGated };
+```
+
+```js
+// gate-inventory.js: which test files use which gate (static scan of literal gate names)
+const fs = require('fs'), path = require('path');
+const GATE_CALL = /describeGated\(\s*['"]([A-Z0-9_]+)['"]/g;
+function gateInventory(root, dir = root, inv = {}) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (ent.name !== 'node_modules' && !ent.name.startsWith('.')) gateInventory(root, p, inv);
+    } else if (/\.test\.[cm]?[jt]s$/.test(ent.name)) {
+      for (const [, gate] of fs.readFileSync(p, 'utf8').matchAll(GATE_CALL))
+        (inv[gate] ||= new Set()).add(path.relative(root, p));
+    }
+  }
+  return inv;
+}
+module.exports = { gateInventory };
 ```
 
 ```js
 // skip-audit-reporter.js
-const GATE_RE = /\[gate:([A-Z0-9_]+)\]/;
+const path = require('path');
+const { enabled } = require('./gated');
+const { gateInventory } = require('./gate-inventory');
 class SkipAuditReporter {
-  constructor(_g, options) {
-    this.allowed = new Set(options.allowedSkippedGates || []);
+  constructor(globalConfig, options) {
+    this.root = globalConfig.rootDir;
+    // test ID ("file > describe > test") -> { gate?, reason }
+    this.expected = new Map(Object.entries(options.expectedSkips || {}));
     this.strict = process.env.SKIP_AUDIT === 'strict';
     this.error = null;
   }
   onRunComplete(_ctx, results) {
-    const byGate = {}, ungated = [];
-    for (const file of results.testResults)
+    const problems = [], ran = new Set();
+    for (const file of results.testResults) {
+      const rel = path.relative(this.root, file.testFilePath);
       for (const t of file.testResults) {
-        if (t.status !== 'pending') continue;            // Jest's word for skipped
-        const name = [...t.ancestorTitles, t.title].join(' > ');
-        const m = GATE_RE.exec(name);
-        if (m) (byGate[m[1]] ||= []).push(file.testFilePath); else ungated.push(name);
+        const id = [rel, ...t.ancestorTitles, t.title].join(' > ');
+        if (t.status === 'passed' || t.status === 'failed') { ran.add(rel); continue; }
+        const e = this.expected.get(id);                // not run: pending (Jest's skip), todo...
+        if (!e) problems.push(`unexpected skip: ${id}`);
+        else if (e.gate && enabled(e.gate)) problems.push(`skipped although ${e.gate} is enabled: ${id}`);
       }
-    for (const [g, files] of Object.entries(byGate))
-      console.log(`[skip-audit] ${g}: ${files.length} skipped in ${new Set(files).size} file(s)`);
-    const unexpected = Object.keys(byGate).filter((g) => !this.allowed.has(g));
-    if (this.strict && (unexpected.length || ungated.length))
-      this.error = new Error(`[skip-audit] unexpected skips: gates=${unexpected.join(',') || '-'} ungated=${ungated.length}`);
+    }
+    const inventory = gateInventory(this.root);
+    for (const gate of (process.env.REQUIRE_GATES || '').split(',').filter(Boolean)) {
+      const files = [...(inventory[gate] || [])];
+      if (!files.length) problems.push(`required gate ${gate}: no test file uses it`);
+      for (const f of files) if (!ran.has(f)) problems.push(`required gate ${gate}: no test ran in ${f}`);
+    }
+    problems.forEach((p) => console.log(`[skip-audit] ${p}`));
+    if (this.strict && problems.length)
+      this.error = new Error(`[skip-audit] ${problems.length} problem(s), see above`);
   }
   getLastError() { return this.error; }
 }
@@ -158,62 +190,97 @@ module.exports = async () => {
 // jest.config.js
 module.exports = {
   globalSetup: '<rootDir>/preflight.js',
-  reporters: ['default', ['<rootDir>/skip-audit-reporter.js', { allowedSkippedGates: [] }]],
+  reporters: ['default', ['<rootDir>/skip-audit-reporter.js', { expectedSkips: {
+    'browser.test.js > [gate:ZY_BROWSER] browser tier > renders the list': {
+      gate: 'ZY_BROWSER', reason: 'browser tier runs nightly only' },
+    'browser.test.js > [gate:ZY_BROWSER] browser tier > recovers after reload': {
+      gate: 'ZY_BROWSER', reason: 'browser tier runs nightly only' },
+  } }]],
 };
 ```
 
-In my test, a default run exited 0 with `3 skipped`. With `SKIP_AUDIT=strict` it exited 1. With the gate variables set it exited 0 with no skips. A run with `REQUIRE_GATES` set and a typo'd variable failed before any test with `gates not enabled: ZY_INTEGRATION, ZY_BROWSER`.
+The allowlist names two specific tests and the gate that explains their skip. The inventory is a static scan, so it sees only literal gate names passed to `describeGated`; keep gate names literal. The required-gate check compares against whole files, so with `--shard` run it over the merged results rather than inside each shard.
+
+In my test (Jest 30.5.2, five tests in three files), a default run exited 0 with `4 skipped` and printed each unexpected skip by ID; `SKIP_AUDIT=strict` made the same run exit 1. The expected-disabled case passed in strict mode: with only the browser gate off, its two allowlisted tests skipped and the run exited 0. Each of these exited 1 in strict mode, and each exited 0 with the earlier version of this reporter, which allowlisted whole gates by the suite title: a new `test.skip` added inside the browser suite, with the browser gate on or off; an allowlisted test still skipped while its gate was on; and a run with both gates enabled that selected only an unrelated file, which reported `required gate ZY_INTEGRATION: no test ran in integration.test.js` with zero skips. A run with `REQUIRE_GATES` set and a typo'd variable failed before any test with `gates not enabled: ZY_INTEGRATION, ZY_BROWSER`.
 
 ### Playwright: fail on skips that are not on the allowlist
 
 ```ts
 // skip-audit-reporter.ts
 import type { Reporter, TestCase, TestResult, FullResult } from '@playwright/test/reporter';
+// key: "project > file > describe > test"; value: the gate that causes the skip, and why it is fine
+type ExpectedSkips = Record<string, { gate?: string; reason: string }>;
 export default class SkipAudit implements Reporter {
-  private skipped: { title: string; reason: string }[] = [];
-  private allowed: Set<string>;
-  constructor(opts: { allowedReasons?: string[] } = {}) { this.allowed = new Set(opts.allowedReasons ?? []); }
+  private problems: string[] = [];
+  private expected: ExpectedSkips;
+  constructor(opts: { expectedSkips?: ExpectedSkips } = {}) { this.expected = opts.expectedSkips ?? {}; }
   onTestEnd(test: TestCase, result: TestResult) {
     if (result.status !== 'skipped') return;
-    const reason = test.annotations.find((a) => a.type === 'skip')?.description ?? '(no reason)';
-    this.skipped.push({ title: test.titlePath().filter(Boolean).join(' > '), reason });
+    const id = test.titlePath().filter(Boolean).join(' > ');   // includes project and file
+    const e = Object.hasOwn(this.expected, id) ? this.expected[id] : undefined;
+    if (!e) this.problems.push(`unexpected skip: ${id}`);
+    else if (e.gate && process.env[e.gate] === '1') this.problems.push(`skipped although ${e.gate}=1: ${id}`);
   }
   async onEnd(result: FullResult) {
-    const bad = this.skipped.filter((s) => !this.allowed.has(s.reason));
-    console.log(`[skip-audit] skipped=${this.skipped.length} unexpected=${bad.length}`);
-    bad.forEach((s) => console.log(`  UNEXPECTED SKIP: ${s.title} (${s.reason})`));
-    if (process.env.SKIP_AUDIT === 'strict' && bad.length && result.status === 'passed')
+    this.problems.forEach((p) => console.log(`[skip-audit] ${p}`));
+    if (process.env.SKIP_AUDIT === 'strict' && this.problems.length && result.status === 'passed')
       return { status: 'failed' as const };
   }
 }
 ```
 
-Register it with `reporter: [['list'], ['./skip-audit-reporter.ts', { allowedReasons: [] }]]`. Gate with `test.skip(process.env.ZY_INTEGRATION !== '1', 'gate ZY_INTEGRATION not set')` so that every skip carries a reason string. In my run, the strict mode turned an exit code of 0 into 1.
+Register it with `reporter: [['list'], ['./skip-audit-reporter.ts', { expectedSkips }]]`, where each entry looks like `'desktop > browser.spec.ts > browser tier > renders the list': { gate: 'ZY_BROWSER', reason: 'browser tier runs nightly only' }`. `titlePath()` includes the project name and the file, so an entry excuses one test in one project only. Gate with `test.skip(process.env.ZY_BROWSER !== '1', 'gate ZY_BROWSER not set')` so that every skip still carries a readable reason for the report.
+
+In my run (Playwright 1.65.1, two projects, no browser needed), the expected-disabled case passed in strict mode: four allowlisted skips with the gate off, exit 0. Strict mode exited 1 for a new test elsewhere that called `test.skip` with the same reason string, for a new skip inside the browser tier with the gate on, for an allowlisted test that still skipped with the gate on, and for an allowlisted test in a project the allowlist did not name. The earlier reason-keyed version of this reporter exited 0 in the first two cases.
+
+This reporter and the pytest hook below audit skips only. A spec that was never selected produces no result in either runner, so pair them with a required-file check like the Jest reporter's.
 
 ### pytest: the same idea in conftest.py
 
 ```python
 # conftest.py
+import os
 import pytest
-EXPECTED_SKIP_REASONS = {"gate ZY_BROWSER not set": "browser tier runs nightly only"}
+
+# nodeid -> (gate or None, reason). A gated entry counts only while its gate is off.
+EXPECTED_SKIPS = {
+    "test_browser.py::test_renders": ("ZY_BROWSER", "browser tier runs nightly only"),
+}
+_problems = []
 
 def pytest_addoption(parser):
     parser.addoption("--fail-on-unexpected-skip", action="store_true")
 
+def _audit(report):
+    if not report.skipped or hasattr(report, "wasxfail"):  # xfail is also reported as skipped
+        return
+    gate, _why = EXPECTED_SKIPS.get(report.nodeid, ("", None))
+    if _why is None:
+        _problems.append(f"unexpected skip: {report.nodeid}")
+    elif gate and os.environ.get(gate) == "1":
+        _problems.append(f"skipped although {gate}=1: {report.nodeid}")
+
+def pytest_runtest_logreport(report):  # skips from marks (setup) and from the test body
+    _audit(report)
+
+def pytest_collectreport(report):      # module-level pytest.skip(..., allow_module_level=True)
+    _audit(report)
+
+def pytest_terminal_summary(terminalreporter):  # not called under -p no:terminal
+    for p in _problems:
+        terminalreporter.write_line(f"[skip-audit] {p}")
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus):
-    tr = session.config.pluginmanager.get_plugin("terminalreporter")
-    skipped = tr.stats.get("skipped", [])
-    reason = lambda r: r.longrepr[2].removeprefix("Skipped: ")
-    bad = [(r.nodeid, reason(r)) for r in skipped if reason(r) not in EXPECTED_SKIP_REASONS]
-    tr.write_line(f"[skip-audit] skipped={len(skipped)} unexpected={len(bad)}")
-    for nodeid, why in bad:
-        tr.write_line(f"  UNEXPECTED SKIP: {nodeid} ({why})")
-    if session.config.getoption("--fail-on-unexpected-skip") and bad:
+    # Only turn a clean run into a failure; keep interrupted/internal-error/usage statuses.
+    if (_problems and exitstatus == pytest.ExitCode.OK
+            and session.config.getoption("--fail-on-unexpected-skip")):
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 ```
 
-Run with `pytest -q -rs --strict-markers --fail-on-unexpected-skip`. The reason string is stable text from the `skipif` marker, so the allowlist doubles as documentation.
+Run with `pytest -q -rs --strict-markers --fail-on-unexpected-skip`. The hook collects skips from the reports pytest passes to `pytest_runtest_logreport` and `pytest_collectreport`, so it does not depend on the terminal reporter; that plugin is used only to print the lines. It changes the exit status only when the run would otherwise have exited 0, so an interrupted run keeps its own status.
+
+In my run (pytest 9.2.0), the expected-disabled case exited 0. Each of these exited 1: an unrelated new skip that reused the allowlisted reason (the earlier reason-keyed version exited 0), an allowlisted test that still skipped with its gate on (earlier version: 0), and an unlisted module-level skip. An `xfail` was not counted as a skip. An unexpected skip followed by a `KeyboardInterrupt` exited 2, where the earlier version overwrote the interruption with 1. With `-p no:terminal` the hook still exited 1 for an unexpected skip and 0 for a clean run; the earlier version raised `AttributeError` because it read the skips from the terminal reporter.
 
 ## Why AI Coding Agents and AI Reviewers Are Especially Exposed
 
@@ -231,10 +298,11 @@ Controls for agent platforms: have the reporter write a JSON skip summary to a k
 - [ ] A generated inventory maps each gate variable to its files, and CI prints it.
 - [ ] Test selection is by gate and tier, never only by filename pattern.
 - [ ] Preflight fails fast, naming each missing or misspelled variable.
-- [ ] CI runs in strict-skip mode: skips not on the committed allowlist fail the build, and each entry has a reason.
-- [ ] Base-versus-head skip diff runs on every PR. Newly skipped IDs fail.
+- [ ] CI runs in strict-skip mode: skips not on the committed allowlist fail the build. Each entry names a specific test (and project), has a reason, and, if it exists because of a gate, counts only while that gate is off.
+- [ ] After the run, every inventoried file of each required gate has executed tests, so an omitted tier fails even with zero skips.
+- [ ] Base-versus-head diff runs on every PR. Newly skipped IDs fail, and so do IDs that ran on base but are missing on head.
 - [ ] A PR touching a shared surface requires the full gated run before approval.
-- [ ] A "fails on baseline" claim is accepted only with identical environments and repeated paired runs.
+- [ ] A "fails on baseline" claim is accepted only with identical environments, repeated paired runs and matching failure signatures.
 - [ ] Gated tiers run on a schedule short enough to catch rot within days.
 - [ ] Reviewers, human or AI, quote the skip count and the gates enabled, not just "all passed."
 
@@ -256,11 +324,14 @@ Conditional tests are legitimate. The failure is treating "no failures" as "veri
 - pytest markers and --strict-markers: https://docs.pytest.org/en/stable/how-to/mark.html
 - pytest exit codes: https://docs.pytest.org/en/stable/reference/exit-codes.html
 - pytest issue 1364, "disallow test skipping": https://github.com/pytest-dev/pytest/issues/1364
+- pytest 9.2.0 source, skip marks evaluated in `pytest_runtest_setup`: https://github.com/pytest-dev/pytest/blob/9.2.0/src/_pytest/skipping.py#L246-L259
+- pytest 9.2.0 source, session exit status and `pytest_sessionfinish`: https://github.com/pytest-dev/pytest/blob/9.2.0/src/_pytest/main.py#L338-L376
 - pytest-error-for-skips: https://pypi.org/project/pytest-error-for-skips/2.0.1/
 - Go testing package: https://pkg.go.dev/testing
 - Go command (build constraints, test flags, caching): https://pkg.go.dev/cmd/go
 - Go test2json: https://pkg.go.dev/cmd/test2json
 - GitHub, troubleshooting required status checks: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks
 - cncf/endusers issue 1184, data-dependent test.skip() calls: https://github.com/cncf/endusers/issues/1184
+- cncf/endusers PR 1185, unit guard for data-dependent skips (merged): https://github.com/cncf/endusers/pull/1185
 - Martin Fowler, Eradicating Non-Determinism in Tests: https://martinfowler.com/articles/nonDeterminism.html
 - ImpossibleBench (Zhong, Raghunathan, Carlini): https://arxiv.org/abs/2510.20270
