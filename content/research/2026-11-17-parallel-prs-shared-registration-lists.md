@@ -12,10 +12,10 @@ When several pull requests each add one entry to the same hand-maintained list, 
 
 I reproduced this locally (git 2.43.0, Node.js v24.22.1, Jest 30.5.2) and tested the usual remedies. In order of strength:
 
-1. **Remove the list.** Discovery by convention (a file-name suffix or a first-line pragma) turns "register a test" into "add one file". Three branches that each added a file merged with zero conflicts.
+1. **Remove the list.** Discovery by convention (a file-name suffix or a first-line pragma) turns "register a test" into "add one file", provided both runners apply the rule to the same set of files. Three branches that each added a file merged with zero conflicts.
 2. **If a list must exist, keep one copy** and derive the others from it, so they cannot disagree.
 3. **Add a CI check that every test file is claimed by exactly one runner.** A runnable script is below. It caught all four drift states I built. One state (file in the Jest ignore list but not in the node list) left both runners green, so without the check nothing fails.
-4. **Mitigations are not fixes.** Sorted, one-per-line, trailing-comma lists still conflict when two entries land in the same gap. `merge=union` resolved a conflict but silently produced a syntax error in my test. Merge queues serialize CI; they do not resolve textual conflicts. `git rerere` replays an identical conflict, not a similar one.
+4. **Mitigations are not fixes.** Sorted, one-per-line, trailing-comma lists still conflict when two entries land in the same gap. `merge=union` resolved a conflict but silently produced a syntax error in my test. Merge queues serialize CI; they do not resolve textual conflicts. `git rerere` replays a resolution when the identical conflicted hunk recurs, whichever branch produces it; branches that each add a different entry produce different conflicts.
 5. **AI coding agents amplify the problem**: parallel branches from one base copy the same "add to the top" pattern, and a hand-resolved conflict can drop an entry silently. This is reasoning from the mechanism; I did not measure agent behavior.
 
 Results I ran locally and results I took from documentation are marked throughout.
@@ -175,7 +175,7 @@ Structural fixes remove the shared edit point, strongest first.
 
 If the answer to "which runner owns this file?" can be computed from the file itself, there is nothing to register. Two variants:
 
-**Naming convention.** Files for the node runner end in `.node.test.js`. Jest ignores that suffix; the node runner globs for it. In a throwaway project with Jest 30.5.2 and Node v24.22.1:
+**Naming convention.** Files for the node runner end in `.node.test.js`. Jest ignores that suffix anywhere in the package; the node runner globs for it anywhere in the package. The two scopes must match: if Jest excludes the suffix everywhere but the node runner only looks under `test/`, a `.node.test.js` file elsewhere is claimed by neither. In a throwaway project with Jest 30.5.2 and Node v24.22.1:
 
 ```js
 // jest.config.js
@@ -186,10 +186,11 @@ module.exports = {
 ```
 
 ```sh
-node --test "test/**/*.node.test.js"
+# run from the package root, the directory that holds jest.config.js (Jest's <rootDir>)
+node --test "**/*.node.test.js"
 ```
 
-I added three `*.integration.node.test.js` files without touching any config; `jest --listTests` listed only the one Jest-owned file and the node runner ran the other three. (Node's docs say glob arguments to `--test` should be quoted.) Tradeoffs: the convention must be known and enforced; renaming existing files is churn.
+I added three `test/*.integration.node.test.js` files without touching any config; `jest --listTests` listed only the one Jest-owned file and the node runner ran the other three. Then I added a deliberately failing `orphan.node.test.js` at the package root. The node runner executed it and exited 1. With a narrower glob, `node --test "test/**/*.node.test.js"`, the same file was skipped by both runners and both exited 0: the silent omission this article is about. A failing `*.node.test.js` inside `node_modules/` was not run by the package-wide glob in my test. (Node's docs say glob patterns "should be enclosed in double quotes on the command line to prevent shell expansion".) Tradeoffs: the convention must be known and enforced; renaming existing files is churn.
 
 **Pragma in the file.** The first lines of a test file say `// @runner node:test`. One module reads the pragma and exports the list; Jest and the node runner both consume it (code below). Names stay unchanged and the fact sits next to the code it describes, at the cost of a small discovery module you own.
 
@@ -241,7 +242,7 @@ Queues close the window between "green on my branch" and "green on main after th
 
 ### `git rerere`
 
-`rerere` ("reuse recorded resolution") records how you resolved a conflict and replays it. The git docs give the motivation: "in a workflow employing relatively long lived topic branches, the developer sometimes needs to resolve the same conflicts over and over again." It needs `rerere.enabled`.
+`rerere` ("reuse recorded resolution") records how you resolved a conflict and replays it. The git docs give the motivation: "In a workflow employing relatively long lived topic branches, the developer sometimes needs to resolve the same conflicts over and over again." It needs `rerere.enabled`.
 
 Test with head insertions and `rerere.enabled=true`: rebasing `pr-b` onto a main containing `pr-a` conflicted and git printed `Recorded preimage for 'list.js'`. I resolved it, finished the rebase, then reset `pr-b` and rebased again from the original commit:
 
@@ -250,7 +251,7 @@ CONFLICT (content): Merge conflict in list.js
 Resolved 'list.js' using previous resolution.
 ```
 
-So `rerere` helps when the same conflict recurs, such as one branch rebased repeatedly while awaiting review. It does not help across different PRs: rebasing `pr-c`, whose entry differs, onto the same main recorded a fresh preimage and left the conflict to me. Resolutions are keyed on conflict content, and three different entries are three different conflicts. State is also local to each clone, so it does not travel to teammates or to an agent in a fresh container.
+So `rerere` helps when the same conflict recurs, such as one branch rebased repeatedly while awaiting review. Reuse follows the recorded conflict, not the branch: the docs describe the replay as happening "after seeing the same conflicted automerge". In a second control, a distinct branch `pr-other` (its own commits, plus an unrelated file) inserted the same `new-b` line at the head; rebasing it onto the same main printed `Resolved 'list.js' using previous resolution.` and produced the `new-a`, `new-b` list I had resolved for `pr-b`. In the incident, though, each PR adds a different entry, and different entries are different conflicts: rebasing `pr-c`, whose entry differs, onto the same main recorded a fresh preimage and left the conflict to me. So across PRs it helps only when two PRs produce the identical conflicted hunk, which distinct list entries do not. State is also local to each clone, so it does not travel to teammates or to an agent in a fresh container.
 
 ### Rebasing order
 
@@ -271,8 +272,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const root = path.resolve(process.argv[2] || process.cwd());
-const toRel = (p) => path.relative(root, p).split(path.sep).join('/');
+// Canonicalize both sides: Jest reports real paths, so a symlinked root
+// spelling would otherwise make every Jest-listed file look unclaimed.
+const root = fs.realpathSync(path.resolve(process.argv[2] || process.cwd()));
+const toRel = (p) => path.relative(root, fs.realpathSync(p)).split(path.sep).join('/');
 
 // 1. Everything that looks like a test file.
 const all = fs.readdirSync(root, { recursive: true })
@@ -294,9 +297,11 @@ for (const rel of all) {
   if (isNodeTest(rel)) claims.push('node:test');
   if (claims.length === 0) { problems.push(`ORPHAN    ${rel}  (no runner will execute it)`); continue; }
   if (claims.length > 1) { problems.push(`DUPLICATE ${rel}  (claimed by: ${claims.join(', ')})`); continue; }
-  // Content signal: a file that imports node:test must be claimed by node:test.
+  // Content signal: a file that loads node:test must be claimed by node:test.
+  // Detects string-literal require('node:test'), import ... from 'node:test',
+  // import 'node:test' and import('node:test'); not computed specifiers or helpers.
   const src = fs.readFileSync(path.join(root, rel), 'utf8');
-  const usesNodeTest = /(?:require\(\s*|from\s+)['"](?:node:)?test['"]/.test(src);
+  const usesNodeTest = /\b(?:require\s*\(\s*|import\s*\(\s*|import\s+|from\s+)['"]node:test['"]/.test(src);
   if (usesNodeTest && claims[0] !== 'node:test') {
     problems.push(`WRONG RUNNER ${rel}  (imports node:test but is claimed only by ${claims[0]})`);
   }
@@ -316,9 +321,11 @@ console.log(`ok: ${all.length} test files, each claimed by exactly one runner.`)
 
 The runner module must export what the script requires and must not start tests on `require` (guard with `if (require.main === module)`).
 
+Two details matter. First, paths are canonicalized on both sides. Jest returned real paths, so when I passed a symlink spelling of the package root to the earlier version of this script (which used the root as given), it marked the Jest-owned unit test `ORPHAN`; with `realpathSync` the same invocation reported `ok`. Second, the `WRONG RUNNER` detector is deliberately scoped to the four string-literal forms in the comment. An earlier version that matched only `require(` and `from` returned `ok` for a Jest-owned file that did `await import('node:test')`; this version reports it as `WRONG RUNNER`. It matches only the `node:`-prefixed specifier, because Node's docs say "This module is only available under the node: scheme." It does not see a computed specifier or a helper module that re-exports the test API, so a file that loads `node:test` that way and is claimed only by Jest is not flagged.
+
 ### Catching drift: what I ran
 
-The fixture had a Jest-owned unit test, a node:test file registered in both lists, and a new node:test file `c.integration.test.js` that I registered in different ways. Actual results:
+The fixture had a Jest-owned unit test, a node:test file registered in both lists, and a new node:test file `c.integration.test.js` that I registered in different ways. Actual results with the script above, invoked through a symlink to the package root:
 
 | Registration state of the new file | Check output | Exit |
 | --- | --- | --- |
@@ -355,7 +362,7 @@ const isNodeTest = (rel) =>
 const nodeTests = () => allTests().filter(isNodeTest);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-module.exports = { allTests, nodeTests, isNodeTest, escapeRe };
+module.exports = { ROOT, allTests, nodeTests, isNodeTest, escapeRe };
 ```
 
 ```js
@@ -370,13 +377,14 @@ module.exports = {
 ```js
 // scripts/run-node-tests.js
 const { spawnSync } = require('node:child_process');
-const { nodeTests } = require('./test-discovery');
-const files = nodeTests();
+const { ROOT, nodeTests } = require('./test-discovery');
+const files = nodeTests(); // paths relative to ROOT, so run the child there
 if (files.length === 0) { console.log('no node:test files'); process.exit(0); }
-process.exit(spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' }).status ?? 1);
+const run = spawnSync(process.execPath, ['--test', ...files], { cwd: ROOT, stdio: 'inherit' });
+process.exit(run.status ?? 1);
 ```
 
-Results: with two pragma-marked files, `jest --listTests` listed only the Jest-owned file and the node runner ran two tests. After adding a third pragma file and editing nothing else, Jest still listed one file and the node runner ran three. A file that used `node:test` but forgot the pragma failed in Jest (`Your test suite must contain at least one test.`), so keep a content-sniffing check like `WRONG RUNNER` in CI. The `$` anchor and `escapeRe` matter: the patterns are regexes and unanchored, unescaped ones can match more files than intended.
+Results: with two pragma-marked files, `jest --listTests` listed only the Jest-owned file and the node runner ran two tests. The `cwd: ROOT` matters because discovery returns paths relative to the package root. Without it, the runner worked only when started inside the package: invoked from the parent directory as `node pkg/scripts/run-node-tests.js`, it failed with `Could not find 'test/probe.test.js'`. With it, the same invocation from the parent directory and from `/` ran the marked test while `jest --listTests` (run in the package) listed only the Jest-owned file; a deliberately failing marked test made the runner exit 1 from the parent directory. After adding a third pragma file and editing nothing else, Jest still listed one file and the node runner ran three. A file that used `node:test` but forgot the pragma failed in Jest (`Your test suite must contain at least one test.`), so keep a content-sniffing check like `WRONG RUNNER` in CI. For this layout, the ownership check above works with one line changed: take `isNodeTest` from `scripts/test-discovery.js` and use an empty `ROOT_NODE_TESTS` (there is no list to go stale). I ran it that way: `ok` on the fixture, and `WRONG RUNNER` for a `node:test` file without the pragma. The `$` anchor and `escapeRe` matter: the patterns are regexes and unanchored, unescaped ones can match more files than intended.
 
 ## Why AI Agents Are Especially Exposed
 
@@ -397,7 +405,7 @@ This is reasoning from the incident's mechanism, not a measurement.
 5. **Is `merge=union` used on code?** Do not. At most, use it on plain one-item-per-line text files with a duplicate/order check.
 6. **Is the registry generated?** Prefer not committing it; otherwise regenerate in CI and resolve its conflicts by re-running the generator.
 7. **Merge queue?** Good for keeping the target branch green; do not expect it to resolve list conflicts.
-8. **Long-lived branches?** Enable `git rerere` for repeated rebases of the same branch; it will not help across different PRs.
+8. **Long-lived branches?** Enable `git rerere` for repeated rebases of the same branch. Across PRs it replays only an identical conflicted hunk, so PRs that each add a different entry get no help.
 9. **Re-run the ownership check after any runner-config change**, not only after test additions.
 
 ## Conclusion
