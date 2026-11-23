@@ -12,7 +12,7 @@ When several pull requests each add one entry to the same hand-maintained list, 
 
 I reproduced this locally (git 2.43.0, Node.js v24.22.1, Jest 30.5.2) and tested the usual remedies. In order of strength:
 
-1. **Remove the list.** Discovery by convention (a file-name suffix or a first-line pragma) turns "register a test" into "add one file", provided both runners apply the rule to the same set of files. Three branches that each added a file merged with zero conflicts.
+1. **Remove the list.** Discovery by convention (a file-name suffix or a first-line pragma) turns "register a test" into "add one file", provided both runners take the rule from one place and cover the same set of files. Three branches that each added a file merged with zero conflicts.
 2. **If a list must exist, keep one copy** and derive the others from it, so they cannot disagree.
 3. **Add a CI check that every test file is claimed by exactly one runner.** A runnable script is below. It caught all four drift states I built. One state (file in the Jest ignore list but not in the node list) left both runners green, so without the check nothing fails.
 4. **Mitigations are not fixes.** Sorted, one-per-line, trailing-comma lists still conflict when two entries land in the same gap. `merge=union` resolved a conflict but silently produced a syntax error in my test. Merge queues serialize CI; they do not resolve textual conflicts. `git rerere` replays a resolution when the identical conflicted hunk recurs, whichever branch produces it; branches that each add a different entry produce different conflicts.
@@ -175,22 +175,44 @@ Structural fixes remove the shared edit point, strongest first.
 
 If the answer to "which runner owns this file?" can be computed from the file itself, there is nothing to register. Two variants:
 
-**Naming convention.** Files for the node runner end in `.node.test.js`. Jest ignores that suffix anywhere in the package; the node runner globs for it anywhere in the package. The two scopes must match: if Jest excludes the suffix everywhere but the node runner only looks under `test/`, a `.node.test.js` file elsewhere is claimed by neither. In a throwaway project with Jest 30.5.2 and Node v24.22.1:
+**Naming convention.** Files for the node runner end in `.node.test.js`. The two runners must cover exactly the same files: if Jest excludes the suffix everywhere but the node side looks in fewer places, a `.node.test.js` file in the gap is claimed by neither and both runners stay green. So one module owns the rule. It exports the pattern Jest ignores, and when run it passes Node the explicit list of every matching file under the package root, skipping only `node_modules/` and `.git/`. In a throwaway project with Jest 30.5.2 and Node v24.22.1:
 
 ```js
 // jest.config.js
+const { NODE_TEST_RE } = require('./scripts/run-node-tests');
 module.exports = {
   testEnvironment: 'node',
-  testPathIgnorePatterns: ['/node_modules/', '\\.node\\.test\\.js$'],
+  testPathIgnorePatterns: ['/node_modules/', NODE_TEST_RE.source],
 };
 ```
 
-```sh
-# run from the package root, the directory that holds jest.config.js (Jest's <rootDir>)
-node --test "**/*.node.test.js"
+```js
+// scripts/run-node-tests.js: the one place that says which files Node runs
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const ROOT = path.resolve(__dirname, '..');
+const NODE_TEST_RE = /\.node\.test\.js$/; // Jest ignores exactly this pattern
+
+// Every match under ROOT, dot directories included; only node_modules and .git are skipped.
+const nodeTests = () => fs.readdirSync(ROOT, { recursive: true })
+  .map((f) => f.split(path.sep).join('/'))
+  .filter((f) => NODE_TEST_RE.test(f) && !/(^|\/)(node_modules|\.git)\//.test(f))
+  .sort();
+
+module.exports = { NODE_TEST_RE, nodeTests };
+
+if (require.main === module) {
+  const files = nodeTests();
+  if (files.length === 0) { console.log('no node:test files'); process.exit(0); }
+  const run = spawnSync(process.execPath, ['--test', ...files], { cwd: ROOT, stdio: 'inherit' });
+  process.exit(run.status ?? 1);
+}
 ```
 
-I added three `test/*.integration.node.test.js` files without touching any config; `jest --listTests` listed only the one Jest-owned file and the node runner ran the other three. Then I added a deliberately failing `orphan.node.test.js` at the package root. The node runner executed it and exited 1. With a narrower glob, `node --test "test/**/*.node.test.js"`, the same file was skipped by both runners and both exited 0: the silent omission this article is about. A failing `*.node.test.js` inside `node_modules/` was not run by the package-wide glob in my test. (Node's docs say glob patterns "should be enclosed in double quotes on the command line to prevent shell expansion".) Tradeoffs: the convention must be known and enforced; renaming existing files is churn.
+I added three `test/*.integration.node.test.js` files without touching any config; `jest --listTests` listed only the one Jest-owned file and `node scripts/run-node-tests.js` ran the other three. A deliberately failing `.hidden/hidden.node.test.js` and, separately, a deliberately failing `orphan.node.test.js` at the package root were each executed by the runner, which exited 1; Jest still listed only its own file. A failing `*.node.test.js` inside `node_modules/` was not run. The negative controls were globs. With `node --test "test/**/*.node.test.js"`, the root orphan was skipped by both runners and both exited 0. The package-wide `node --test "**/*.node.test.js"` did run the root orphan, but not the dot-directory file: with the three passing `test/` files and the failing `.hidden/hidden.node.test.js`, Node ran 3 tests and both runners exited 0; the hidden test ran and failed only when passed by name. The Node v24.22.1 docs say only that "Glob patterns follow the behavior of glob(7)." and do not list what a glob skips, so this article does not rely on glob scope. Tradeoffs: the convention must be known and enforced; renaming existing files is churn.
 
 **Pragma in the file.** The first lines of a test file say `// @runner node:test`. One module reads the pragma and exports the list; Jest and the node runner both consume it (code below). Names stay unchanged and the fact sits next to the code it describes, at the cost of a small discovery module you own.
 
