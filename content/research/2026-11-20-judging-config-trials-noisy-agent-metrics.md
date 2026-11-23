@@ -12,7 +12,7 @@ An operator of a long-running, multi-session LLM agent system changes three sett
 
 Usually the honest first answer is "we do not know yet." Daily agent cost is driven by workload (one large review can double a day), other changes land mid-trial, and some days may not have run the intended configuration. A before/after comparison of daily totals mixes the settings' effect with all of that.
 
-This article collects methods from clinical epidemiology, online experimentation and marketplace operations that fit this small-data situation. In short: measure cost per unit of work and by component; estimate normal noise before judging the trial; write the decision rule, guardrails and contaminated-day policy down before looking; prefer designs with a built-in comparison; and treat "inconclusive, extend or alternate" as a legitimate outcome.
+This article collects methods from clinical epidemiology, online experimentation and marketplace operations that fit this small-data situation. In short: measure cost per unit of work and by component; estimate normal noise beforehand to size the trial; write the decision rule, guardrails and contaminated-day policy down before looking; prefer designs with a built-in comparison; and treat "inconclusive, extend or alternate" as a legitimate outcome.
 
 This is a methods proposal. It does not report results from any specific system, and every number in the worked example is illustrative.
 
@@ -63,7 +63,7 @@ Before reading the trial, measure how much the chosen metric moves when nothing 
 
 First declare the estimand, because the uncertainty depends on it. Two common choices give different numbers: the mean of the daily cost-per-message ratios, with each day weighted equally, or the window's total cost divided by its total messages, which weights each day by its volume. The calculation below is for the first.
 
-Suppose, illustratively, the daily cost per message has a standard deviation of 12% of its mean and days are independent. The standard error of the difference between two 7-day means of daily ratios is then about 12% × √(2/7) ≈ 6.4%. An observed difference needs to be roughly twice that, about 13%, before it stands out from noise at the usual 5% two-sided level. That twice-standard-error figure is a rough screen for a result you have already observed. It is not the smallest effect the trial can reliably detect. The power-based minimum detectable effect (MDE) for 80% power at the same level is about (1.96 + 0.84) × 6.4% ≈ 18%, or about 20% with a t reference on 12 degrees of freedom. A real 5% saving would reach significance only about 12% of the time, and an MDE of 5% under the same assumptions would need about 90 days per arm. Positive autocorrelation between days makes all of these figures worse, so check it as the ITS tutorial advises. For the volume-weighted ratio of totals, the uncertainty needs its own calculation, for example by resampling whole days; do not reuse the figures above.
+Suppose, illustratively, the daily cost per message has a standard deviation of 12% of its mean and days are independent. The standard error of the difference between two 7-day means of daily ratios is then about 12% × √(2/7) ≈ 6.4%. A 95% interval for the difference therefore extends roughly twice that, about 13%, on each side of whatever estimate the trial produces. That half-width describes the precision the design can deliver; it is a planning number, not a verdict threshold, and it is not the smallest effect the trial can reliably detect. The power-based minimum detectable effect (MDE) for 80% power at the same level is about (1.96 + 0.84) × 6.4% ≈ 18%, or about 20% with a t reference on 12 degrees of freedom. A real 5% saving would reach significance only about 12% of the time, and an MDE of 5% under the same assumptions would need about 90 days per arm. Power can also be planned for the decision rule itself, which compares the interval with a minimum worthwhile effect (see the end of the checklist). With a 5% threshold, this design ends inconclusive 95% of the time if the true saving is exactly 5%, and about 88% of the time if it is zero or 10%. Riesthuis's paper on [power analysis for the smallest effect size of interest](https://doi.org/10.1177/25152459241240722) describes this confidence-interval approach for minimum-effect and equivalence testing, and shows that planning for the smallest effect of interest can still yield inconclusive results. Positive autocorrelation between days makes all of these figures worse, so check it as the ITS tutorial advises. For the volume-weighted ratio of totals, the uncertainty needs its own calculation, for example by resampling whole days; do not reuse the figures above.
 
 If the settings are expected to save 5% combined, a 7-day before/after cannot confirm it, and extending alone would take months. Knowing that in advance tells you to reduce noise first (work-volume adjustment, component metrics) or change the design.
 
@@ -107,7 +107,7 @@ Changing three settings at once confounds them; if shipped together, the honest 
 - the estimand (mean of daily ratios or ratio of totals), the model or test, and how uncertainty will be reported,
 - the guardrail metrics and the margin each may move,
 - the rules for contaminated days,
-- the three verdicts: keep, revert, or inconclusive (extend or alternate).
+- the three verdicts (keep, revert, or inconclusive: extend or alternate) and the interval thresholds that select each, as in the decision rule at the end of the checklist.
 
 Anything analyzed afterward is labeled exploratory and cannot carry the verdict.
 
@@ -123,7 +123,7 @@ How much ITT dilutes an effect depends on adherence and on how the effect works.
 1. Decide contamination by cause and evidence, never by whether the cost looked odd. Use a recorded config-effective timestamp, not the bill.
 2. State the primary analysis in advance, and report the other as a sensitivity check.
 3. For guardrails, look at the verified-clean days too.
-4. If the two analyses disagree on the verdict, the answer is inconclusive.
+4. If the two analyses disagree on the primary-metric verdict, the answer is inconclusive.
 
 ## Guardrails: Why "Cost Went Down" Is Not Success
 
@@ -134,7 +134,7 @@ A cheaper fleet that does worse work is not an improvement. In [Kohavi's taxonom
 - **Summarization frequency:** memory freshness, such as how often a session starts without a fact an earlier session recorded.
 - **All settings:** error rate and p95 response time.
 
-Keep the list short, since each added metric adds a chance that one moves by luck. Give each a margin, and decide in advance that crossing it means revert or investigate regardless of cost.
+Keep the list short, since each added metric adds a chance that one moves by luck. Give each a margin, and decide in advance that a guardrail interval reaching past its margin means do not keep, regardless of cost: revert, then investigate.
 
 ## A Worked Example (Illustrative Numbers)
 
@@ -145,16 +145,16 @@ All numbers below are made up to show the mechanics.
 | Baseline, 7 days | 720 | 376 | 0.522 |
 | Trial, 7 days | 560 | 331 | 0.591 |
 
-Each cost-per-message figure is the window's total cost divided by its total messages, so busy days count for more. That is not the equally weighted mean of daily ratios used in the noise section, and with no daily rows there is no standard error to compare the difference against. The table is descriptive only.
+Each cost-per-message figure is the window's total cost divided by its total messages, so busy days count for more. That is not the equally weighted mean of daily ratios used in the noise section, and with no daily rows no interval can be computed for the difference. The table is descriptive only.
 
-The raw total fell by 12% (376 to 331), which looks like success. But volume fell by 22% (720 to 560), and aggregate cost per message rose by about 13%. That pattern is consistent with a workload explanation: a constant-rate model with a fixed cost of about 24.8 units per day plus 0.28 units per message reproduces both totals exactly, with no change in either parameter. It cannot identify workload as the cause, though. Any two totals can be fitted by such a line, so the table is equally consistent with the settings having changed the per-message rate in either direction alongside a different fixed floor. Reading the rise as a regression, or the fall as a saving, needs the daily observations analyzed with the declared estimand, compared against its pre-computed uncertainty and MDE, ideally after the work-volume adjustment described earlier. From this table alone, no verdict follows. With daily data, the decomposition then shows where to look, for example whether cache-write spend after rotations rose while the summarization component fell as intended.
+The raw total fell by 12% (376 to 331), which looks like success. But volume fell by 22% (720 to 560), and aggregate cost per message rose by about 13%. That pattern is consistent with a workload explanation: a constant-rate model with a fixed cost of about 24.8 units per day plus 0.28 units per message reproduces both totals exactly, with no change in either parameter. It cannot identify workload as the cause, though. Any two totals can be fitted by such a line, so the table is equally consistent with the settings having changed the per-message rate in either direction alongside a different fixed floor. Reading the rise as a regression, or the fall as a saving, needs the daily observations analyzed with the declared estimand, ideally after the work-volume adjustment described earlier, and the resulting interval judged by the pre-declared rule at the end of the checklist. The MDE only sized the trial; it is not a verdict threshold. From this table alone, no verdict follows. With daily data, the decomposition then shows where to look, for example whether cache-write spend after rotations rose while the summarization component fell as intended.
 
 ## A Seven-Day Trial Checklist
 
 Before the trial:
 
-1. Write the primary metric, unit of work and minimum worthwhile effect.
-2. Pull 14 to 28 days of history; declare the estimand, compute its normal day-to-day noise, and from that the power-based minimum detectable effect for a 7-day window (not just the twice-standard-error screen).
+1. Write the primary metric, unit of work, minimum worthwhile effect, guardrail margins and the keep / revert / inconclusive rule below.
+2. Pull 14 to 28 days of history; declare the estimand, compute its normal day-to-day noise, and from that the power-based minimum detectable effect for a 7-day window, to size the trial (planning only, not a verdict threshold).
 3. Avoid starting right after an unusual day; if you must, use a longer baseline.
 4. Set up a cost breakdown by subsystem and token class, and name at least one candidate negative-control component with the reason it should be unaffected.
 5. Choose 3 to 5 guardrails with margins.
@@ -170,13 +170,19 @@ After the trial:
 
 10. Compute the primary metric with work-volume adjustment and an uncertainty interval.
 11. Check negative-control and guardrail metrics, and compare primary and sensitivity analyses.
-12. Apply the declared rule and state one of three verdicts.
+12. Apply the declared rule below to the primary interval and the guardrail intervals, and state one of three verdicts.
 
-The verdict is **inconclusive** when any of these hold: the interval includes both "no change" and your minimum worthwhile effect; the estimate is smaller than the measured noise; primary and sensitivity analyses disagree; a guardrail is near its margin with a wide interval; or a concurrent change overlaps the window. The next step is to extend to a second weekly cycle, or to switch to randomized alternating blocks so both settings are spread across the same window. A stated "inconclusive" beats a confident reading of noise.
+The declared rule, with W the minimum worthwhile saving and all intervals at the pre-declared level, applied in this order:
+
+- **Revert** (do not keep) if any guardrail interval, in either the primary or the clean-day analysis, reaches past its margin, whatever the cost result.
+- **Inconclusive** if the primary and sensitivity analyses give different verdicts on the primary metric, or a concurrent change overlaps the window.
+- Otherwise judge the saving's interval against W: **keep** if the whole interval is at or beyond W; **revert** (not worth keeping) if the whole interval falls short of W, even when it excludes zero; **inconclusive** if the interval contains W.
+
+With W = 5%, an estimated 2% saving with an interval of 1% to 3% means revert: a worthwhile saving is ruled out under the chosen analysis, however large ordinary day-to-day noise is. An interval of 1% to 7% is inconclusive even though it excludes zero, and 6% to 9% means keep if the guardrails pass. Daily noise and the MDE do not enter the verdict; before the trial they only told you how likely an inconclusive result was. After an inconclusive verdict, the next step is to extend to a second weekly cycle, or to switch to randomized alternating blocks so both settings are spread across the same window. A stated "inconclusive" beats a confident reading of noise.
 
 ## Validation Scope and Sources
 
-I read the Anthropic prompt caching documentation, the ITS tutorial, the PMC review on intention-to-treat, and the abstracts of the Barnett et al., Nosek et al. and Lopez Bernal et al. (ITS controls) papers and of the arXiv version of the Bojinov et al. switchback paper. Automated retrieval of the DoorDash and Lyft posts was blocked, so claims attributed to them are limited to what their published descriptions state. Statements on A/A tests, novelty and guardrails rest on secondary summaries of the Kohavi book and a practitioner write-up. Cache multipliers can change; verify against the current pricing page. The noise, power and randomization-count figures were recomputed with a short script from the stated assumptions. The worked example, noise assumptions and small-n recommendations are illustrative or the author's own suggestions.
+I read the Anthropic prompt caching documentation, the ITS tutorial, the PMC review on intention-to-treat, and the abstracts of the Barnett et al., Nosek et al. and Lopez Bernal et al. (ITS controls) papers and of the arXiv version of the Bojinov et al. switchback paper and the Riesthuis paper. Automated retrieval of the DoorDash and Lyft posts was blocked, so claims attributed to them are limited to what their published descriptions state. Statements on A/A tests, novelty and guardrails rest on secondary summaries of the Kohavi book and a practitioner write-up. Cache multipliers can change; verify against the current pricing page. The noise, power, decision-probability and randomization-count figures were recomputed with a short script from the stated assumptions. The worked example, noise assumptions and small-n recommendations are illustrative or the author's own suggestions.
 
 - Anthropic, [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - Lopez Bernal, Cummins, Gasparrini, [Interrupted time series regression for the evaluation of public health interventions: a tutorial](https://pmc.ncbi.nlm.nih.gov/articles/PMC5407170/) (Int J Epidemiol, 2017) and its [2020 corrigendum](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7750921/); Lopez Bernal, Cummins, Gasparrini, [The use of controls in interrupted time series studies of public health interventions](https://doi.org/10.1093/ije/dyy135) (Int J Epidemiol, 2018)
@@ -186,5 +192,6 @@ I read the Anthropic prompt caching documentation, the ITS tutorial, the PMC rev
 - Lyft Engineering: [Experimentation in a ridesharing marketplace](https://eng.lyft.com/experimentation-in-a-ridesharing-marketplace-b39db027a66e); [Using marketplace marginal values to address interference bias](https://eng.lyft.com/using-marketplace-marginal-values-to-address-interference-bias-a11aff6e670f)
 - Kohavi, Tang, Xu, [Trustworthy Online Controlled Experiments](https://experimentguide.com/wp-content/uploads/TrustworthyOnlineControlledExperiments_PracticalGuideToABTesting_Chapter1.pdf); [GrowthBook summary of Kohavi's recommendations](https://www.growthbook.io/blog/lessons-learned-from-ronny-kohavi-and-luke-sonnet-running-trustworthy-experiments)
 - Bojinov, Simchi-Levi, Zhao, [Design and analysis of switchback experiments](https://doi.org/10.1287/mnsc.2022.4583) (Management Science, 2023; [arXiv version](https://arxiv.org/abs/2009.00148))
+- Riesthuis, [Simulation-based power analyses for the smallest effect size of interest: a confidence-interval approach for minimum-effect and equivalence testing](https://doi.org/10.1177/25152459241240722) (Advances in Methods and Practices in Psychological Science, 2024)
 - Nosek, Ebersole, DeHaven, Mellor, [The preregistration revolution](https://doi.org/10.1073/pnas.1708274114) (PNAS, 2018)
 - Intention-to-treat background: [LITFL](https://litfl.com/intention-to-treat-analysis/); [PMC10718629](https://pmc.ncbi.nlm.nih.gov/articles/PMC10718629/)
