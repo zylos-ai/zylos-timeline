@@ -75,7 +75,7 @@ pytest's JUnit output marks a skip as a child element of the testcase, including
 
 ### 1. Inventory by gate, not by filename
 
-Generate a table of gate variable to files, from a static scan of test sources (a regex for `process.env.NAME`, or an AST walk if the codebase is large) or from a runtime registry. A registry is better: define gates in exactly one helper, so no test can invent a private gate. The Jest helper below tags the describe title with `[gate:NAME]`, which makes skips attributable, and the inventory scan below reads gate names from the helper calls.
+Generate a table of gate variable to files, from a static scan of test sources (a regex for `process.env.NAME`, or an AST walk if the codebase is large) or from a runtime registry. A registry is better: define gates in exactly one helper, so no test can invent a private gate. The Jest helper below tags the describe title with `[gate:NAME]`, which makes skips attributable, and the inventory scan below reads gate names from the helper calls. Build the inventory from the same file-discovery rules the runner uses: a scan with its own filename pattern misses gated files the runner would still run.
 
 The project from the failure-mode example above then merged a unit guard (cncf/endusers PR 1185). It asserts that the committed data still satisfies each registered skip condition, and it scans spec files for `test.skip(` calls and matches them, by each skip's message, against a registered list. A newly added skip therefore fails the unit tests, which CI runs on every pull request.
 
@@ -107,7 +107,7 @@ Playwright tags, pytest markers and Jest projects organize tiers. They do not an
 
 ## Code
 
-### Jest: a gate helper, an inventory, a skip-audit reporter, and a preflight
+### Jest: a gate helper, shared discovery rules, an inventory, a skip-audit reporter, and a preflight
 
 ```js
 // gated.js: the only place gates are defined
@@ -119,22 +119,35 @@ module.exports = { enabled, describeGated };
 ```
 
 ```js
+// test-files.js: the one definition of which files are tests (used by jest.config.js and the inventory)
+module.exports = {
+  testRegex: '\\.(test|spec)\\.[cm]?[jt]sx?$',
+  testPathIgnorePatterns: ['/node_modules/'],
+};
+```
+
+```js
 // gate-inventory.js: which test files use which gate (static scan of literal gate names)
 const fs = require('fs'), path = require('path');
+const { testRegex, testPathIgnorePatterns } = require('./test-files');
+const isTest = new RegExp(testRegex), ignored = testPathIgnorePatterns.map((p) => new RegExp(p));
 const GATE_CALL = /describeGated\(\s*['"]([A-Z0-9_]+)['"]/g;
-function gateInventory(root, dir = root, inv = {}) {
+function listTestFiles(dir, out = []) {         // same rules Jest applies to absolute paths
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, ent.name);
-    if (ent.isDirectory()) {
-      if (ent.name !== 'node_modules' && !ent.name.startsWith('.')) gateInventory(root, p, inv);
-    } else if (/\.test\.[cm]?[jt]s$/.test(ent.name)) {
-      for (const [, gate] of fs.readFileSync(p, 'utf8').matchAll(GATE_CALL))
-        (inv[gate] ||= new Set()).add(path.relative(root, p));
-    }
+    if (ent.isDirectory()) { if (!ignored.some((re) => re.test(p + '/'))) listTestFiles(p, out); }
+    else if (ent.isFile() && isTest.test(p) && !ignored.some((re) => re.test(p))) out.push(p);
   }
+  return out;
+}
+function gateInventory(root) {
+  const inv = {};
+  for (const p of listTestFiles(root))
+    for (const [, gate] of fs.readFileSync(p, 'utf8').matchAll(GATE_CALL))
+      (inv[gate] ||= new Set()).add(path.relative(root, p));
   return inv;
 }
-module.exports = { gateInventory };
+module.exports = { listTestFiles, gateInventory };
 ```
 
 ```js
@@ -189,6 +202,7 @@ module.exports = async () => {
 ```js
 // jest.config.js
 module.exports = {
+  ...require('./test-files'),     // the inventory uses the same discovery rules
   globalSetup: '<rootDir>/preflight.js',
   reporters: ['default', ['<rootDir>/skip-audit-reporter.js', { expectedSkips: {
     'browser.test.js > [gate:ZY_BROWSER] browser tier > renders the list': {
@@ -199,9 +213,9 @@ module.exports = {
 };
 ```
 
-The allowlist names two specific tests and the gate that explains their skip. The inventory is a static scan, so it sees only literal gate names passed to `describeGated`; keep gate names literal. The required-gate check compares against whole files, so with `--shard` run it over the merged results rather than inside each shard.
+The allowlist names two specific tests and the gate that explains their skip. `jest.config.js` and the inventory take their file-discovery rules from one module, `test-files.js`, so the inventory scans exactly the files Jest would run; Jest's default `testMatch` would also pick up `.spec.js` files and plain files under `__tests__/`, which a scan with its own `*.test.*` pattern misses. In my fixture the inventory's file list matched `jest --listTests` exactly, including a `.spec.js`, an `.mjs`, a file in a dot directory, a non-matching file in `__tests__/` and an ignored one under `node_modules/`. The module mirrors only `testRegex` and `testPathIgnorePatterns`; if you also use `roots`, `projects` or other path settings, either mirror them too or compare the inventory with `jest --listTests --json`. The inventory is a static scan, so it sees only literal gate names passed to `describeGated`; keep gate names literal. The required-gate check compares against whole files, so with `--shard` run it over the merged results rather than inside each shard.
 
-In my test (Jest 30.5.2, five tests in three files), a default run exited 0 with `4 skipped` and printed each unexpected skip by ID; `SKIP_AUDIT=strict` made the same run exit 1. The expected-disabled case passed in strict mode: with only the browser gate off, its two allowlisted tests skipped and the run exited 0. Each of these exited 1 in strict mode, and each exited 0 with the earlier version of this reporter, which allowlisted whole gates by the suite title: a new `test.skip` added inside the browser suite, with the browser gate on or off; an allowlisted test still skipped while its gate was on; and a run with both gates enabled that selected only an unrelated file, which reported `required gate ZY_INTEGRATION: no test ran in integration.test.js` with zero skips. A run with `REQUIRE_GATES` set and a typo'd variable failed before any test with `gates not enabled: ZY_INTEGRATION, ZY_BROWSER`.
+In my test (Jest 30.5.2, five tests in three files unless noted), a default run exited 0 with `4 skipped` and printed each unexpected skip by ID; `SKIP_AUDIT=strict` made the same run exit 1. The expected-disabled case passed in strict mode: with only the browser gate off, its two allowlisted tests skipped and the run exited 0. Each of these exited 1 in strict mode, and each exited 0 with the earlier version of this reporter, which allowlisted whole gates by the suite title: a new `test.skip` added inside the browser suite, with the browser gate on or off; an allowlisted test still skipped while its gate was on; and a run with both gates enabled that selected only an unrelated file, which reported `required gate ZY_INTEGRATION: no test ran in integration.test.js` with zero skips. The same held for a gated file outside the earlier inventory's `*.test.*` pattern: with a deliberately failing `network.spec.js` using `describeGated('ZY_BROWSER', ...)` next to the passing browser file, selecting only `browser.test.js` under `REQUIRE_GATES=ZY_BROWSER` exited 1 with `no test ran in network.spec.js`, where the version that scanned only `*.test.*` files exited 0. A run with `REQUIRE_GATES` set and a typo'd variable failed before any test with `gates not enabled: ZY_INTEGRATION, ZY_BROWSER`.
 
 ### Playwright: fail on skips that are not on the allowlist
 
@@ -295,7 +309,7 @@ Controls for agent platforms: have the reporter write a JSON skip summary to a k
 ## Checklist
 
 - [ ] Gates are defined in one helper or registry; no ad hoc `process.env` checks scattered in tests.
-- [ ] A generated inventory maps each gate variable to its files, and CI prints it.
+- [ ] A generated inventory maps each gate variable to its files, built from the runner's own file-discovery rules, and CI prints it.
 - [ ] Test selection is by gate and tier, never only by filename pattern.
 - [ ] Preflight fails fast, naming each missing or misspelled variable.
 - [ ] CI runs in strict-skip mode: skips not on the committed allowlist fail the build. Each entry names a specific test (and project), has a reason, and, if it exists because of a gate, counts only while that gate is off.
@@ -313,7 +327,7 @@ Conditional tests are legitimate. The failure is treating "no failures" as "veri
 ## References
 
 - Jest Globals (skip, only, todo): https://jestjs.io/docs/api
-- Jest configuration (reporters, projects, testResultsProcessor result shape): https://jestjs.io/docs/configuration
+- Jest configuration (reporters, projects, testMatch/testRegex, testResultsProcessor result shape): https://jestjs.io/docs/configuration
 - Jest CLI options: https://jestjs.io/docs/cli
 - Vitest test API (skip, skipIf, runIf, context.skip): https://vitest.dev/api/
 - Playwright annotations, tags and grep: https://playwright.dev/docs/test-annotations
