@@ -8,18 +8,19 @@ tags: ["research", "multi-agent", "delivery-semantics", "idempotency", "distribu
 
 ## Executive Summary
 
-It is 08:00. A coordinator thread of a persistent agent has just finished the owner's morning briefing and saved it to a file. The briefing has to reach the owner's private chat, but that chat belongs to a different thread of the same agent, the one that talks with the owner all day. The coordinator may not write to it directly. So it sends the owner thread a short internal request: the exact text, plus one line saying why. The owner thread decides whether to send it, sends it through its own channel, and replies: "delivered 08:07, one message, 3327 characters, matched the file exactly, exit 0." Only then does the coordinator record the briefing as delivered or forward part of it elsewhere.
+It is 08:00. A coordinator thread of a persistent agent has just finished the owner's morning briefing and saved it to a file. The briefing has to reach the owner's private chat, but that chat belongs to a different thread of the same agent, the one that talks with the owner all day. The coordinator may not write to it directly. So it sends the owner thread a short internal request: the exact text, plus one line saying why. The owner thread decides whether to send it, sends it through its own channel, and replies with a receipt: the platform accepted one message at 08:07, here is the message ID it returned for the owner's chat, 3327 characters, matching the file exactly. A bare "done, exit 0" would not be enough, because it shows only that a command finished. Even the receipt proves less than it seems to. It shows the platform took the message, not that the owner has seen it. So the coordinator records the briefing as sent and may forward a copy elsewhere with a note saying when it was sent, but it records the owner as informed only after the owner acknowledges it, for example by replying.
 
 This looks small, but it combines several old problems: single-writer ownership, acknowledgements that mean different things at different layers, faithful forwarding, duplicate and lost sends, delegated authority, and workflows that must not advance on an unconfirmed step. This article takes each in turn, using standards and engineering documentation that can be checked.
 
 The short version:
 
 - One owner per outbound address is the single-writer principle applied to chats. It buys ordering, one place for rate limits, and one holder of conversational context.
-- "The relay request was queued" is not "the message was sent." A confirmation is worth the evidence in it, ideally a platform-issued message ID.
+- "The relay request was queued" is not "the message was sent," and "the platform accepted it" is not "the owner read it." A confirmation is worth the evidence in it. The strongest a relayer can usually show is platform acceptance, proved by a message ID tied to the platform and the chat it was sent to.
 - The relayer should treat the text as opaque payload and prove it did not change it, for example with a length and hash echo.
+- The relayer claims each request ID once, in a single atomic write bound to the requester, destination, payload and send options. A duplicate sees that claim and does not send.
 - A missing confirmation means the outcome is unknown, not failed. Do not resend automatically. Ask, then escalate.
 - The relayer is a deputy, not a servant. It judges the request and may refuse, and a refusal is a first-class answer.
-- Downstream steps are gated on the confirmation, and because a send cannot be undone, it belongs late in the sequence.
+- Each downstream step waits for the evidence it needs: platform acceptance for "it was sent," the owner's own acknowledgement for "the owner knows." Because a send cannot be undone, it belongs late in the sequence.
 
 A note on labels: "General practice" marks what standards and widely documented systems establish. "Design suggestion" marks this article's proposal for agent systems. Platform numbers come from the official documentation consulted for this article and can change.
 
@@ -52,34 +53,39 @@ Take the briefing and name the layers a "sent" could refer to:
 - **Level 1:** the owner thread read it and agreed to act. Evidence: its reply.
 - **Level 2:** the platform accepted the message. Evidence: an API success with a platform message ID. Only the owner thread sees this.
 - **Level 3:** the message reached the human's device. Bots usually cannot observe this.
-- **Level 4:** the human read it. Only visible where a platform offers read receipts.
+- **Level 4:** the human read or acknowledged it. Evidence: a read receipt where a platform offers one, or the human's own reply or reaction in that chat.
 
-"I asked the owner thread to send it" is Level 0 and cannot justify recording the briefing as delivered.
+"I asked the owner thread to send it" is Level 0 and cannot justify recording the briefing as sent. A Level 2 receipt justifies "sent" and nothing more. It cannot justify "the owner has read the briefing," which needs Level 4 evidence.
 
-**General practice: email draws these lines carefully.** RFC 5321 says that once a server replies "250 OK" at the end of the message data, "a formal handoff of responsibility for the message occurs" [8]. That is Level 2: acceptance with responsibility, not delivery to a person. Delivery status notifications (RFC 3461) distinguish "delivered", meaning the message was placed in the recipient's mailbox, from "relayed", meaning it was handed to a system that cannot confirm final delivery, in which case the notice says that unless delivery fails it will be the only one sent [9]. Disposition notifications (RFC 8098), the Level 4 analogue, are blunt about their limits: "There is no guarantee that the content has been read or understood," a mail client may silently ignore the request, and receipts "may be lost in transit" [10]. Each confirmation should say which claim it makes, and the next hop should not upgrade it.
+**General practice: email draws these lines carefully.** RFC 5321 says that once a server replies "250 OK" at the end of the message data, "a formal handoff of responsibility for the message occurs" [8]. Section 6.1 says the same of the "250 OK" reply: the receiver "is accepting responsibility for delivering or relaying the message" [8]. That is Level 2: acceptance with responsibility, not delivery to a person. Delivery status notifications (RFC 3461) distinguish "delivered", meaning the message was placed in the recipient's mailbox, from "relayed", meaning it was handed to a system that cannot confirm final delivery, in which case the notice says that unless delivery fails it will be the only one sent [9]. Disposition notifications (RFC 8098), the Level 4 analogue, are blunt about their limits: "There is no guarantee that the content has been read or understood," a mail client may silently ignore the request, and receipts "may be lost in transit" [10]. Each confirmation should say which claim it makes, and the next hop should not upgrade it.
 
-**General practice: the end-to-end argument.** Saltzer, Reed and Clark made the point for networks in 1984: "What the application wants to know is whether or not the target host acted on the message," and the acknowledgement really wanted is "an end-to-end one, which can be originated only by the target application – 'I did it', or 'I didn't.'" [11] For the briefing, the owner thread performed the send, so its report is the end-to-end acknowledgement the agent can get.
+**General practice: the end-to-end argument.** Saltzer, Reed and Clark made the point for networks in 1984: "What the application wants to know is whether or not the target host acted on the message," and the acknowledgement really wanted is "an end-to-end one, which can be originated only by the target application – 'I did it', or 'I didn't.'" [11] For the briefing, the owner thread performed the send, so its report is the end-to-end acknowledgement of the send. It is not an acknowledgement that the owner read the briefing. Only the owner can give that.
 
-**Platform IDs are the best available evidence.**
+**Platform IDs are the best available evidence of acceptance.** They prove Level 2, not Level 3 or 4.
 
-- Telegram's `sendMessage` returns the sent Message on success. The docs add that the server might schedule a message instead of sending it immediately, in which case the ID will be 0, so an ID of 0 is not evidence of delivery [12].
+- Telegram's `sendMessage` returns the sent Message on success. The Message object documents `message_id` as a "Unique message identifier inside this chat," so the number identifies a message only together with the chat. The docs add that the server might schedule a message instead of sending it immediately, in which case the ID will be 0, so an ID of 0 is not evidence that the message was sent [12].
 - Slack's `chat.postMessage` returns `ok`, the channel and a `ts` ("timestamp ID"), and tells callers to "always check the value of the `ok` parameter" [13].
 - Lark's send-message API returns a `message_id` [7].
 
-In a chain such as owner thread, then another agent, then that agent's own bot posting to a third-party chat, the message ID should travel back along every hop unchanged. Each hop may add what it verified ("accepted by my bot API at 08:07") without rewriting what the previous hop said.
+In a chain such as owner thread, then another agent, then that agent's own bot posting to a third-party chat, the receipt (platform, destination and message ID together) should travel back along every hop unchanged. Each hop may add what it verified ("accepted by my bot API at 08:07") without rewriting what the previous hop said.
 
 **Design suggestion: confirmations as records, not prose.** Free text like "done" invites over-reading. Fields do better:
 
 ```
 request_id:     r-7f3a...
-status:         delivered | refused | failed | unknown
-platform_ids:   [ "<message id from platform>" ]
+status:         accepted | refused | failed | unknown
+receipts:
+  - platform:     telegram
+    destination:  "<chat the owner thread sent to>"
+    message_id:   "<message_id returned for that chat>"
 sent_at:        08:07
 message_count:  1
 chars:          3327
 sha256_prefix:  9c41e0...
-claims:         accepted-by-platform   # never "read" unless the platform proves it
+recipient_ack:  none   # set later, only from the owner's reply or a platform read receipt
 ```
+
+The success status is `accepted`, not `delivered`, because platform acceptance is all the owner thread can prove. A receipt counts only for the platform and destination it names. The requester checks both against the request: a message ID from another chat, or one recorded for another request, does not satisfy this one. Recipient acknowledgement is a separate, later fact. It comes from the owner, not from the send.
 
 ## 3. Fidelity: The Relayer Must Not Rewrite the Message
 
@@ -104,19 +110,21 @@ The owner thread has its own voice and habits. If it shortens the briefing or ad
 
 The hard case is the timeout. The requester asked, waited, and heard nothing. Either the message was never sent, or it was sent and the confirmation was lost.
 
-**General practice: an old dilemma.** RFC 5321 says a spurious timeout while waiting for the final reply to the message data "would typically result in delivery of multiple copies of the message, since it has been successfully sent" [8]. Kafka's documentation says a producer that does not learn whether a write committed has little choice but to resend, which "provides at-least-once delivery semantics since the message may be written to the log again" if the first attempt had succeeded. Since 0.11.0.0 an idempotent producer option has the broker assign a producer ID and deduplicate by sequence number [3].
+**General practice: an old dilemma.** RFC 5321's timeout rules cover the wait for the final "250 OK" after the message data, while the server processes the message for delivery. Of that point it says: "A spurious timeout at this point would be very wasteful and would typically result in delivery of multiple copies of the message, since it has been successfully sent and the server has accepted responsibility for delivery." [8] Kafka's documentation says a producer that does not learn whether a write committed has little choice but to resend, which "provides at-least-once delivery semantics since the message may be written to the log again" if the first attempt had succeeded. Since 0.11.0.0 an idempotent producer option has the broker assign a producer ID and deduplicate by sequence number [3].
 
-**Idempotency keys.** In Stripe's API a client generates a unique key, the server saves the result of the first request made with it, and retries with the same key return the saved response. Keys are up to 255 characters, and if parameters differ from the original the request errors [14]. Amazon's Builders' Library describes a caller-provided client request identifier and adds two refinements worth copying: a retry gets a response "with the same meaning as the first response," and a known token arriving with different parameters is treated as a different intent and rejected [15]. Some messaging platforms offer their own dedupe: Lark's send-message API has an optional `uuid`, and requests with the same value within one hour result in at most one message [7]. Check whether each platform you use has an equivalent.
+**Idempotency keys.** In Stripe's API a client generates a unique key, the server saves the result of the first request made with it, and retries with the same key return the saved response. Keys are up to 255 characters, and if parameters differ from the original the request errors [14]. Amazon's Builders' Library describes a caller-provided client request identifier and adds two refinements worth copying: a response to a retry "will have the same meaning as the first response returned for the first successful request," and a known token arriving with different parameters is treated as a different intent and rejected [15]. Some messaging platforms offer their own dedupe: Lark's send-message API has an optional `uuid`, and requests with the same value within one hour result in at most one message [7]. Check whether each platform you use has an equivalent.
 
 **A human is not an idempotent consumer.** The transactional outbox pattern admits that its message relay "might publish a message more than once" and says "a message consumer must be idempotent" [16]. That works when the consumer is a program. Two identical briefings are noise to a person, so deduplication must happen on the sending side.
 
 **Design suggestions for human-facing relays.**
 
-1. **Carry one request ID across every hop.** The requester generates it, and each hop records it with its outcome. A repeated request with the same ID returns the stored confirmation instead of sending again. The same ID with different text is refused as a mismatch.
-2. **Record intent before sending and outcome after.** This is the spirit of the outbox pattern [16]. After a crash, an intent without an outcome means unknown, and recovery checks the chat or send log before acting.
-3. **A timeout is "unknown," not "failed."** The requester does not resend on its own. A new request ID for the same text is a new send, and is a decision for the owner thread or a person.
-4. **Choose at-most-once or at-least-once per message class.** A conversational reply is better lost than doubled. An alert that must not be missed can use at-least-once plus a platform dedupe key where one exists. A scheduled briefing sits between: a duplicate costs little but a loss may go unnoticed, so follow up on unknown outcomes and then escalate.
-5. **Follow up with a question, not a resend.** "Did request r-7f3a go out?" is cheap and cannot duplicate anything.
+1. **Carry one request ID across every hop.** The requester generates it, and each hop records it with its outcome.
+2. **Claim the request with one atomic write, not a lookup followed by a write.** If the relayer first checks whether the ID is known and then records its intent in a separate step, two overlapping handlers can both find nothing and both send. Instead, the relayer claims the ID in a single durable operation that succeeds only if the ID is new, such as an insert into a table whose key is the request ID. Only the handler whose claim succeeded may send. The claim stores what the request is bound to: the verified requester, the destination, a hash of the payload and the send options (one message, or chunking allowed). Amazon's article asks for the same property: "the process that combines recording the idempotent token and all mutating operations related to servicing the request must meet the properties for an atomic, consistent, isolated, and durable (ACID) operation." It also stores the original parameters with the identifier so that a mismatch can be detected [15].
+3. **Define what a duplicate sees.** A handler whose claim fails reads the existing record and does not send. If an outcome is stored and every bound field matches, it returns that outcome. If the claim has no outcome yet, it answers "in progress." If any bound field differs (another requester, destination, payload or option), it refuses the request as a mismatch, so a receipt for one chat can never answer a request for another.
+4. **Record the outcome after the send, and recover unresolved claims as unknown.** A send to an external platform cannot join the local transaction, so the database alone cannot close the window between sending and recording the outcome. On restart, a claim with no outcome is marked unknown and is not retried automatically. Recovery looks for evidence in the owner thread's send log or the chat itself, and without evidence asks a person. The one safe automatic retry is through a platform dedupe key, such as Lark's `uuid` above, reused inside the platform's dedupe window and only if the original send used it.
+5. **A timeout is "unknown," not "failed."** The requester does not resend on its own. A new request ID for the same text is a new send, and is a decision for the owner thread or a person.
+6. **Choose at-most-once or at-least-once per message class.** A conversational reply is better lost than doubled. An alert that must not be missed can use at-least-once plus a platform dedupe key where one exists. A scheduled briefing sits between: a duplicate costs little but a loss may go unnoticed, so follow up on unknown outcomes and then escalate.
+7. **Follow up with a question, not a resend.** "Did request r-7f3a go out?" is cheap and cannot duplicate anything.
 
 ## 5. Authority and Judgment
 
@@ -139,18 +147,18 @@ The price of judgment is a little latency, which is cheap next to a thread that 
 
 ## 6. Gating Downstream Steps on Confirmation
 
-The briefing has two downstream steps: record the item as learned, and forward it to another group. Both assert something about the world ("the owner has this"), so both wait for evidence.
+The briefing has two downstream steps, and they assert different things about the world, so they wait for different evidence. Forwarding a copy to another group with the note "sent to the owner at 08:07" asserts only that the send happened, so platform acceptance (Level 2) is enough. Recording the item as learned asserts that the owner has the information, which acceptance does not show. That step waits for the owner's acknowledgement (Level 4).
 
 **General practice: sagas.** Garcia-Molina and Salem's 1987 paper defines a saga as a long-lived transaction written as a sequence of transactions, where "either all the transactions in a saga are successfully completed or compensating transactions are run to amend a partial execution" [19]. Chris Richardson's pattern page applies the term to operations spanning services with separate data stores, distinguishes choreography (each step publishes an event that triggers the next) from orchestration (a coordinator tells participants what to do), and notes that completed steps are undone by compensating transactions [20]. In the briefing flow the coordinator is the orchestrator and the owner thread's confirmation is the reply that advances the process.
 
 **Design suggestions for the gate.**
 
-1. **Record only after success.** Mark the briefing learned on a `delivered` confirmation with a platform ID, never on request, acknowledgement or silence.
+1. **Match each step to the evidence it needs.** A step that asserts "it was sent" waits for an `accepted` confirmation whose receipt names the requested platform and destination. A step that asserts "the owner knows" waits for recipient acknowledgement: the owner's reply or reaction in that chat, or a read receipt where the platform offers one. No step advances on the request, the relayer's agreement or silence.
 2. **Put the irreversible step late.** A sent message cannot be recalled from a person's mind, and compensation suits steps that can be undone. Do cheap, reversible work first.
-3. **Keep the pending state visible.** Between request and confirmation the item is "awaiting confirmation" with a deadline, held by the process manager and queryable.
-4. **Define the timeout path.** At the deadline, send a status question, then tell a human what is unknown. Do not mark the item learned and do not resend.
-5. **Treat refusal as a branch.** Refused, failed and unknown lead to different places. Only delivered leads onward.
-6. **Pass IDs onward.** The forward to another group can cite the platform ID of the first send, so a later reader can trace it.
+3. **Keep the pending state visible.** Between request and confirmation the item is "awaiting confirmation," and between acceptance and acknowledgement it is "sent, not acknowledged." Each state has a deadline and is held by the process manager and queryable.
+4. **Define the timeout path.** If no confirmation arrives by the deadline, send a status question, then tell a human what is unknown. Do not mark the item learned and do not resend. If the send was accepted but the owner has not acknowledged it, the item stays "sent, not acknowledged." A reminder is a deliberate new send, not a retry.
+5. **Treat refusal as a branch.** Refused, failed and unknown lead to different places. Only accepted leads onward, and only as far as acceptance justifies.
+6. **Pass receipts onward.** The forward to another group can cite the receipt of the first send (platform, chat and message ID), so a later reader can trace it.
 
 ## 7. Testing a Delegated Send
 
@@ -161,9 +169,9 @@ Real chats make poor test targets: they are rate-limited, they notify people, an
 **Design suggestions.**
 
 1. **Assert on recorded payloads, not logs.** The fake channel received exactly one message, with text equal to the file, from the owner thread, to the right address.
-2. **Assert invariants across the flow.** At most one send per request ID. The downstream step never runs without a `delivered` confirmation. An unknown outcome never produces a second send.
+2. **Assert invariants across the flow.** At most one send per request ID. A step that needs acceptance never runs without an `accepted` confirmation whose receipt names the requested platform and destination, and a step that needs the owner's acknowledgement never runs on acceptance alone. An unknown outcome never produces a second send.
 3. **Inject lost confirmations.** The fake accepts the send and drops the reply. The requester must report unknown, ask a status question and not resend. Repeating the request with the same ID must return the stored confirmation and no new send.
-4. **Inject duplicates and crashes.** Deliver the same relay request twice. Kill the owner thread between recording intent and sending, and between sending and recording the outcome.
+4. **Inject duplicates and crashes.** Deliver the same relay request to two handlers at the same moment: exactly one claim succeeds, the other answers "in progress" or returns the stored outcome, and the fake channel records one send. Reuse the ID with a different destination or payload: the request is refused as a mismatch. Kill the owner thread after the claim but before sending, and again after sending but before recording the outcome: on restart both claims are reported unknown, neither is resent automatically, and in the crash-after-send case the fake channel still holds exactly one message.
 5. **Inject platform behaviour.** Over-length text, a rate-limit response (Slack documents HTTP 429 with a `Retry-After` header [6]), and a message ID of 0.
 6. **Test the safeguards.** A direct send to an owned address fails and names the owner. A request from a requester without permission is refused and the refusal reaches the requester.
 7. **Use a fake clock** so the "no confirmation after a while" path runs in milliseconds.
@@ -188,25 +196,26 @@ Real chats make poor test targets: they are rate-limited, they notify people, an
 - Judges the request against the original requester's permissions, and against content and timing.
 - Refuses with a reason when unsure, and sends the refusal back.
 - Treats relayed text as data, never as instructions.
-- Checks the request ID before sending, and records intent before and outcome after.
+- Claims the request ID with one atomic write bound to the requester, destination, payload hash and send options, and sends only if that claim succeeded.
+- Answers a duplicate with the stored outcome or "in progress," refuses a mismatched reuse of the ID, and after a crash treats a claim without an outcome as unknown.
 - Never truncates, rewrites or silently chunks.
 
 **The confirmation**
 
-- Has a status of delivered, refused, failed or unknown.
-- Includes platform message IDs, send time, message count, length and a hash of what was submitted.
-- Claims nothing stronger than accepted by the platform unless the platform proves more.
+- Has a status of accepted, refused, failed or unknown.
+- Includes receipts that each name the platform, the destination and the message ID, plus send time, message count, length and a hash of what was submitted.
+- Claims nothing stronger than acceptance by the platform. Recipient acknowledgement is a separate record, from the owner's reply or a platform read receipt.
 - Travels back along every hop unrewritten.
 
 **The requester**
 
-- Gates downstream steps on a delivered confirmation and holds the item as pending with a deadline.
+- Gates each downstream step on the evidence it needs: an accepted confirmation with a matching receipt for "it was sent," the owner's acknowledgement for "the owner knows." Holds the item as pending with a deadline.
 - On timeout asks a status question, does not resend, then escalates to a human.
 - Keeps irreversible steps late.
 
 **Tests**
 
-- Fake channel with recorded payloads, a fake clock, and cases for lost confirmations, duplicates, crashes between steps, over-length text and rate limits.
+- Fake channel with recorded payloads, a fake clock, and cases for lost confirmations, simultaneous duplicates, mismatched reuse of a request ID, crashes before and after the send, over-length text and rate limits.
 
 ## References
 
