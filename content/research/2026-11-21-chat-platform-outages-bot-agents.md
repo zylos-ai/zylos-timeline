@@ -19,7 +19,7 @@ An agent's Telegram bot API calls failed for about two hours overnight, then rec
 
 Conclusions:
 
-1. **The "please resend" notice was probably unnecessary for inbound messages.** Telegram documents that updates are "stored on the server until the bot receives them either way, but they will not be kept longer than 24 hours." Two hours is well inside that. A polling loop that resumed from its last confirmed offset should have received the backlog. The notice was justified only if the bot drops stale updates, the gap exceeded the retention window, or the lost part was the bot's replies. The last is the likeliest, and the bot should have known which case applied.
+1. **The "please resend" notice was probably unnecessary for inbound messages, if Telegram kept the backlog.** Telegram documents that updates are "stored on the server until the bot receives them either way, but they will not be kept longer than 24 hours." Two hours is well inside that. If the queue survived this kind of failure, which no document confirms, a polling loop that resumed from its last confirmed offset should have received the backlog, and the bot can check whether it did. The notice was justified if the backlog did not arrive, the bot drops stale updates, the gap exceeded the retention window, or the lost part was the bot's replies. The last is the likeliest, and the bot should have known which case applied.
 2. **Build the notice from the bot's own records.** A bot with a durable inbox and outbox can say "I received 2 messages from you in that window and have now answered them" or "I have no record of anything from you in that window." Both are true and actionable.
 3. **Do not mislabel the failure.** Local network trouble, a platform outage, a per-bot backend failure, a revoked token, a rate limit and a plain 5xx need different reactions. Public GitHub reports from November 2026 describe Telegram failures that hit individual bot IDs while other bots on the same hosts worked, and where rotating the token did not help.
 4. **Outbound is the hard side.** Telegram's Bot API page documents no idempotency key. Discord has an optional `nonce`, Lark a `uuid` with a one-hour window; I found none for Slack or WhatsApp. After a timed-out send the state is unknown, and the outbox must record "unknown," not "failed."
@@ -37,9 +37,9 @@ The first job during an outage is classification. A wrong label causes a wrong a
 | Local network or proxy | No platform response: DNS, connect or TLS error, silent timeout, or a non-JSON error page from your own proxy | Probe a second network path. Back off. Do not rotate credentials |
 | Platform-wide outage | 5xx or hangs for many tokens or bots | Check status page and a canary. Keep inbox and outbox durable. Wait |
 | Per-bot backend failure | Valid token fails or hangs while other tokens work from the same host | As above. Do not rotate the token first. Report it |
-| Token revoked | HTTP 401 (Telegram, Discord) or a documented auth error (WhatsApp error code 0) | Stop retrying. Alert through another channel |
+| Token revoked | HTTP 401 (Telegram, Discord) or a documented auth error (WhatsApp code 0 for authentication failures generally, 190 for an expired token) | Stop retrying. Alert through another channel |
 | Rate limiting | HTTP 429 with a wait value | Wait exactly as told, then slow down |
-| 5xx | 500, 502, 503, 504 | Backoff with jitter and a cap |
+| 5xx | 500, 502, 503, 504 | Backoff with jitter and a cap. For a send, first decide whether it may have been accepted (section 4.1) |
 
 ### 1.1 Telegram signals
 
@@ -49,15 +49,15 @@ Two consequences. A JSON reply from `api.telegram.org` means your network path t
 
 ### 1.2 A November 2026 failure pattern: per-bot backends
 
-Several issues on the public `tdlib/telegram-bot-api` tracker, opened in November 2026, match the motivating incident closely. They are user reports, not Telegram statements, and the ones I read were closed by a maintainer with no explanatory comment in the issue text. Common features:
+Several issues on the public `tdlib/telegram-bot-api` tracker, opened in November 2026, match the motivating incident closely. They are user reports, not Telegram statements. Of the ones I read, all but #938 were closed by a maintainer with no explanatory comment in the issue text; #938 was closed by its own reporter. Common features:
 
 - Every Cloud Bot API method for one bot ID hangs or returns `{"ok":false,"error_code":502,"description":"Bad Gateway"}`, typically after about 15 seconds (#916 opened 2026-11-03; #963 on 2026-11-14).
 - Other bots of the same owners answered `getMe` in a fraction of a second from the same hosts, and independent networks reproduced the failure.
-- Revoking the token in BotFather and issuing a new one did not help (#916, #1015, #1026).
+- Revoking the token in BotFather and issuing a new one did not help (#1015, #1026, and two commenters on #916; #916's original reporter had not rotated the token).
 - A control probe recurs: a request with a deliberately wrong secret but the affected bot ID also hangs or returns 502, while a wrong secret with a different bot ID returns 401 within a second or two. Reporters conclude the request is stuck on the backend serving that bot ID. That is their inference.
 - Duration varied. #1025 reports about four days of continuous 502 that cleared with no change on the reporter's side. #1001 reports a recurring 2 to 5 minute window around 01:12 UTC each night, with 502 and then 504 after exactly 120 seconds.
 - #938 reports `getWebhookInfo` answering a few times with `pending_update_count` between 45,000 and 100,000, then 429 "retry after 5," then 502 on everything. A 429 can appear as a symptom inside an outage and must still be honored.
-- One commenter on #916 wrote that "incoming webhook updates still arrive" while API calls failed. One report only, but a reminder that inbound and outbound can fail independently.
+- One commenter on #916, whose API calls were failing, wrote: "Incoming webhook updates still arrive." One report only, but a reminder that inbound and outbound can fail independently.
 
 I cannot say whether the motivating incident was part of this pattern.
 
@@ -69,14 +69,14 @@ An ordered, cheap probe sequence avoids mislabeling. Thresholds are my suggestio
 2. Is the response platform-formatted (Telegram JSON with `ok`, Slack or Discord JSON)? Then you reached the platform.
 3. Try a second network path (bypass the local proxy, or use another host). If it works and the first does not, the problem is local.
 4. Call `getMe`, which the docs call "a simple method for testing your bot's authentication token." Success means the token is valid and the backend answers. 401 means a bad token. A hang or 502 means platform side.
-5. Call `getMe` with an unrelated canary bot token you own. Canary works and your bot fails: suspect a per-bot failure. Both fail: platform-wide or local. Use deliberately invalid tokens sparingly. Discord documents that 401, 403 and 429 responses count as invalid requests, and that an IP making 10,000 in 10 minutes is temporarily restricted. I found no Telegram equivalent.
+5. Call `getMe` with an unrelated canary bot token you own. Canary works and your bot fails: suspect a per-bot failure. Both fail: platform-wide or local. Use deliberately invalid tokens sparingly. Discord documents that 401, 403 and 429 responses count as invalid requests (except 429s returned with `X-RateLimit-Scope: shared`), and that an IP making 10,000 in 10 minutes is temporarily restricted. I found no Telegram equivalent.
 6. Read the status page if one exists (section 5). A per-bot failure will likely not appear on it.
 
 ### 1.4 Other platforms
 
-Slack returns 429 with a `Retry-After` header, scoped per method and workspace ("Calls to other methods on behalf of this workspace are not restricted"). Discord returns 429 with JSON `retry_after` and a `global` boolean, and says to "rely on the Retry-After header or retry_after field." WhatsApp error 130429 means "Cloud API message throughput has been reached," and authorization error 0 typically means the token "has expired, been invalidated." Lark limits send-message to 50 per second for the API and 5 per second per user.
+Slack returns 429 with a `Retry-After` header, scoped per method and workspace ("Calls to other methods on behalf of this workspace are not restricted"). Discord returns 429 with JSON `retry_after` and a `global` boolean, and says to "rely on the Retry-After header or retry_after field." WhatsApp error 130429 means "Cloud API message throughput has been reached." Its authorization error 0 is broader: "We were unable to authenticate the app user." Meta says this typically means an expired or invalidated token, or a user setting that blocks apps. Error 190 states "Your access token has expired." Lark limits send-message to 50 per second for the API and 5 per second per user.
 
-When the platform says how long to wait, believe it. Jittered backoff is for cases where it does not (5xx, timeouts). The AWS Architecture Blog reports that un-jittered exponential backoff does worse than jittered variants, and that "Full Jitter" and "Equal Jitter" use about the same number of calls.
+When the platform says how long to wait, believe it. Jittered backoff is for cases where it does not (5xx, timeouts), and for a send only after deciding that resending is safe (section 4.1). The AWS Architecture Blog reports that un-jittered exponential backoff does worse than jittered variants, and that "Full Jitter" and "Equal Jitter" use about the same number of calls.
 
 ## 2. Inbound during the outage
 
@@ -92,9 +92,14 @@ For `getUpdates`:
 - `limit` is 1 to 100; the FAQ says the method returns "the earliest 100 unconfirmed updates."
 - "In order to avoid getting duplicate updates, recalculate offset after each server response."
 
-Confirmation happens on the next call, so a crash after receiving a batch causes redelivery. It also means the bot controls the loss window. Two patterns lose messages: advancing the offset while the previous batch exists only in memory, and using a negative offset or any "skip to latest" shortcut after an outage, which silently forgets everything before it. With neither, a two-hour outage is survivable without user action: the bot resumes from its last offset and drains the backlog, 100 per call. The retention limit that matters is 24 hours.
+Confirmation happens on the next call, so a crash after receiving a batch causes redelivery. It also means the bot controls the loss window. Two patterns lose messages: advancing the offset while the previous batch exists only in memory, and using a negative offset or any "skip to latest" shortcut after an outage, which silently forgets everything before it. With neither, and provided Telegram kept the queue through the outage, a two-hour outage is survivable without user action: the bot resumes from its last offset and drains the backlog, 100 per call. The retention limit that matters is 24 hours. The 24-hour rule is documented generally, not for the per-bot failures in section 1.2, so after recovery check that the backlog actually arrived before telling anyone it was safe.
 
-One subtlety: "If there are no new updates for at least a week, then identifier of the next update will be chosen randomly instead of sequentially." A rule like "ignore anything not above the highest id seen" can therefore discard fresh updates after a quiet week (my inference). Prefer a bounded set of recent ids.
+One subtlety: "If there are no new updates for at least a week, then identifier of the next update will be chosen randomly instead of sequentially." The first update after a quiet week can therefore have a lower id than the stored offset. Under the confirmation rule above, polling with that old offset would confirm the update before the bot ever receives it, and no inbox dedupe can recover an update that was never returned (my inference from the two documented sentences; I did not test it). My suggested cursor policy:
+
+- Store the time of the last received update alongside the offset.
+- While that is less than a week ago, poll with the stored offset.
+- Once it nears a week (I would use six days), or when you cannot tell (cursor restored from a backup, timestamp missing), poll without an offset. The default returns the earliest unconfirmed update, and everything older was already confirmed by your earlier calls. Resume offset-based polling from the first batch that comes back.
+- Dedupe against a set of recent ids, not a high-water mark that ignores anything not above the highest id seen. Keep the set's horizon longer than the 24-hour retention and shorter than a week, so a random new id neither gets skipped nor collides with an old one.
 
 ### 2.2 Telegram webhooks
 
@@ -108,8 +113,8 @@ Two traps. `setWebhook` has `drop_pending_updates` ("Pass True to drop all pendi
 |---|---|
 | Slack Events API (HTTP) | Respond 2xx "within three seconds." After failure, "we'll retry three times, backing off exponentially": nearly immediately, after 1 minute, after 5 minutes. Opt-in "Delayed Events" adds hourly retries for 24 hours. "The Events API is a best-effort system." By default Slack will not "attempt to deliver an event that is more than two hours late." |
 | Slack Socket Mode | Events carry an `envelope_id` to acknowledge "so that Slack knows whether to retry." Retention across a disconnect is not stated |
-| Discord Gateway | If you Resume in time, "the Gateway will send the missed events in order, finishing with a Resumed event." If you do not reconnect in time you get Invalid Session, "your app should disconnect" and re-Identify, with no replay described. The time window is not stated in the section I read |
-| Lark/Feishu | Respond 200 "within 3 seconds." Retries "at intervals of 15 seconds, 5 minutes, 1 hour, and 6 hours, with a maximum of 4 retries." Deduplicate by `event_id` (v2.0) or `uuid` (v1.0) |
+| Discord Gateway | If you Resume in time, "the Gateway will send the missed events in order, finishing with a Resumed event" that marks the end of replay. If you do not reconnect in time you get Invalid Session. With its `d` field false ("which is most of the time"), "your app should disconnect" and re-Identify, with no replay described. With `d` true the session is resumable, and the docs list it among the cases where you should attempt to Resume. The time window is not stated in the section I read |
+| Lark/Feishu | Respond 200 "within 3 seconds." Retries "at intervals of 15 seconds, 5 minutes, 1 hour, and 6 hours, with a maximum of 4 retries." Deduplicate events by `event_id` (v2.0) or `uuid` (v1.0). For received chat messages (`im.message.receive_v1`) the guide says otherwise: "If you have idempotent needs, please use message_id to deduplicate, do not rely on event_id." |
 | WhatsApp Cloud API | On non-200 or other failure, "Meta retries delivery with decreasing frequency until the request succeeds, for up to 7 days." "These retries can result in duplicate webhook notifications." |
 
 Points to draw out:
@@ -117,13 +122,13 @@ Points to draw out:
 - **Retention differs by orders of magnitude.** Telegram: up to 24 hours. Slack HTTP: minutes by default, 24 hours with the opt-in. Lark: about 7 hours (15 s + 5 min + 1 h + 6 h). WhatsApp: up to 7 days. Discord: a short, unspecified resume window. One "please resend" rule across channels would be wrong for most of them.
 - **Slack's two-hour default sits right at a two-hour outage.** Events may not be redelivered unless Delayed Events was enabled beforehand.
 - **Meta's generic webhooks differ.** Its "Get started with webhooks" page says unacknowledged responses "will be dropped after 36 hours," while the WhatsApp page says up to 7 days. I found no explanation.
-- **An open issue shows the cost of ignoring this.** A community issue in `TencentCloud/octop-gateway` (opened 2026-11-04) reports a Feishu deployment re-answering hours-old questions. Duplicates clustered at +1h05m and +7h05m, matching the documented schedule. In-memory dedupe was wiped by restarts, and the message's own age was never checked. Each redelivery caused a full model run and a duplicate reply. I did not verify the issue independently.
+- **An open issue shows the cost of ignoring this.** A community issue in `TencentCloud/octop-gateway` (opened 2026-11-04) reports a Feishu deployment re-answering hours-old questions. Duplicates clustered at +1h05m and +7h05m, matching the documented schedule. It deduped by `message_id`, the key Feishu's receive-message guide asks for, but kept that table in memory, where restarts wiped it; and the message's own age was never checked. Each redelivery caused a full model run and a duplicate reply. I did not verify the issue independently.
 
 ### 2.4 Was "please resend" necessary?
 
 My inference for the motivating incident:
 
-- Long polling that resumed from its last confirmed offset: the messages should be redelivered, and a resend request invites duplicates.
+- Long polling that resumed from its last confirmed offset, with the backlog verified as arriving: the messages were redelivered, and a resend request invites duplicates. If Telegram did not keep the queue through this failure, which I could not confirm, they are gone and a resend request is needed.
 - Bot skipped to latest, dropped stale updates, or advanced the offset before durable storage: the bot lost messages by its own policy. Remove that loss.
 - Replies failed because the API was unreachable for its token (the likelier case): the user need not resend. The bot needs to send.
 - Gap beyond 24 hours, or a webhook receiver down past the sender's retry window: resend is justified, for a precisely named window.
@@ -132,19 +137,19 @@ My inference for the motivating incident:
 
 ### 3.1 Idempotency by platform identifier
 
-Telegram gives `update_id`, handy "to ignore repeated updates." Slack gives `event_id`, "globally unique across all workspaces." Lark gives `event_id` (v2.0) or `uuid` (v1.0) and recommends "idempotency logic for all messages," since duplicates can arrive "even when the event is successfully received." WhatsApp warns of duplicates but names no dedupe field; its payload `id` (a `wamid.` value) is a natural key by my inference, as are Discord message ids.
+Telegram gives `update_id`, handy "to ignore repeated updates." Slack gives `event_id`, "globally unique across all workspaces." Lark gives `event_id` (v2.0) or `uuid` (v1.0) and recommends "idempotency logic for all messages," since duplicates can arrive "even when the event is successfully received." Event dedupe is not message dedupe, though: for received chat messages Feishu's `im.message.receive_v1` guide says to use `message_id` and "do not rely on event_id." WhatsApp warns of duplicates but names no dedupe field; its payload `id` (a `wamid.` value) is a natural key by my inference, as are Discord message ids.
 
-Write the id to durable storage in the same transaction as the intake record, under a uniqueness constraint, and treat a conflict as "duplicate, skip." Keep dedupe state in the store, not in memory, as the Feishu issue shows.
+Write the id to durable storage in the same transaction as the intake record, under a uniqueness constraint, and treat a conflict as "duplicate, skip." Keep dedupe state in the store, not in memory, as the Feishu issue shows: it used the right key, `message_id`, but restarts wiped the in-memory table.
 
 ### 3.2 Persist the offset only after durable intake
 
 For Telegram long polling:
 
 1. Call `getUpdates(offset=N)`.
-2. In one transaction, insert every update into the inbox by `update_id` (ignore conflicts) and store `N' = max(update_id) + 1`.
-3. Commit, then start handling, and use `N'` on the next call.
+2. In one transaction, insert every update into the inbox by `update_id` (ignore conflicts) and store `N' = max(update_id) + 1` with the time of the last received update.
+3. Commit, then start handling, and use `N'` on the next call, or no offset once the idle rule in section 2.1 applies.
 
-A crash before step 3 yields redelivery, which the unique key absorbs. A crash after it is safe because unprocessed inbox rows are picked up on start. For webhooks: write to the inbox, then return 200. Slack states the principle: "implement a queue to handle inbound events after they are received." A slow model call in the handler makes Slack retry, which creates duplicates.
+A crash before step 3 yields redelivery, which the unique key absorbs. A crash after it loses nothing, because unprocessed inbox rows are picked up on start. Picking a row up again re-runs its handling, though. If the process died after a tool call with side effects and before marking the row handled, the inbox key does not stop that action from running twice. Record such actions the way the outbox records sends (section 4.3 and the checklist in section 7): commit an attempt row before the call, and treat one found unfinished after a restart as `unknown`, not as work to redo. For webhooks: write to the inbox, then return 200. Slack states the principle: "Implement a queue to handle inbound events after they are received." A slow model call in the handler makes Slack retry, which creates duplicates.
 
 ### 3.3 The backlog burst
 
@@ -154,7 +159,7 @@ My suggested rule: group the backlog by chat, process in `update_id` order, and 
 
 ### 3.4 Stale messages
 
-Telegram's `Message.date` is the "date the message was sent in Unix time." Slack has `event_time`, and the Feishu issue suggests the message's `create_time`. Compute age at handling time and apply a policy:
+Telegram's `Message.date` is documented as "Date the message was sent in Unix time." On Slack, use the inner event's `ts`, "The timestamp of what the event describes" (for a message event, the message), not the envelope's `event_time`, which records "when this event was dispatched." On Feishu, use `event.message.create_time` ("Message sending time (in ms)"), not the header `create_time` ("Event creation timestamp(in ms)"), which the Feishu issue proposed. Compute age at handling time and apply a policy:
 
 | Message kind | Stale (older than your threshold) |
 |---|---|
@@ -171,7 +176,8 @@ The threshold is policy, and I know no documented number; decide it before the o
 Anything the agent wants to send goes first into an outbox table, then to the API. This is the standard transactional-outbox pattern, my recommendation, not a platform requirement.
 
 - **429:** wait the platform's value (Telegram `retry_after`, Slack `Retry-After`, Discord `Retry-After` or `retry_after`).
-- **5xx, timeouts, connection errors:** exponential backoff with full jitter and a cap.
+- **Confirmed non-acceptance** (DNS, connect or TLS failure before the request was written, or another error that shows nothing was applied): retry with exponential backoff, full jitter and a cap.
+- **5xx, timeouts, resets after the request went out:** the send may already have been accepted (section 4.3), so a plain retry can duplicate it. Mark the row `unknown`, then resend only with a platform dedupe key that is still valid (Discord `nonce` within its window, Lark `uuid` within 1 hour) or under the delivery policy you chose for that kind of message (section 4.4). Backoff and jitter set when that resend happens, after the decision to resend, not instead of it.
 - **401:** stop and alert through another channel. On Discord this also protects your IP (section 1.3).
 
 ### 4.2 Expiry per message
@@ -184,16 +190,16 @@ WhatsApp has a platform-side expiry you cannot configure. Free-form service mess
 
 A **failed** send is one where you know the platform did not accept the message: a clear 4xx rejection or a connection failure before the request was written. An **unknown** send is one where the request went out and the response was lost: a client timeout, a reset after the body, or a gateway 5xx.
 
-For unknown sends, retrying risks a duplicate and not retrying risks a loss. Slack's `chat.postMessage` error table says of `internal_error` and `fatal_error` that "it's possible some aspect of the operation succeeded before the error was raised." RFC 9110 says a client "SHOULD NOT automatically retry a request with a non-idempotent method" unless it can know the semantics are idempotent or "detect that the original request was never applied."
+For unknown sends, retrying risks a duplicate and not retrying risks a loss. Slack's `chat.postMessage` error table says of `internal_error` and `fatal_error`: "It's possible some aspect of the operation succeeded before the error was raised." RFC 9110 says a client "SHOULD NOT automatically retry a request with a non-idempotent method" unless it can know the semantics are idempotent or "detect that the original request was never applied."
 
 ### 4.4 Avoiding duplicates when you cannot tell
 
 | Platform | Idempotency for sending, from the pages I read |
 |---|---|
 | Telegram | None documented; the Bot API page has no "idempot" at all. `sendMessage` returns the sent `Message`. I found no method that reads chat history, so you cannot ask whether an earlier send landed |
-| Slack | None in the `chat.postMessage` page. `client_msg_id` appears only inside two error names, and I could not tell what mechanism they belong to |
+| Slack | None in the `chat.postMessage` page. `client_msg_id` appears only in the descriptions of two errors (`duplicate_channel_not_found`, `duplicate_message_not_found`), and I could not tell what mechanism they belong to |
 | Discord | Partial. `nonce` (up to 25 characters) with `enforce_nonce: true` is "checked for uniqueness in the past few minutes. If another message was created by the same author with the same nonce, that message will be returned and no new message will be created." It covers fast retries, not retries after a two-hour outage |
-| Lark/Feishu | Yes. The `uuid` field: requests with the same uuid send at most one message within 1 hour (my translation of the Chinese text), max 50 characters |
+| Lark/Feishu | Yes. The `uuid` field, max 50 characters: "Requests with the same uuid can successfully send at most one message within 1 hour." |
 | WhatsApp Cloud API | None found in the send, messages-reference and error-code pages I fetched |
 
 For Telegram, an unknown outcome leaves trade-offs: at-most-once for low-value messages (mark `unknown`, do not resend); at-least-once for important ones (resend, accept a possible duplicate, and make the repeat recognizable with a short reminder id); and edits instead of new sends for status, since an edit ends in the same state however often it repeats (I did not check how Telegram treats an edit that changes nothing, so test it). Whichever you choose, keep `unknown` as its own state, because the notice needs to say "I tried to answer you at 03:12 and do not know whether it arrived."
@@ -202,7 +208,7 @@ For Telegram, an unknown outcome leaves trade-offs: at-most-once for low-value m
 
 **Route alerts away from the failing channel.** The agent in the incident was noticed through another owner channel. Make that a rule: the alert for "channel X is failing" must not go through X, and must not queue behind it. With a single channel, use an out-of-band route such as email or a separate push app.
 
-**Measure the round trip, not the process.** In the November 2026 reports the bot processes were healthy; one reporter wrote that "the application and database are operational, but no new updates are received." Watch the age of the last successful `getUpdates` return (empty ones count), the last successful send, and a periodic `getMe` canary.
+**Measure the round trip, not the process.** In the November 2026 reports the bot processes were healthy; one reporter wrote: "The application and database are operational, but no new updates are received." Watch the age of the last successful `getUpdates` return (empty ones count), the last successful send, and a periodic `getMe` canary.
 
 **Use a dead-man switch.** A broken system may not manage to report that it is broken, so invert the logic: it reports that it is fine, and silence raises the alarm. Healthchecks.io documents the pattern: it "keeps silent as long as pings arrive on time. It raises an alert as soon as a ping does not arrive on time," with a configurable "Grace Time." The agent pings only after a full cycle of receive, record and send-probe succeeds. This is an example of the pattern, not a product recommendation.
 
@@ -239,16 +245,16 @@ The setting: one process per channel, one SQLite file, one owner or a few users.
 
 **Intake**
 
-- [ ] Inbox table keyed by platform event id, with platform timestamp, raw payload, received time and status (`new`, `handled`, `skipped_stale`).
-- [ ] Insert inbox rows and advance the stored cursor (Telegram offset) in one transaction, then poll with the new offset. Webhooks: write, then return 200.
-- [ ] Never use a negative offset or `drop_pending_updates` at startup. Dedupe with a bounded recent-id set, not a pure high-water mark.
+- [ ] Inbox table keyed by the platform's message or event id (Feishu messages: `message_id`, not `event_id`), with the message's own timestamp (Slack inner `ts`, Feishu `event.message.create_time`), raw payload, received time and status (`new`, `handled`, `skipped_stale`).
+- [ ] Insert inbox rows and advance the stored cursor (Telegram offset, plus the time of the last received update) in one transaction, then poll with the new offset. After about six days without updates, or when that time is unknown, poll without an offset (section 2.1). Webhooks: write, then return 200.
+- [ ] Never use a negative offset or `drop_pending_updates` at startup. Dedupe with a recent-id set (horizon over 24 hours, under a week), not a pure high-water mark, so a lower, random `update_id` after an idle week is neither skipped nor confirmed unseen.
 - [ ] Acknowledge fast and process from a queue. Slack: decide on Delayed Events deliberately. Discord: store `session_id`, `resume_gateway_url` and last `s`.
 
 **Outbox**
 
 - [ ] Table with local id, target, payload, `expires_at`, `attempts`, `next_attempt_at`, `state` (`pending`, `sending`, `sent`, `unknown`, `failed`, `expired`) and platform message id.
 - [ ] Commit `sending` before the API call. After a crash, `sending` rows become `unknown`, not `pending`.
-- [ ] 429: sleep for the platform's value. 5xx and timeouts: full-jitter backoff with a cap. 401: stop and alert.
+- [ ] 429: sleep for the platform's value. Confirmed non-acceptance: full-jitter backoff with a cap. 5xx, timeouts and resets after the request went out: mark `unknown`, then resend only with a still-valid platform dedupe key or under the delivery policy chosen for that kind of message; backoff applies after that decision. 401: stop and alert.
 - [ ] Per-kind expiry, per-chat coalescing and pacing, platform dedupe where it exists (Discord `nonce`, Lark `uuid`).
 
 **Health, alerting and recovery**
@@ -259,7 +265,7 @@ The setting: one process per channel, one SQLite file, one owner or a few users.
 
 **Tests (keep them few)**
 
-- [ ] Kill the process between inbox commit and handling: no loss, no duplicate.
+- [ ] Kill the process between inbox commit and handling: no loss, no duplicate. Kill it after a side-effecting tool call and before the row is marked handled: the action is not repeated blindly, since the inbox key alone does not prevent that.
 - [ ] Time out a send after the body is written: the row ends `unknown`, not resent blindly.
 
 ## Why this matters for AI agent runtimes
@@ -276,13 +282,13 @@ Inference only: users read a missing reply as "the agent ignored me," not "the n
 
 - **Telegram's webhook retry count and schedule.** The docs say only "a reasonable amount of attempts."
 - **What Telegram retains during a per-bot backend failure.** The 24-hour rule is documented generally. #938 shows a large `pending_update_count` during a failure, which suggests queuing, but no document says this failure mode keeps the queue intact.
-- **The cause of the November 2026 per-bot 502 reports.** The issues I read were closed by a maintainer with no explanatory comment in the issue text. I do not know whether Telegram explained them elsewhere, or whether the motivating incident was part of the pattern.
+- **The cause of the November 2026 per-bot 502 reports.** All but #938 were closed by a maintainer with no explanatory comment in the issue text; #938 was closed by its reporter. I do not know whether Telegram explained them elsewhere, or whether the motivating incident was part of the pattern.
+- **Telegram's handling of a lower `update_id` after an idle reset.** The risk that an old offset confirms a fresh, lower-id update unseen follows from the two documented rules in section 2.1; I did not test it.
 - **Telegram's lack of an idempotency key.** It rests on the term's absence from the Bot API page I fetched, not an explicit statement.
 - **Telegram's error codes (401, 403, 409).** The page does not enumerate them. My claims about 401 for invalid tokens come from community reports and general practice.
 - **Slack Socket Mode redelivery across disconnects**, and **catch-up through history APIs** (Slack, Discord, Feishu). I did not find or fetch these, so any catch-up suggestion is unverified.
 - **Discord's resume window and `nonce` window.** The docs say "in time" and "the past few minutes," with no numbers.
 - **WhatsApp:** the exact retry schedule, dedupe guidance, and any send idempotency feature. A third-party site said Meta uses exponential backoff; Meta's own page says only "decreasing frequency."
-- **Lark/Feishu pages are single-page apps.** I read them through a page-summarizing fetch tool, so quotes there (including my translation of the Chinese `uuid` text) should be re-checked against the live page.
 - **All thresholds and policies** in sections 3 to 6 (stale age, expiry, alert timing, silence rule) are my suggestions, not platform guidance.
 
 ## Sources
@@ -299,13 +305,14 @@ Primary platform documentation (fetched):
 - Discord Message resource: https://discord.com/developers/docs/resources/message
 - Discord rate limits: https://discord.com/developers/docs/topics/rate-limits
 - Feishu Open Platform, Event overview: https://open.feishu.cn/document/server-docs/event-subscription-guide/overview?lang=en-US
-- Lark Developer, Event overview (found via search; text not directly confirmed): https://open.larksuite.com/document/server-docs/event-subscription/overview-of-event-subscription
-- Lark Developer, Send message API: https://open.larksuite.com/document/server-docs/im-v1/message/create
+- Feishu Open Platform, Receive message event (`im.message.receive_v1`): https://open.feishu.cn/document/server-docs/im-v1/message/events/receive?lang=en-US
+- Lark Developer, Event overview: https://open.larksuite.com/document/server-docs/event-subscription/overview-of-event-subscription?lang=en-US
+- Lark Developer, Send message API: https://open.larksuite.com/document/server-docs/im-v1/message/create?lang=en-US
 - WhatsApp Cloud API, set up webhooks: https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/
 - Meta Graph API, webhooks getting started: https://developers.facebook.com/docs/graph-api/webhooks/getting-started
 - WhatsApp Cloud API, send messages and service messages: https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages/
 - WhatsApp Cloud API, messages reference: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages/
-- WhatsApp Cloud API, error codes: https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes/
+- WhatsApp Cloud API, error codes: https://developers.facebook.com/documentation/business-messaging/whatsapp/support/error-codes/
 
 General references (fetched):
 
