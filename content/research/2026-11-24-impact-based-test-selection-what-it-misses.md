@@ -8,12 +8,12 @@ tags: ["research", "testing", "test-selection", "nodejs", "code-review", "ci", "
 
 ## Executive Summary
 
-Running only the tests a change can break is an old, well-studied idea, and every large engineering organisation that has published on it ends up with the same shape of solution: a cheap dependency-based selector, a conservative fallback for anything the selector cannot reason about, and a periodic full run as a backstop that catches what slipped through. Our policy (no full run by default, reviewer-selected tests, one full run before release) matches that shape. What the literature adds is a precise account of *where the selector goes blind* and *how to notice when it does*.
+Running only the tests a change can break is an old, well-studied idea, and the industrial systems cited here implement it in different ways. Google's TAP runs every test target its build system marks as affected, batched at milestones, and relies on build rules that declare every dependency. Microsoft's Test Impact Analysis selects from per-test dependency maps, falls back to all tests for changes it cannot reason about, and recommends a periodic full run. Meta selects with a learned model and backs it with a stage that runs all tests on the main branch every few hours. Our policy (no full run by default, reviewer-selected tests, one full run before release) is closest to the last two: a narrow selection plus a wider backstop. What the literature adds is a precise account of *where the selector goes blind* and *how to notice when it does*.
 
 Three findings matter most for a Node.js agent runtime made of a CLI, PM2 daemons, SQLite, child processes and config-loaded modules.
 
-1. **A JavaScript import graph is a lower bound on impact, not an estimate of it.** Jest's own documentation says `--onlyChanged` "requires a static dependency graph (ie. no dynamic requires)", and Vitest's `related` follows static imports only. Static RTS research on Java found reflection to be the only cause of unsafety compared with a dynamic tool (Legunsen et al.). In a Node codebase the equivalent blind spots are broader: `spawn('node', [script])`, computed `require(path)`, config-driven plugin loading, files read at runtime (SQL, JSON, prompt templates), environment-variable branches, and anything that crosses a process boundary as a data format. None of these create an import edge.
-2. **Industrial systems do not trust the selector blindly; they fall back, override and re-run.** Microsoft's Test Impact Analysis runs all tests when it meets a file type it cannot reason about and recommends a periodic run-everything setting. Nx by default treats a lockfile change as affecting every task. Meta's predictive selection is paired with a "stabilization" stage that runs all tests on the main branch every few hours. The pattern is: *unknown means widen*.
+1. **A JavaScript import graph is a lower bound on impact, not an estimate of it.** Jest's own documentation says `--onlyChanged` "requires a static dependency graph (ie. no dynamic requires)", and Vitest's `related` follows static imports only. In Legunsen et al.'s comparison of static selection with a dynamic tool on Java projects, reflection was the only cause of unsafety they found; the same authors name test-order dependence as an assumption of their tool, and external files and native code as further potential sources of unsafety. In a Node codebase the equivalent blind spots are broader: `spawn('node', [script])`, computed `require(path)`, config-driven plugin loading, files read at runtime (SQL, JSON, prompt templates), environment-variable branches, and anything that crosses a process boundary as a data format. None of these create an import edge.
+2. **The industrial systems cited here do not trust the selector blindly; they fall back, override and re-run.** Microsoft's Test Impact Analysis runs all tests when it meets a file type it cannot reason about and recommends a periodic run-everything setting. Nx by default treats a lockfile change as affecting every task. Meta's predictive selection is paired with a "stabilization" stage that runs all tests on the main branch every few hours. The pattern is: *unknown means widen*.
 3. **The selection must be auditable and measurable.** A reviewer-listed selection is only as good as its evidence. The practical loop is: record the reason for each selected test and each deliberately skipped batch, run the full suite on a schedule, log every failure that the selection would have missed as an "escape", and use each escape to add a mapping rule. Mutation testing of the changed code against the selected tests gives a direct, if imperfect, safety probe.
 
 The rest of this article covers the established approaches, a Node-specific catalogue of misses with mitigations, a hand-followable procedure with a small script sketch (which I ran against a toy fixture; its limits are listed), and a measurement plan. Facts taken from sources are cited; statements of my own reasoning are labelled **(inference)**.
@@ -36,7 +36,7 @@ Regression test selection (RTS) has one defining trade-off. A technique is *safe
 
 The key observation (Meta's paper makes it explicitly) is that *the safety of build-dependency selection is a property of the build system, not of the algorithm*: Meta writes that "strict build isolation enforced by the build system guarantees this technique identifies all tests that could possibly be impacted" ([Machalica et al.](https://arxiv.org/abs/1810.05286); full text read from the PDF). A Node repository with no hermetic build has no such guarantee. **(inference)** Jest, Vitest and a regex script are all "best-effort Bazel without the hermeticity", and the difference is exactly the set of blind spots in section 2.
 
-**Safety and precision in practice.** In the STARTS tool paper the authors report "reflection was the only cause of unsafety of SRTS when compared with Ekstazi", and that STARTS "can be unsafe when the path between tests and changed types can only be reached via reflection" ([STARTS](https://www.cs.cornell.edu/~legunsen/pubs/LegunsenETAL17STARTS.pdf); FSE 2016 study [slides](https://www.cs.cornell.edu/~legunsen/slides/FSE-2016.pdf)). On their projects it selected on average 35.2% of tests for an end-to-end runtime of 81.0% of running all tests, so selection saved test count far more than wall-clock. **(inference)** Static selection is nearly safe when linking is mostly static; the residual unsafety sits in a few dynamic constructs, which in Node are the section 2 blind spots.
+**Safety and precision in practice.** In the limitations section of the STARTS tool paper, the authors summarise their earlier study, which compared static RTS with the dynamic tool Ekstazi: "We also found that reflection was the only cause of unsafety of SRTS when compared with Ekstazi", and STARTS "can be unsafe when the path between tests and changed types can only be reached via reflection" ([STARTS §V](https://www.cs.cornell.edu/~legunsen/pubs/LegunsenETAL17STARTS.pdf); FSE 2016 study [slides](https://www.cs.cornell.edu/~legunsen/slides/FSE-2016.pdf)). That result is bounded by that comparison. The same section says "STARTS also assumes that there is no test-order dependence", and lists as open work making static RTS safer "with respect to other potential sources of unsafety (such as dependency of tests on external files or native code)". On 32 Maven projects, STARTS selected on average 35.2% of tests, for an end-to-end runtime (offline mode) of 81.0% of running all tests, so selection saved test count far more than wall-clock. **(inference)** In that evaluation the observed unsafety came from one dynamic construct. It does not show that static selection is nearly safe in general. In Node, the section 2 blind spots are the counterparts of reflection, and runtime-read files and test order matter here as well.
 
 **Cost.** Static selection is cheap but over-selects. Meta reports that selecting every test that transitively depends on a change gives "in the order of 10^4" tests per change even though most changes touch few files, and that almost 99.9% of those selected test targets pass.
 
@@ -84,7 +84,7 @@ For us this matters because the runtime loads modules by path from config. The g
 
 ### 2.2 Spawned child processes
 
-Test A requires `daemon.js`; `daemon.js` runs `spawn('node', ['worker.js'])`. The import graph from the test to `worker.js` has no edge. A coverage tool might see the child if it propagates `NODE_V8_COVERAGE`, but a static selector cannot. Our regex edge from `daemon.js` to `worker.js` fixes literal cases (verified on a fixture below). Anything computed (a path built from a config value) remains a known blind spot, and the script reports it rather than ignoring it.
+Test A requires `daemon.js`; `daemon.js` runs `spawn('node', ['worker.js'])`. The import graph from the test to `worker.js` has no edge. A coverage tool might see the child if it propagates `NODE_V8_COVERAGE`, but a static selector cannot. Our regex edge from `daemon.js` to `worker.js` fixes literal cases (verified on a fixture below). Anything computed remains a blind spot: a command, script path or args-array element that is a variable, a concatenation or a template literal (`spawn('node', [script])`, `spawn(process.execPath, ['w.js'])`, `fork('./workers/' + name)`). The script reports the calling file instead of ignoring it, and the reviewer resolves it by hand or widens. Shell strings passed to `exec`/`execSync` are not parsed at all; section 3.4 gives the follow-up.
 
 ### 2.3 Runtime-read files
 
@@ -108,7 +108,7 @@ This procedure assumes no test CI, as in our case. It is designed to be followed
 
 ### 3.1 Steps
 
-1. **List changed files.** Use the diff against the merge base; include renames, deletions and non-code files. (Deleted files matter: their former importers break.)
+1. **List changed files.** Use the diff against the merge base; include renames, deletions and non-code files (`git diff --name-status -M <base>` lists the old path of a rename). Deleted files matter: their former importers break. A deleted file, or the old path of a rename, has no node in the head checkout's graph, so its former importers can only be found on the base: check the merge base out separately (`git worktree add <dir> <base>`), run step 3 there for those old paths, and add the result to the head run's selection. The script lists such paths under `needsHumanDecision` so they cannot be dropped silently.
 2. **Classify each changed file** into one of: JS source, test, test helper or fixture, non-JS runtime data (SQL, JSON, prompts, templates), config, dependency manifest, schema or migration, runner config.
 3. **Compute reverse dependencies for JS files.** Build the reverse import map (script below), walk it transitively to fixpoint, and keep every test reached. This is the "including importers of importers" step; one level of dependents is not enough.
 4. **Add non-import edges.** Apply the checked-in mapping file: spawn targets, config-loaded modules, data-file readers, contract producers/consumers. Resolve each "blind spot" the script reports by reading the flagged lines.
@@ -139,7 +139,18 @@ The "not run, with reason" row is the most valuable one. It makes omissions an e
 
 ### 3.3 A small script sketch
 
-The script below builds a reverse import map with regular expressions, follows it transitively, adds checked-in mapping rules, and reports what it cannot see. I ran it on a toy fixture (a store module imported by a test, a daemon spawning a worker that requires the store, a `.sql` file covered by a mapping rule, and a computed `require`). It correctly selected both tests through the `spawn` edge, applied the SQL rule, flagged the non-JS file `README.md` for a human decision, and flagged the computed `require` as a blind spot. It is a sketch for a reviewer, not a tool to trust without the caveats below.
+The script below builds a reverse import map with regular expressions, follows it transitively, adds checked-in mapping rules, and reports what it cannot see. I ran it with Node 24 on a toy fixture: a store module, a test that `require`s it, a daemon that spawns a worker that requires the store, a test that only does a side-effect `import '../src/store.cjs'`, a module that runs `spawn('node', [script])` with a computed `script`, a `.sql` file covered by a mapping rule, a computed `require`, and an unrelated module with its own test. Results:
+
+| Control | Result |
+|---|---|
+| Change the store module | Selected its direct test, the side-effect-import test, and the daemon test (through the `spawn` edge) |
+| Change the `.sql` file | Selected the test named by the `db/` mapping rule |
+| Computed `spawn('node', [script])`, computed `require` | Both files listed in `graphBlindSpots`; the test behind the computed spawn is not selected, so it must be resolved by hand |
+| Change `README.md` (no rule) | Listed in `needsHumanDecision` |
+| Delete the store module, or rename it, and pass the old path | Head run: old path listed in `needsHumanDecision`, nothing selected. Same script on a base checkout (step 1): all three store tests selected |
+| Change the unrelated module | Selected only that module's test |
+
+An earlier version of this sketch dropped three of these silently: the side-effect import, the computed spawn and the deleted path. It is a sketch for a reviewer, not a tool to trust without the caveats below.
 
 ```js
 #!/usr/bin/env node
@@ -165,9 +176,9 @@ const walk = (d, out = []) => {
 // Literal specifiers only. Entries 3+ are spawn/fork edges (path relative to cwd or caller).
 const RE = [
   /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g,
-  /\bfrom\s+['"]([^'"]+)['"]/g,
+  /\b(?:from\s+|import\s*)['"]([^'"]+)['"]/g,                    // `... from './x'` and `import './x'`
   /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
-  /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*['"][^'"]*node[^'"]*['"]\s*,\s*\[\s*['"]([^'"]+)['"]/g,
+  /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*['"][^'"]*node[^'"]*['"]\s*,\s*\[\s*(?:['"]-[^'"]*['"]\s*,\s*)*['"]([^'"]+)['"]/g,
   /\bfork\(\s*['"]([^'"]+)['"]/g,
 ];
 const EXT = ['', '.js', '.mjs', '.cjs', '.json', '/index.js'];
@@ -190,7 +201,8 @@ for (const f of walk(root).filter(f => JS.includes(extname(f)))) {
   // Report what the regexes cannot follow.
   if (/\b(require|import)\(\s*(?:[^'"`\s)]|(?:'[^']*'|"[^"]*")\s*[+,]|`[^`]*\$\{)/.test(src))
     blind.push(`${f} (computed require/import)`);
-  if (/\b(spawn|fork|execFile)\w*\(\s*(?:[^'"`\s)]|`[^`]*\$\{)/.test(src))
+  // Command, script or any args-array element that is not a plain string literal.
+  if (/\b(?:spawn|fork|execFile)\w*\(\s*(?:[^'"\s)]|['"][^'"]*['"]\s*(?:\+|,\s*(?:[^\[\s]|\[(?:\s*['"][^'"]*['"]\s*,)*\s*(?:[^'"\s\]]|['"][^'"]*['"]\s*\+))))/.test(src))
     blind.push(`${f} (computed spawn/fork)`);
 }
 
@@ -211,8 +223,12 @@ for (const f of changed) for (const [prefix, tests] of Object.entries(MAP))
 
 const unknown = changed.filter(f => !JS.includes(extname(f)) &&
   !Object.keys(MAP).some(p => f.startsWith(p)));                 // non-JS with no rule: human decides
+// Deleted or renamed-away paths have no node in this checkout's graph: their importers
+// can only be found on the base checkout (see 3.1 step 1).
+const gone = changed.filter(f => !existsSync(join(root, f)))
+  .map(f => `${f} (not in this checkout: run this script on the base checkout for it)`);
 console.log(JSON.stringify({ changed, selected: [...hit].sort(), mapRules: why,
-  needsHumanDecision: unknown, graphBlindSpots: blind }, null, 2));
+  needsHumanDecision: [...unknown, ...gone], graphBlindSpots: blind }, null, 2));
 ```
 
 The mapping file is intentionally boring:
@@ -229,9 +245,11 @@ The mapping file is intentionally boring:
 
 ### 3.4 Known limits of the sketch
 
-- **Regex parsing**, not an AST. It misses `require` inside comments (false edges, harmless), template strings spanning lines, aliased `require` (`const r = require; r('./x')`), and TypeScript path aliases. A real parser (Acorn, es-module-lexer) or Jest/Vitest's own resolver (`jest --listTests --findRelatedTests`, which resolves aliases and `moduleNameMapper`) is more accurate; I would use the script as the fallback and for non-import edges, and Jest's resolver for the import edges where Jest is in use.
-- **Re-exports and barrels** are followed correctly only because any importer of the barrel is a reverse dependency; the result over-selects, never under-selects.
-- **Computed loads** are reported, not resolved; the reviewer must resolve each flagged file.
+- **Regex parsing**, not an AST. It *matches* `require`/`import` text inside comments and strings, so a commented-out import still creates an edge (over-selection, which costs time, not safety). It misses template strings spanning lines, aliased `require` (`const r = require; r('./x')`), and TypeScript path aliases. A real parser (Acorn, es-module-lexer) or Jest/Vitest's own resolver (`jest --listTests --findRelatedTests`, which resolves aliases and `moduleNameMapper`) is more accurate; I would use the script as the fallback and for non-import edges, and Jest's resolver for the import edges where Jest is in use.
+- **Re-exports and barrels** are followed when the barrel re-exports with a literal form the regexes match (`export ... from './x'`, `require('./x')`). Every importer of the barrel then becomes a reverse dependency, which over-selects. A barrel that re-exports through a computed load or an unmatched form under-selects like any other blind spot.
+- **Computed loads** are reported, not resolved; the reviewer must resolve each flagged file. A computed spawn is reported at the file that makes the call. If that file is a wrapper such as `runScript(name)`, the scripts its callers pass are not edges, so resolving the flag means listing those callers' arguments.
+- **Deleted and renamed paths** are reported, not resolved, because the head checkout has no graph node for them; run the script on the base checkout for those paths (3.1 step 1). If a base checkout is not practical, widen to the batch of every module whose files mention the old path.
+- **Forms with no edge and no report.** Shell strings (`exec('node ' + script)`, `execSync`), `worker_threads` `new Worker(...)`, and calls through an aliased `child_process` function are neither followed nor flagged. Conservative follow-up: before trusting the selection, grep the changed files and their importers for `exec`, `Worker(` and `child_process`, and widen to the module batch for any hit the script did not list.
 - **Package-level edges** (bare specifiers) are ignored by design; a dependency bump needs a separate grep.
 - **Node resolution subtleties** (conditional exports, `package.json#imports`, symlinks) are not modelled.
 - **Test identification** is path-based; a test helper named `helper.js` under `test/` is treated as a test file and would be selected for execution. For a naming convention that does not match, adjust `isTest`.
@@ -245,7 +263,7 @@ A selection policy is a prediction: "no test outside this set will fail because 
 
 ### 4.1 Periodic full runs as the backstop
 
-Every system above has one. Meta's "stabilization" stage runs all tests on main every few hours, specifically to catch breakages that "slipped through prior stages". Microsoft's TIA exposes a configurable periodicity for running all tests and calls setting it "recommended". Microsoft also suggests a calibration method: run the impacted tests (T1) and then all tests (T2) in sequence; if T1 failed, confirm T2 reports the same set of failures, and manually validate the selection with someone who knows how the system and tests are architected. For a repository with no CI, the equivalent is a scheduled job or an owner-triggered run on a cadence you can afford (nightly if cheap, otherwise per release and on a sampling of merged PRs), run against merged code with results attached to the PR that introduced the change.
+Meta and Microsoft's TIA each have one. Google's TAP, as described in its paper, relies instead on running every affected target at each milestone, with completeness coming from declared build dependencies. Meta's "stabilization" stage runs all tests on main every few hours, specifically to catch breakages that "slipped through prior stages". Microsoft's TIA exposes a configurable periodicity for running all tests and calls setting it "recommended". Microsoft also suggests a calibration method: run the impacted tests (T1) and then all tests (T2) in sequence; if T1 failed, confirm T2 reports the same set of failures, and manually validate the selection with someone who knows how the system and tests are architected. For a repository with no CI, the equivalent is a scheduled job or an owner-triggered run on a cadence you can afford (nightly if cheap, otherwise per release and on a sampling of merged PRs), run against merged code with results attached to the PR that introduced the change.
 
 ### 4.2 Recording escapes
 
@@ -274,10 +292,10 @@ This is also the cheapest way to *test the mapping rules themselves*: inject a m
 
 **Checklist for each change**
 
-- [ ] Changed files listed against the merge base, including deletions and renames, each classified.
+- [ ] Changed files listed against the merge base, including deletions and renames, each classified; deleted and old renamed paths run against a base checkout.
 - [ ] Reverse imports computed to fixpoint (importers of importers), not one level.
 - [ ] Spawn/fork targets, config-loaded modules, data-file readers and cross-process contracts added from the mapping file.
-- [ ] Every non-literal `require`/`import`/`spawn` in a changed file or its direct importers resolved by hand or widened.
+- [ ] Every non-literal `require`/`import`/`spawn` in a changed file or its direct importers resolved by hand or widened, plus any `exec`/`Worker` site the script does not report.
 - [ ] Non-JS changes (SQL, JSON, prompts, templates) have a rule; if none, widened to the owning module batch.
 - [ ] Always-run tiers applied: schema and migrations, DB-access layer, runner config or setup files, package manifest.
 - [ ] The PR's new tests and the boundary integration/e2e test included.
