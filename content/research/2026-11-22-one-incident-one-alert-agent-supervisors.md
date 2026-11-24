@@ -20,9 +20,9 @@ Each defect has a standard fix in mature alerting systems. Those systems are bui
 
 Conclusions:
 
-1. **Key the incident on the root condition of one subject, not on the detector, the time, or the process.** A good key looks like `agent-main/cannot-answer`. It has no timestamp, PID, restart counter, error string or detector name. PagerDuty and Opsgenie both state the rule: a later event with the same key joins the open alert instead of creating a new one.
-2. **Use a short lifecycle: open, optional slow reminder, resolve.** One message on open, one on resolve. Put a short delay on both transitions (a pending period in, a "keep firing" period out) so flapping does not become a message storm.
-3. **Persist a tiny incident record to disk.** In-memory dedup is lost on every supervisor restart, which is the most likely cause of a duplicate one minute later. About eight fields in a JSON file or SQLite row are enough.
+1. **Key the incident on the symptom of one subject, not on its cause, the detector, the time, or the process.** A good key looks like `agent-main/cannot-answer`. It has no timestamp, PID, restart counter, error string, detector name or cause. Causes are attributes of the incident and may change while it is open. PagerDuty and Opsgenie both state the rule: a later event with the same key joins the open alert instead of creating a new one.
+2. **Use a short lifecycle: open, optional slow reminder, resolve.** On the normal path that is one message on open and one on resolve. Put a short delay on both transitions (a pending period in, a "keep firing" period out) so flapping does not become a message storm.
+3. **Persist a tiny incident record to disk, including whether each message was delivered.** In-memory dedup is lost on every supervisor restart, a plausible cause of a duplicate one minute later. A delivery state per message (pending, unknown, sent) lets the supervisor retry what failed, skip the resolve for an alert the owner never got, and keep the duplicates from an ambiguous send small. About nine fields in a JSON file or SQLite row are enough.
 4. **Write for the owner.** Say what happened, what it affects (with a number and a clock time), whether the owner must act, and what to do. Put the machine code in a footer, never in the sentence.
 5. **Send alerts over a path that does not depend on the failing component, and keep the model out of the alert text.** A model-auth failure is the moment the model cannot write anything.
 6. **Do not build a PagerDuty.** A keyed record, a small state machine, two timers, a plain template and a direct send path are enough.
@@ -47,11 +47,11 @@ Google's SRE book gives the target: noisy alerts "should be tweaked to approach 
 
 ## 2. Choosing the incident key
 
-### 2.1 One key per root condition of one subject
+### 2.1 One key per symptom of one subject
 
 The key answers: "If I get this signal again, is it a problem the owner already knows about?"
 
-PagerDuty: the `dedup_key` "can be specified when submitting the first trigger event that creates an alert." If omitted, PagerDuty generates one, and "A trigger event sent without a `dedup_key` will always generate a new alert" because the value is a unique UUID ([PagerDuty](https://docs.pagerduty.com/developer/send-alert-event)). An unstable or missing key therefore means every detection is a new alert. That is the failure in the motivating case.
+PagerDuty: the `dedup_key` "can be specified when submitting the first trigger event that creates an alert." If omitted, PagerDuty generates one, and "A trigger event sent without a `dedup_key` will always generate a new alert" because the value is a unique UUID ([PagerDuty](https://docs.pagerduty.com/developer/send-alert-event)). An unstable or missing key therefore means every detection is a new alert. If the supervisor in the motivating case keyed its alerts that way, that alone would explain the second alert. Without logs this is one hypothesis among several (see the last section), and the design below does not depend on which one is true.
 
 Opsgenie, from the other side: when a source creates an alert while one with that alias is open, "the **Count** value of the open alert will be increased by one instead of creating another alert." Repeats go to the activity log, not to a new notification ([Opsgenie](https://support.atlassian.com/opsgenie/docs/what-is-alert-de-duplication/)).
 
@@ -60,11 +60,12 @@ Opsgenie, from the other side: when a source creates an alert while one with tha
 | In the key | Stored as attributes, not in the key |
 |---|---|
 | Subject (`agent-main`) | Timestamps, counters, attempt numbers |
-| Condition class at the level the owner cares about (`cannot-answer`, `model-auth`) | PID, session ID, restart count |
-| A provider name, only if it changes what the owner must do | Raw error text, HTTP status, stack trace |
+| Symptom class at the level the owner experiences (`cannot-answer`) | Cause code (`AUTH_REJECTED`, `PROVIDER_UNAVAILABLE`) and provider name, which can change during one incident |
+| | PID, session ID, restart count |
+| | Raw error text, HTTP status, stack trace |
 | | Which detector or check noticed it |
 
-The key must survive three events unchanged: the same detector firing again, a supervisor restart, and a different detector noticing the same root cause. A readable string is better than a hash because you can read it in logs and the state file.
+The key must survive four events unchanged: the same detector firing again, a supervisor restart, a different detector noticing the same symptom, and the cause changing while the symptom lasts. A readable string is better than a hash because you can read it in logs and the state file.
 
 ### 2.3 Symptom or cause?
 
@@ -78,7 +79,7 @@ For a supervisor:
 
 Trade-off: if the cause changes mid-incident and the owner's required action changes (auth failure becomes a rate limit), send one short "update" in the same incident. If only technical detail changes, update the record silently.
 
-Keying on cause (`agent-main/model-auth`) also works if every detector of that cause maps to it. The failure mode is two keys for one outage. Pick one level and keep it.
+This design keys on the symptom. Keying on cause (`agent-main/model-auth`) gives one key per cause, so an outage whose cause changes, or that two detectors explain differently, becomes two incidents and two alerts: the failure this article is trying to remove. Causes stay attributes of the one incident.
 
 ### 2.4 A supervisor restart is a detector, not an incident
 
@@ -98,17 +99,19 @@ systemd's `Restart=` restarts a service "when the service process exits, is kill
                        condition absent for T_clear ► RESOLVING
                                                        │
                                                        ▼
-                                                   RESOLVED  (send "resolved" once,
-                                                              replying to the open message)
+                                                   RESOLVED  (send "resolved" once, gated on
+                                                              the open's delivery: section 4.2)
 ```
 
-After RESOLVED, the same key returning within a reopen window reopens the incident with one short "back again" message. Outside the window it is a new incident. PagerDuty always starts a new one: new trigger events with a resolved key "won't re-open the incident. Instead, a new incident will be created."
+The diagram is the normal path. Section 4.2 adds what happens when a send fails or its outcome is unknown.
+
+After RESOLVED, if a resolve message went out (or may have), the same key returning within a reopen window reopens the incident with one short "back again" message. Outside the window, or after an incident that was closed without any message, it is a new incident. PagerDuty always starts a new one: new trigger events with a resolved key "won't re-open the incident. Instead, a new incident will be created."
 
 ### 3.2 Hysteresis: delay in, delay out
 
-Prometheus's `for` clause makes it "wait for a certain duration" before "counting an alert as firing"; without it, rules "become active on the first evaluation" ([alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)). Grafana's pending period is "how long the condition must be met to start firing," to "prevent unnecessary notifications caused by temporary issues."
+Prometheus's `for` clause makes it "wait for a certain duration" before "counting an alert as firing"; without it, rules "become active on the first evaluation" ([alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)). Grafana's pending period is "how long the condition must be met to start firing", and you set it "to prevent unnecessary notifications caused by temporary issues."
 
-On the way out, Prometheus's `keep_firing_for` keeps an alert firing "for the specified duration after the firing condition was last met", to "prevent situations such as flapping alerts." Grafana makes it a visible state: Recovering is "The state of a firing alert when the threshold is no longer breached, but the keep firing for period has not yet elapsed." And: "If the condition comes back first, the instance goes back to Alerting without sending new notifications" ([Grafana](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/)). That sentence is the core of flap suppression. A return inside the clear window is the same incident, with no new message.
+On the way out, Prometheus's `keep_firing_for` keeps an alert firing "for the specified duration after the firing condition was last met", to "prevent situations such as flapping alerts." Grafana makes it a visible state: Recovering is "The state of a firing alert when the threshold is no longer breached, but the keep firing for period has not yet elapsed." And, for a condition that returns while the alert is Recovering: "If the alert condition is met again, the alert transitions back to the Alerting state, and no new notifications are sent" ([Grafana](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/)). That sentence is the core of flap suppression. A return inside the clear window is the same incident, with no new message.
 
 Google's workbook names the cost of each delay. Detection time: "Long detection times can negatively impact the error budget." Reset time: "How long alerts fire after an issue is resolved. Long reset times can lead to confusion or to issues being ignored" ([Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/)).
 
@@ -118,28 +121,29 @@ For a supervisor probing every 30-60 seconds, a starting shape is: open after tw
 
 Nagios defines flapping as a state that "changes state too frequently, resulting in a storm of problem and recovery notifications." It stores "the results of the last 21 checks," computes a percent state change, and compares it with high and low thresholds. When flapping starts it will "Send a 'flapping start' notification" and "Suppress other notifications"; when it stops it sends "a 'flapping stop' notification" and lifts the block ([Nagios](https://assets.nagios.com/downloads/nagioscore/docs/nagioscore/4/en/flapping.html)).
 
-Icinga's soft/hard states are a simpler form: a problem is re-checked in a SOFT state, and only if "still non-OK after the re-checks" does it become HARD and "notifications are sent." Icinga also sends `Recovery` notifications only to "users who have been notified of a problem before" ([Icinga](https://icinga.com/docs/icinga-2/latest/doc/03-monitoring-basics/)). Copy that: never send "resolved" for something you did not announce.
+Icinga's soft/hard states are a simpler form: a problem is re-checked in a SOFT state, and only if "still non-OK after the re-checks" does it become HARD and "notifications are sent." Icinga also sends `Recovery` notifications only to "users who have been notified of a problem before" ([Icinga](https://icinga.com/docs/icinga-2/latest/doc/03-monitoring-basics/)). Copy that: never send "resolved" for something you did not announce. Section 4.2 covers the case where the supervisor does not know whether the announcement arrived.
 
 A cheap version for one owner: count reopens per key in a rolling window. Past a small count, send one "unstable" message, mute that key's open/resolve messages, and send one "stable again" message after a quiet period.
 
 ### 3.4 Reminders
 
-Alertmanager's `repeat_interval` is "How long to wait before repeating the last notification." Datadog says reminders exist "to remind your team that a problem is not solved" and to "Include only extra details" rather than repeating the original ([Datadog](https://docs.datadoghq.com/monitors/notify/)). For one owner: one reminder after about an hour, then every several hours, each carrying new facts (duration, messages now waiting). Skip it if the owner has already acted.
+Alertmanager's `repeat_interval` is "How long to wait before repeating the last notification." Datadog says reminders exist "to remind your team that a problem is not solved" and to "Include only extra details" rather than repeating the original ([Datadog](https://docs.datadoghq.com/monitors/notify/)). For one owner: one reminder after about an hour, then every several hours, each carrying new facts (duration, messages now waiting). Skip it if the owner has already acted, and send it only once the open message is recorded as delivered (section 4.2).
 
 ### 3.5 The resolve message
 
-PagerDuty: a `resolve` event with the same key puts the incident into the resolved state, and "Once an incident is resolved, it won't generate any additional notifications."
+PagerDuty: a `resolve` event with the same key puts the incident into the resolved state, and "Once an incident is resolved, it won't generate any additional notifications." A resolve with nothing open goes nowhere: "Acknowledge or resolve events without a currently open alert will not create a new one."
 
-Two points for chat:
+Three points for chat:
 
 - **Resolved messages may be off by default.** Alertmanager's `send_resolved` defaults to false for Slack, email, WeChat and Rocketchat. If a tool posts to chat for you, check it. A silent resolve was the fourth defect here.
 - **Point back to the alert.** Use the chat platform's reply-to on the stored message ID of the open alert. Without that feature, repeat the incident number and the original time.
+- **Resolve only what was announced.** A chat API has no open alert to check a resolve against and posts whatever it is given, so the supervisor has to check itself: the ordinary resolve goes out only when the open message is recorded as delivered (section 4.2).
 
 ## 4. Persisting state across supervisor restarts
 
 An in-memory "already alerted" flag fails simply. The supervisor restarts, the flag is gone, the condition is still true, and the first check looks like a new problem.
 
-Alertmanager keeps a notification log for this. Its HA documentation describes it as "Records of which notifications were sent to prevent duplicates", and states the goal of "At-least-once delivery": "Alertmanager prefers duplicate notifications over missed alerts" ([HA](https://prometheus.io/docs/alerting/latest/high_availability/), as summarized by my fetch tool). The one-owner version is a file.
+Alertmanager keeps a notification log for this. Its HA page describes it as "Records of which notifications were sent to prevent duplicates". Each instance persists it in a snapshot file (default `data/nflog`), and on restart the "Instance loads silences and notification log from disk." In its notification pipeline, "Notify & retry intermittent failures" comes before "Update notification log", so a send can happen without being recorded. The page lists "At-least-once delivery" among its design goals and, for a network partition that splits the cluster, says: "This is intentional - Alertmanager prefers duplicate notifications over missed alerts" ([HA](https://prometheus.io/docs/alerting/latest/high_availability/)). The one-owner version is a file, and section 4.2 makes the same choice on a smaller scale.
 
 ### 4.1 Minimal durable record
 
@@ -152,24 +156,51 @@ One JSON object or row per incident:
 | `opened_at` | `2026-11-22T10:02:10+08:00` | Duration and the "since" in text |
 | `last_seen_at` | `2026-11-22T10:51:40+08:00` | Clear-window timing |
 | `cause_code` | `AUTH_REJECTED` | Machine code for the footer |
-| `notified_at` | timestamp or null | Whether the open message really went out |
+| `open_send` | `{"status": "sent", "tries": 1}` | Delivery state of the open message (section 4.2) |
+| `resolve_send` | `null` until the resolve is due, then the same shape | Delivery state of the resolve message |
 | `last_reminder_at` | null | Reminder pacing |
 | `chat_msg_ref` | platform message ID | So resolve can reply to the open alert |
 
-Add a short human `incident_id` (`#14`) and an append-only history file with one line per transition. The history answers "what did I tell the owner at 10:02?".
+Add a short human `incident_id` (`#14`) and an append-only history file with one line per transition and per send attempt. The history answers "what did I tell the owner at 10:02?".
 
-### 4.2 Write order
+### 4.2 Delivery state, write order and reconciliation
 
-1. Detect. Look up the key.
-2. No open record: write `state=open, notified_at=null`, send, then set `notified_at` and `chat_msg_ref`.
-3. Open record exists: update `last_seen_at` and stay silent.
-4. On startup, for any open record with `notified_at = null`, send the open message once.
+Each owner-facing message the record tracks (the open and the resolve) has one of three delivery states:
 
-This is at-least-once delivery. A crash between write and send delays one message. A crash between send and `notified_at` causes at most one duplicate. For a single owner that beats a silent outage.
+- `pending`: not delivered, and known not to be. Resending cannot create a duplicate.
+- `unknown`: a send started and its outcome is not known (a timeout, a connection dropped after the request went out, or a crash mid-send). Resending may duplicate; not resending may lose the message.
+- `sent`: the platform accepted it. For the open message, `chat_msg_ref` is stored with it.
+
+`tries` counts the sends that may have reached the owner.
+
+Write order:
+
+1. Detect. Look up the key. An open record exists: update `last_seen_at` and stay silent.
+2. No open record: write `state=open` with `open_send` set to `pending`, `tries` 0.
+3. Before each call to the messaging API, write `unknown` and `tries + 1` to disk.
+4. After the call: on success write `sent` (and the message reference). On a refused connection or an error response, the message did not go out: write `pending` and `tries - 1`. On a timeout, leave `unknown`.
+
+A crash at any point leaves one of the three states on disk, so a restarted supervisor sees what the running one would have seen.
+
+Reconciliation runs on every engine tick while the supervisor is up, and once at startup, with the same rules:
+
+- `pending`: send again after a growing delay. There is no duplicate risk, so there is no cap.
+- `unknown`: send again, with a first line saying this may repeat an earlier alert, while `tries` is below a small cap (three is my illustration). The incident number in the footer lets the owner match the copies. At the cap, stop, write a local log line, and use the fallback channel if there is one.
+- `sent`: nothing to do.
+
+The resolve message goes through the same states and rules. What changes is the gate in front of it. When the clear window ends, resends of the open stop and the gate reads `open_send`:
+
+- `sent`: the ordinary resolve, replying to `chat_msg_ref`.
+- `pending`: the owner was never told. Send no resolve, and close the record with a history line.
+- `unknown` (including an open whose resends hit the cap): the owner may or may not have the alert. Send a standalone resolve that reads correctly either way: no reply-to, the time span stated, and the incident number (example in section 5.4).
+
+If the condition returns while the resolve is still `pending`, cancel the resolve and go back to OPEN without a message; the owner's picture (still open) is already right. If the resolve is `unknown` or `sent`, the return is a reopen (section 3.1). A reopen starts a fresh `open_send` for the "back again" message and clears `resolve_send`, so that message follows the same rules. Reminders and the cause "update" of section 2.3 refer to the open alert; send them only when `open_send` is `sent`, as single attempts outside the retry rules.
+
+The trade-off: on the normal path, with no crash and no timeout, this sends exactly one open and one resolve per incident. Only ambiguous sends break that, and the cap decides which way they fail. Each `unknown` send that did arrive adds one copy, and repeated crashes in the send window count against the same cap because `tries` is on disk. With a cap of three, one message can reach the owner up to three times. Stopping at the cap risks losing a message that never arrived. That is Alertmanager's choice of duplicates over missed alerts, on a small scale. An owner who prefers silence to repeats can set the cap to one, which never resends an `unknown` message.
 
 ### 4.3 Startup reconciliation
 
-Load the file. Announce nothing for conditions matching an open record. For open records whose condition is gone, run the clear window, then send resolve. If the file is missing or corrupt, log it loudly and send one honest message ("I restarted and lost my alert memory; a repeated alert may be a duplicate"). Keep the file on a path that survives restarts, not `/tmp`. A user-reported Alertmanager issue (secondary source, see below) describes a non-persistent data directory causing every firing alert to be re-notified after each restart.
+Load the file. Run the reconciliation rules of section 4.2 on every `pending` and `unknown` send; a restart adds no rule of its own, and because `tries` is on disk a crash loop cannot reset the cap. A condition that matches an open record creates no new incident and no new message beyond that record's own unsent ones. For open records whose condition is gone, run the clear window, then apply the resolve gate. If the file is missing or corrupt, log it loudly and send one honest message ("I restarted and lost my alert memory; a repeated alert may be a duplicate"). Keep the file on a path that survives restarts, not `/tmp`. A user-reported Alertmanager issue (secondary source, see below) describes a non-persistent data directory causing every firing alert to be re-notified after each restart.
 
 ## 5. Wording for a non-engineer owner
 
@@ -197,7 +228,7 @@ Turn that into five slots, in this order:
 
 ### 5.3 Human text plus machine code
 
-PagerDuty shows the shape: `payload.summary` is "A brief text summary of the event" (max 1024 characters), `custom_details` holds "Additional details about the event and affected system," and `links` carries links with text. Do the same locally: the record holds `cause_code`, and a lookup table in code maps each code to an owner sentence and an action line. An unmapped code falls back to a generic sentence ("Something is wrong with the assistant; details attached") and logs an error so a developer adds the mapping. The raw state name never reaches the owner, even on the fallback path.
+PagerDuty shows the shape: `payload.summary` is "A brief text summary of the event" (max 1024 characters), `custom_details` holds "Additional details about the event and affected system", and `links` is a "List of links to include." Do the same locally: the record holds `cause_code`, and a lookup table in code maps each code to an owner sentence and an action line. An unmapped code falls back to a generic sentence ("Something is wrong with the assistant; details attached") and logs an error so a developer adds the mapping. The raw state name never reaches the owner, even on the fallback path.
 
 ### 5.4 Good and bad
 
@@ -230,6 +261,15 @@ Ref #14 - code: AUTH_REJECTED (resolved)
 
 The resolve text may claim only what the supervisor verified. If it cannot see the queue drain, say less.
 
+**Good, standalone resolve (the open alert's delivery is unknown, section 4.2; sent without reply-to):**
+
+```
+Between 10:02 and 10:53 your assistant could not answer because it
+could not sign in to its AI provider. It is working again.
+If you got an alert about this, it is over.
+Ref #14 - code: AUTH_REJECTED (resolved)
+```
+
 **Good, transient failure (no action needed):**
 
 ```
@@ -244,7 +284,7 @@ An alert must not travel through the thing that failed. If the owner-facing chat
 
 1. **Send directly from the supervisor.** One plain HTTP call to the messaging API (or SMTP, or a push service), with a credential the supervisor holds. Not through the agent, its terminal, its tools or its model.
 2. **No LLM in the alert path.** Templates only.
-3. **Make the send resilient.** Retry with a delay. If it still fails, leave `notified_at` null so the startup rule retries, and write a local log line. A second channel for first-channel failure is a cheap extra.
+3. **Make the send resilient.** Record the delivery state of every send (section 4.2). A definite failure stays `pending` and is retried with a growing delay, while the supervisor runs and after a restart. A timeout is `unknown` and follows the capped resend rule. Write a local log line for each failure. A second channel for first-channel failure is a cheap extra.
 4. **Watch the watcher (optional).** The usual answer is a dead man's switch: the supervisor pings an outside service on a schedule, and the service alerts when pings stop. Healthchecks.io: "When Healthchecks.io does not receive the HTTP request at the expected time, it notifies you," and grace time is "the amount of extra time to wait when a cron job is running late before declaring it as down" ([docs](https://healthchecks.io/docs/monitoring_cron_jobs/)). Keep the checker off the supervisor's machine.
 
 ## 7. What not to build
@@ -260,42 +300,43 @@ The same restraint applies to detectors. Google's workbook gives a low-precision
 Parts:
 
 1. **Detectors** (any number). Each calls `report(subject, cause_code, details)`. They never send messages and never know about chat.
-2. **Incident engine**. Owns the incident file, the state machine, and the pending, clear and reminder timers.
-3. **Notifier**. Renders a template for (transition, cause code), sends over the independent channel, returns a message reference.
+2. **Incident engine**. Owns the incident file, the state machine, the pending, clear and reminder timers, and the delivery reconciliation of section 4.2 on every tick.
+3. **Notifier**. Renders a template for (transition, cause code), sends over the independent channel, and returns one of three outcomes: sent (with a message reference), failed, or unknown.
 4. **Heartbeat** (optional). Pings an external service while the supervisor loop runs.
 
-The pending counter can live in memory. Losing it on restart delays an alert by a few probes and never creates a duplicate.
+The pending-period counter can live in memory. Losing it on restart delays an alert by a few probes and never creates a duplicate. Delivery state cannot: it must be on disk.
 
 How it prevents the original defects:
 
 | Defect | Mechanism |
 |---|---|
-| Duplicate alert a minute later | Stable key; open record means silence; record survives restart |
-| Two detectors for one root cause | Both attach to the same key; extra cause goes in "also seen" |
+| Duplicate alert a minute later | Stable key; open record means silence; record and delivery state survive restart; ambiguous resends are capped |
+| Two detectors or two causes for one outage | Both attach to the same symptom key; extra cause goes in "also seen" |
 | Raw state name in text | Code-to-sentence table; code only in the footer |
 | Owner had to ask what it meant | Five-slot template with explicit "action needed" |
-| No resolve message | Resolve transition sends one message replying to the stored message ref |
+| No resolve message | Resolve transition sends one message replying to the stored message ref, gated on the open's delivery state |
 | Alert unreliable during a model outage | Direct send path; no model in the loop |
 
 ## 9. Checklist
 
-- Key is `subject/condition`, with no timestamps, PIDs, counters, error text or detector names.
-- All detectors of one root cause map to one key; a restart never creates an incident.
+- Key is `subject/symptom`, with no timestamps, PIDs, counters, error text, detector names or cause codes.
+- All detectors of one symptom map to one key, whatever cause they see; causes are attributes; a restart never creates an incident.
 - Pending period before open; clear period before resolve; a return inside the clear window is silent.
-- Exactly one open message and one resolve message per incident; no resolve for an unannounced incident.
-- Reminders are slow, add new facts, and stop once the owner acts.
+- On the normal path, one open message and one resolve message per incident. No resolve when the open is known undelivered; a standalone resolve when its delivery is unknown.
+- Reminders are slow, add new facts, go out only after a delivered open, and stop once the owner acts.
 - Reopen counter with a single "unstable" message.
-- Incident record on durable disk; write before send, `notified_at` after; startup retries unsent messages and reconciles open incidents.
+- Incident record on durable disk, with a delivery state (`pending`, `unknown`, `sent`) for the open and the resolve; write `unknown` before each send and the outcome after.
+- Reconcile on every tick and at startup: `pending` retries with backoff; `unknown` resends as a possible repeat up to a small cap kept on disk. Choose the cap knowingly: higher risks duplicates, lower risks a lost message.
 - Text has: what happened, impact with number and clock time, action needed or not, one concrete step, footer with incident number and code.
 - No internal enum, state name, path or stack trace in sentences; unmapped codes get a generic fallback.
-- Resolve replies to the original and claims only verified facts.
-- Alert is sent directly by the supervisor, from templates, with retry and a persistent unsent marker.
+- The ordinary resolve replies to the original; every resolve claims only verified facts.
+- Alert is sent directly by the supervisor, from templates, with retry and persisted delivery state.
 
 ## What I could not confirm
 
-- **Why the duplicate fired in the motivating case.** I have no logs. Restart with in-memory state, or two detectors, are likely explanations, not facts.
-- **Good numbers.** Nagios's 21 checks is documented, but I found no source recommending thresholds for a one-owner agent supervisor. The numbers in sections 3.2 to 3.4 are my illustrations.
-- **Alertmanager's on-disk notification log.** That it persists the notification log and silences under `--storage.path` and reloads them on restart, and that a non-persistent directory causes re-notification, came from search-result summaries and user GitHub issues, not a primary page I could open. The HA page quotes come from my fetch tool's summary of the page. The Alertmanager overview has no deduplication section; it names deduplication only in its intro.
+- **Why the duplicate fired in the motivating case.** I have no logs. Restart with in-memory state, two detectors, or an unstable key (section 2.1) are plausible explanations, not facts.
+- **Good numbers.** Nagios's 21 checks is documented, but I found no source recommending thresholds for a one-owner agent supervisor. The numbers in sections 3.2 to 3.4 and the resend cap in section 4.2 are my illustrations.
+- **Alertmanager's on-disk notification log.** The HA page states that each instance stores silences and the notification log in snapshot files (defaults `data/silences` and `data/nflog`) and loads them from disk on restart. That the directory is set by `--storage.path`, and that a non-persistent directory causes re-notification, came from search-result summaries and user GitHub issues, not a primary page. The HA page describes a cluster; applying its duplicates-over-misses choice to one process is my analogy. The Alertmanager overview has no deduplication section; it names deduplication only in its intro.
 - **`group_wait` detail.** That an alert resolving before `group_wait` ends produces no notification comes from the fetch tool's summary of the configuration page.
 - **The Prometheus Watchdog pattern.** An always-firing alert routed to an external heartbeat service appears only in community guides. I did not verify it against Prometheus or kube-prometheus docs. Healthchecks.io's docs support the generic heartbeat idea.
 - **Opsgenie's status.** Search results say Atlassian is winding Opsgenie down, with end of support in 2027. I could not open the primary page to confirm dates. Its alias semantics are still a useful reference. The Opsgenie page does not say what happens when an alias arrives after the alert is closed. A new alert is likely, but that is an inference.
