@@ -99,7 +99,7 @@ One subtlety: "If there are no new updates for at least a week, then identifier 
 - Store the time of the last received update alongside the offset.
 - While that is less than a week ago, poll with the stored offset.
 - Once it nears a week (I would use six days), or when you cannot tell (cursor restored from a backup, timestamp missing), poll without an offset. The default returns the earliest unconfirmed update, and everything older was already confirmed by your earlier calls. Resume offset-based polling from the first batch that comes back.
-- Dedupe against a set of recent ids, not a high-water mark that ignores anything not above the highest id seen. Keep the set's horizon longer than the 24-hour retention and shorter than a week, so a random new id neither gets skipped nor collides with an old one.
+- Dedupe against a set of recent ids, not a high-water mark that ignores anything not above the highest id seen. Keep the set's horizon longer than the 24-hour retention and shorter than a week, so a random new id neither gets skipped nor collides with an old one. That set has to be the uniqueness check itself. If handled inbox rows are kept under a unique `update_id`, a reused id is still dropped as a duplicate long after the recent-id set would have forgotten it, and the same transaction then moves the cursor past it (section 3.2).
 
 ### 2.2 Telegram webhooks
 
@@ -139,14 +139,14 @@ My inference for the motivating incident:
 
 Telegram gives `update_id`, handy "to ignore repeated updates." Slack gives `event_id`, "globally unique across all workspaces." Lark gives `event_id` (v2.0) or `uuid` (v1.0) and recommends "idempotency logic for all messages," since duplicates can arrive "even when the event is successfully received." Event dedupe is not message dedupe, though: for received chat messages Feishu's `im.message.receive_v1` guide says to use `message_id` and "do not rely on event_id." WhatsApp warns of duplicates but names no dedupe field; its payload `id` (a `wamid.` value) is a natural key by my inference, as are Discord message ids.
 
-Write the id to durable storage in the same transaction as the intake record, under a uniqueness constraint, and treat a conflict as "duplicate, skip." Keep dedupe state in the store, not in memory, as the Feishu issue shows: it used the right key, `message_id`, but restarts wiped the in-memory table.
+Write the id to durable storage in the same transaction as the intake record, under a uniqueness constraint, and treat a conflict as "duplicate, skip." Keep dedupe state in the store, not in memory, as the Feishu issue shows: it used the right key, `message_id`, but restarts wiped the in-memory table. Telegram's `update_id` needs one more property: since an id can come back after an idle week, its uniqueness has to expire. Keep it in a small table of recent ids that is purged by age, and give inbox rows their own key, so retained inbox history never decides what counts as a duplicate.
 
 ### 3.2 Persist the offset only after durable intake
 
 For Telegram long polling:
 
 1. Call `getUpdates(offset=N)`.
-2. In one transaction, insert every update into the inbox by `update_id` (ignore conflicts) and store `N' = max(update_id) + 1` with the time of the last received update.
+2. In one transaction: delete recent-id rows older than the horizon (section 2.1), insert each `update_id` into the recent-id table (a conflict means a redelivery: skip that update), insert the rest into the inbox under the inbox's own row key, and store `N' = max(update_id) + 1` with the time of the last received update.
 3. Commit, then start handling, and use `N'` on the next call, or no offset once the idle rule in section 2.1 applies.
 
 A crash before step 3 yields redelivery, which the unique key absorbs. A crash after it loses nothing, because unprocessed inbox rows are picked up on start. Picking a row up again re-runs its handling, though. If the process died after a tool call with side effects and before marking the row handled, the inbox key does not stop that action from running twice. Record such actions the way the outbox records sends (section 4.3 and the checklist in section 7): commit an attempt row before the call, and treat one found unfinished after a restart as `unknown`, not as work to redo. For webhooks: write to the inbox, then return 200. Slack states the principle: "Implement a queue to handle inbound events after they are received." A slow model call in the handler makes Slack retry, which creates duplicates.
@@ -247,7 +247,7 @@ The setting: one process per channel, one SQLite file, one owner or a few users.
 
 - [ ] Inbox table keyed by the platform's message or event id (Feishu messages: `message_id`, not `event_id`), with the message's own timestamp (Slack inner `ts`, Feishu `event.message.create_time`), raw payload, received time and status (`new`, `handled`, `skipped_stale`).
 - [ ] Insert inbox rows and advance the stored cursor (Telegram offset, plus the time of the last received update) in one transaction, then poll with the new offset. After about six days without updates, or when that time is unknown, poll without an offset (section 2.1). Webhooks: write, then return 200.
-- [ ] Never use a negative offset or `drop_pending_updates` at startup. Dedupe with a recent-id set (horizon over 24 hours, under a week), not a pure high-water mark, so a lower, random `update_id` after an idle week is neither skipped nor confirmed unseen.
+- [ ] Never use a negative offset or `drop_pending_updates` at startup. Dedupe with a recent-id set (horizon over 24 hours, under a week), not a pure high-water mark, so a lower, random `update_id` after an idle week is neither skipped nor confirmed unseen. The unique constraint lives on that purged set, not on retained inbox rows. Test both cases: a redelivered update within the horizon is skipped, and a fresh update reusing the id of a row handled more than a week ago is stored.
 - [ ] Acknowledge fast and process from a queue. Slack: decide on Delayed Events deliberately. Discord: store `session_id`, `resume_gateway_url` and last `s`.
 
 **Outbox**
