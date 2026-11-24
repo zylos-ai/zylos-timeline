@@ -16,8 +16,8 @@ Main findings:
 - **Proxy-client "fallback" groups are preemptive and nearly stateless.** In mihomo, a `fallback` group walks its `proxies` list in order and uses the first node whose most recent probe succeeded. In the source we read, a node's alive flag is overwritten by every probe, with no consecutive-failure or consecutive-success counter. One failed probe moves traffic away from the preferred exit, and one good probe moves it back. Flap control is therefore mostly your job.
 - **Load balancers have the missing pieces.** HAProxy has `rise`/`fall` counters, separate check intervals while a server is in transition, and an explicit `backup` role. VRRP and keepalived have a preempt switch and a preempt delay. Envoy has ejection times that grow with repeated failures. These are good vocabulary for designing a flap-resistant egress policy even when your client lacks the knobs.
 - **A passing health check proves little.** A probe URL reachable through a node proves the node forwards traffic to that one URL at that moment. It does not prove your real destinations accept that exit IP, nor that long streaming connections survive.
-- **Fail-closed has to be designed in, not assumed.** The mihomo group code falls back to the first listed node when none is alive (a failed connection, not a leak), but an empty group defaults to a direct-type `COMPATIBLE` outbound. The leak paths are in what you did not think of: empty or filtered-down groups, a DIRECT rule, DNS, and applications that ignore proxy settings.
-- **One controller per decision.** If a client group and an external watchdog both try to choose the active node, they will fight. Give each its own domain, and verify the actual exit IP independently of both.
+- **Fail-closed has to be designed in, not assumed.** When no member of a mihomo `fallback` group passes its probe, the group still dials the first listed member, and that dial can succeed: the result is "try the preferred exit anyway", not "reject". An empty group defaults to a direct-type `COMPATIBLE` outbound, and in rule mode a UDP flow skips a group whose selected member lacks UDP and, with no later rule, goes DIRECT. The leak paths are in what you did not think of: empty or filtered-down groups, UDP through a TCP-only member, a DIRECT rule, DNS, and applications that ignore proxy settings.
+- **One controller per decision.** If a client group and an external watchdog both try to choose the active node, they will fight. Give each its own domain, and verify the actual exit IP independently of both. Verification detects mismatches; only firewall rules on both the agent and the proxy daemon enforce the allowlist.
 
 ## The Shape of the Problem
 
@@ -35,7 +35,7 @@ The failure modes are asymmetric. The preferred exit is more likely to have a to
 
 The mihomo wiki lists the group types Select, Url-Test, Fallback, Load-Balance and Relay. The common health-check fields on the proxy-groups page are:
 
-- `url`: the health-check address (the examples use a `generate_204` URL). The docs note it checks only the group's own `proxies` field, not proxies pulled in through `use` providers.
+- `url`: the health-check address (the examples use a `generate_204` URL). The docs note it "will only check the proxies field of the proxy group, and will not check the proxies of the proxy providers introduced through use". The source we read is more nuanced (see below).
 - `interval`: if not 0, periodic testing is on, in seconds.
 - `timeout`: health-check timeout in milliseconds.
 - `lazy`: defaults to `true`; if the group is not currently selected, no testing is performed.
@@ -48,13 +48,19 @@ The three automatic types differ in how they choose:
 - **`url-test`**: picks by measured latency. `tolerance` is documented as the switch tolerance in milliseconds. The wiki page is thin on the rule, but the source (see below) shows it is a hysteresis band.
 - **`load-balance`**: spreads connections; strategies are `round-robin`, `consistent-hashing` (same target address to the same node) and `sticky-sessions` (same source and target to the same node, cached for 10 minutes per the docs). Wrong shape for "preferred exit", and it deliberately mixes your egress IPs.
 
-Reading the Go source of the `Meta` branch (behaviour may change between versions, so treat this as an observation, not a contract):
+Reading the Go source of the `Meta` branch at commit `0455d0d` (behaviour may change between versions, so treat this as an observation, not a contract):
 
-- `Fallback.findAliveProxy` iterates the members in order and returns the first for which `AliveForTestUrl` is true. If none is alive it returns `proxies[0]`, the first member. It re-evaluates on each use, so the moment the preferred node's last probe is good again, new connections go back to it. That is preemptive failback with no hold-down.
+- `Fallback.findAliveProxy` iterates the members in order and returns the first for which `AliveForTestUrl` is true. If none is alive it returns `proxies[0]`, the first member, and the group dials through it as usual. A failed probe does not block that dial, so the connection can still succeed (the probe host may be unreachable while the real destination is fine). The group re-evaluates on each use, so the moment the preferred node's last probe is good again, new connections go back to it. That is preemptive failback with no hold-down.
 - A node's alive flag is set in `URLTest` from the outcome of that single probe. There is a history queue of ten records, but the alive decision is the latest result only.
 - The `url-test` selection keeps the current node unless it is dead, or another node's last delay is lower by more than `tolerance`. That is real hysteresis, but on latency, not on failures.
 - Dial failures feed `max-failed-times`: repeated dial failures within the test timeout trigger an immediate extra health check, and a "connection refused" triggers one at once. This accelerates detection of a dead node but does not add smoothing.
-- `empty-fallback` (default `COMPATIBLE`) is the outbound used when a group ends up with no members. In the source `COMPATIBLE` is constructed as a Direct adapter. A group whose `filter` matches nothing, for example after a provider update drops the approved nodes, can therefore quietly become a direct connection unless you override `empty-fallback`. The wiki says the field accepts a proxy name, not a group. Pointing it at the built-in `REJECT` should fail closed, but verify that on your build.
+- `empty-fallback` (default `COMPATIBLE`) is the outbound used when a group ends up with no members. In the source `COMPATIBLE` is constructed as a Direct adapter. A group whose `filter` matches nothing, for example after a provider update drops the approved nodes, can therefore quietly become a direct connection unless you override `empty-fallback`. The wiki says the field accepts a proxy name, not a group, and the parser rejects a group there. The built-in `REJECT` is a plain adapter, so it is accepted. It only covers the empty-group case.
+
+Probes come from three different places, and they do not mean the same thing:
+
+- **Leaf probes in a group's own `proxies`.** The parser builds an internal provider for the listed members with the group's `url`, `interval`, `timeout` and `expected-status`. Here the group settings are what count.
+- **Leaf probes of `use` providers.** Despite the doc note above, when a group sets `url` explicitly the parser registers that URL as an extra check on each `use` provider, with the group's `expected-status` and `filter`. The provider ignores the registration when the URL equals its own `health-check.url`, and then only the provider's settings apply, including its own `expected-status` (unset means any status). If you give the provider the same probe URL as the group, set `health-check.expected-status` on the provider too, or the group's `expected-status: 204` is not applied to those nodes.
+- **A group nested inside another group.** The outer group probes the inner group like any member: the probe dials through the inner group, which forwards it to whatever node the inner group has selected at that moment. The outer verdict on the inner group is therefore one sample through one node. It can lag behind, or disagree with, the status of the individual provider nodes.
 
 ### sing-box
 
@@ -63,7 +69,7 @@ sing-box has two relevant outbound types:
 - **`urltest`** with `outbounds`, `url` (default `https://www.gstatic.com/generate_204`), `interval` (default `3m`), `tolerance` (default `50` ms), `idle_timeout` (default `30m`) and `interrupt_exist_connections`.
 - **`selector`** with `outbounds`, `default` (the first outbound if empty) and `interrupt_exist_connections`. The docs say it "can only be controlled through the Clash API currently".
 
-`interrupt_exist_connections` is documented as "Interrupt existing connections when the selected outbound has changed", applying to inbound connections only; internal connections are always interrupted. The example sets it to `false`. The docs we read describe no ordered-priority `fallback` type. To get "preferred first" in sing-box you would use a selector driven by an external controller, or a `urltest` whose tolerance is wide enough that the preferred node usually wins. Check the version you run.
+`interrupt_exist_connections` is documented as "Interrupt existing connections when the selected outbound has changed", applying to inbound connections only; internal connections are always interrupted. The example sets it to `false`. The docs we read describe no ordered-priority `fallback` type, and `tolerance` does not provide one. In the v1.14.4 source, `urltest` keeps the currently selected outbound and replaces it only with one whose last delay is lower by more than `tolerance`; list order matters mainly when there is no current selection with a recorded delay (for example after the selected outbound failed its test). That is latency hysteresis. Once traffic has moved to a backup, a wide tolerance makes the group less likely to move back when the preferred outbound returns, not more. For deterministic "preferred first" in sing-box, use a `selector` driven by an external controller. Check the version you run.
 
 ### Envoy
 
@@ -107,7 +113,7 @@ It does **not** tell you:
 Practical consequences:
 
 1. **Probe through the exit, not at the exit host.** A TCP ping or ICMP to the exit's address proves the box is up. It says nothing about whether it forwards. mihomo and sing-box probes already go through the node; in a custom watchdog, send the probe through the local proxy port while that node is selected.
-2. **Tighten `expected-status`.** mihomo's default `*` accepts any status, so an interception page returning 200 or 302 counts as alive. For a 204 endpoint, set it to `204`. For an authenticated API, an unauthenticated request returning a known status such as 401 is a useful, free, "real destination" probe; choose `expected-status` accordingly (illustrative; check what your provider returns).
+2. **Tighten `expected-status`.** mihomo's default `*` accepts any status, so an interception page returning 200 or 302 counts as alive. For a 204 endpoint, set it to `204`, on the group for its own `proxies` and on the provider's `health-check` for provider nodes (see the probe notes above). For an authenticated API, an unauthenticated request returning a known status such as 401 is a useful, free, "real destination" probe; choose `expected-status` accordingly (illustrative; check what your provider returns).
 3. **Use a destination-representative probe, plus a generic one.** One check against a neutral endpoint answers "is the node alive"; one against a real dependency answers "can I still do my job from this exit". Do not let the second drive failover alone, since the dependency can be down for reasons unrelated to the exit.
 4. **Prefer HTTPS probes** so an in-path device cannot answer for the destination.
 5. **Keep intervals proportionate.** Short intervals make the failure signal faster but noisier, and on a commercial pool they generate probe traffic for every node. Envoy's docs even recommend a long active interval when passive detection is in use.
@@ -146,16 +152,19 @@ The most important property is the one a naive failover system does not have: **
 - **Fallback only inside an approved set.** Build the fallback group from nodes filtered to the allowed region. mihomo provides `filter` and `exclude-filter` (regular expressions on node names) for provider-sourced and `include-all-proxies` nodes. Because the filter is a name match, a provider renaming nodes can silently change membership. Monitor group membership, not just the active node.
 - **No DIRECT in the proxy path.** Do not list DIRECT in any group the agent traffic uses. Keep a separate, explicit rule for local-network destinations, and reviewed as a security decision.
 - **Choose what an empty group does.** In mihomo override `empty-fallback`. The default is a direct-type adapter.
-- **Choose what "all down" does.** mihomo's `fallback` returns the first member when none is alive: connections fail through the preferred exit rather than leak. Envoy's panic mode is the opposite: by default it ignores health and uses all hosts; set it to 0% for fail-closed. HAProxy returns a 503 when no server is available.
-- **Do not trust "the proxy is configured" at the application layer.** Environment-variable proxy settings are honoured only by programs that read them. If the property matters, add a host firewall rule that drops outbound traffic from the agent's user except to the local proxy port (and any intentionally allowed LAN ranges), so a direct connection cannot succeed even by mistake. That is a design suggestion, not something the proxy docs provide.
+- **Make the rule path end in a reject.** Set `mode: rule` explicitly, since `global` and `direct` modes bypass the rules (and the mode can also be changed at runtime through the controller API). In rule mode, the pinned mihomo matcher skips a matched target for a UDP flow when that target reports no UDP support, keeps looking, and returns DIRECT when no later rule matches. A `fallback` group reports the UDP support of the member it would currently pick. If the preferred exit is TCP-only (an `http` proxy, or a `socks5` or Shadowsocks node without `udp: true`), then `MATCH,egress` is skipped for UDP and the flow goes DIRECT, even though the group is not empty. `empty-fallback: REJECT` does not help here. Add `MATCH,REJECT` after the egress rule: `REJECT` reports UDP support, so it catches what the egress rule let through.
+- **Choose what "all down" does.** mihomo's `fallback` returns the first member when none is alive and dials through it. That stays inside the approved set, but it is not strict rejection: the probe can fail while the real dial succeeds, so traffic keeps flowing through an exit no probe has passed. If your policy is "reject every dial when no member passes health", the group code we read has no setting for it; an external controller has to enforce it, for example a watchdog that makes the rule target a `select` group with members `egress` and `REJECT` and selects `REJECT` while no member passes its checks (see the watchdog section). Envoy's panic mode is the opposite: by default it ignores health and uses all hosts; set it to 0% for fail-closed. HAProxy returns a 503 when no server is available.
+- **Do not trust "the proxy is configured" at the application layer.** Environment-variable proxy settings are honoured only by programs that read them. If the property matters, add a host firewall rule that drops outbound traffic from the agent's user except to the local proxy port (and any intentionally allowed LAN ranges), so a direct connection cannot succeed even by mistake. That rule does not cover the proxy daemon, which runs as its own user and can still dial DIRECT through any of the paths above. Give the daemon's user its own outbound allowlist too: the preferred exit's address and port, the pool nodes' server addresses, and whatever it needs for DNS and for fetching the provider list. Pool server addresses change with the provider list, so that allowlist has to be regenerated and validated after each refresh. These are design suggestions, not something the proxy docs provide.
 - **Mind DNS.** Resolving names outside the proxy path can reveal destinations to the local network and can return region-specific answers. How DNS is handled depends on your client's mode; check it explicitly rather than assuming.
 
 ### Verify the actual exit continuously
 
-Configuration says what should happen; only a live check says what did.
+Configuration says what should happen; only a live check says what did. Keep detection and enforcement apart: checks detect some mismatches after the fact, while only the firewall rules above, on the agent's user and on the proxy daemon's user, stop traffic from reaching an unapproved exit.
 
-- On a schedule, and after every switch, send a request through the same local proxy port the agents use to an endpoint that echoes the caller's IP or country, and compare to the approved set. For the preferred exit you know the IP. For a commercial pool, node IPs change, so compare country or network (ASN), not just the address, and remember that geolocation databases disagree at the edges.
-- Alert on mismatch, and take the stricter action: stop the agent's outbound traffic (or reject at the group) until corrected. An alert alone leaves the leak open.
+- **Detection.** On a schedule, and after every switch, send a request through the same local proxy port the agents use to an endpoint that echoes the caller's IP or country, and compare to the approved set. For the preferred exit you know the IP. For a commercial pool, node IPs change, so compare country or network (ASN), not just the address, and remember that geolocation databases disagree at the edges.
+- **Limits of sampling.** Each check is one TCP request, to one host, through whatever path that request took at that moment. It says nothing about traffic between checks, about UDP flows (which can take a different path, as above), about destinations that match other rules, or about connections still open on an earlier outbound. Name-based `filter` admission has the same character: a node whose name matches is admitted whatever its real exit. Neither can guarantee that application traffic never reaches an unapproved exit.
+- **Enforcement.** If "never" is a requirement, it lives in two places: the agent user's firewall (only the local proxy port) and the daemon user's firewall (only approved exit servers). The daemon allowlist bounds which servers it can reach, not where a pool node's traffic finally leaves; that part still rests on the provider and on the detection check.
+- **Response.** Alert on mismatch, and take the stricter action: stop the agent's outbound traffic (or reject at the group) until corrected. An alert alone leaves the leak open.
 - Test the checker itself. Periodically feed it a known-bad answer and confirm it raises the alarm.
 
 ## In-Flight Connections at Switch Time
@@ -203,7 +212,7 @@ Many deployments add a small script or systemd timer beside the proxy client tha
 Principles:
 
 1. **One writer per decision.** Either the client group decides and the watchdog only reads and alerts, or the group is a plain `select` and the watchdog is the sole decision-maker. A hybrid is fine if the domains are disjoint: for example, a `fallback` group chooses between "preferred exit" and "pool", while the watchdog only chooses which allowed node the pool selector points to.
-2. **The watchdog enforces invariants, not preferences.** Its first duty is "the active exit is inside the allowlist and passes the egress check". If it cannot find a legal node, it does nothing except alert, or blocks traffic. It never picks something illegal to restore connectivity.
+2. **The watchdog enforces invariants, not preferences.** Its first duty is "the active exit is inside the allowlist and passes the egress check". If it cannot find a legal node, it does nothing except alert, or blocks traffic (on mihomo, for example, by selecting `REJECT` in a `select` group that the rules point to in front of the egress group). It never picks something illegal to restore connectivity.
 3. **Give the watchdog hysteresis too.** Keep counters on disk: consecutive failures before switching, a minimum dwell time after any switch, a limit on switches per hour. Without them it reimplements the flapping problem.
 4. **Make runs non-overlapping and observable.** With a systemd timer, `OnBootSec=` plus `OnUnitActiveSec=` gives a recurring interval. Remember `AccuracySec` defaults to one minute, so set it lower if timing matters, and take a lock inside the service so a slow run cannot overlap the next one. Write every decision to the journal.
 5. **Mind what the API write means.** On mihomo, selecting a node on a `select` group is a durable choice; on a `fallback` or `url-test` group, we saw in the source that a selection is a "fixed" override that auto-clears under some conditions (and the group-delay endpoint is documented to clear a fixed selection on automatic groups). Know which kind you are writing to.
@@ -211,63 +220,86 @@ Principles:
 
 ## Illustrative Configuration
 
-The sketch below uses only keys documented on the mihomo wiki pages cited above. It is **illustrative**: node names, the region filter and numbers are placeholders, `REJECT` as an `empty-fallback` target should be verified on your build, and nested-group liveness (how a group listed inside a `fallback` group is probed) is something we did not verify, so test it.
+The sketch below uses only keys documented on the mihomo wiki pages cited below, and field names checked against the group, provider and rule parsers at the commit we read. It is **illustrative**: node names, the provider URL, the region filter and numbers are placeholders, and `preferred-exit` is assumed to be defined under `proxies:` (not shown).
 
 ```yaml
+mode: rule                            # rules apply only in rule mode; global/direct bypass them
+
+proxy-providers:
+  commercial-provider:
+    type: http
+    url: "https://<provider-subscription-url>"
+    interval: 3600
+    health-check:                     # leaf probes for the provider's nodes
+      enable: true
+      url: "https://<neutral-probe-host>/generate_204"
+      interval: 120
+      timeout: 5000
+      expected-status: 204            # required here: the provider ignores a group's
+                                      # registration of this same URL, so the group's
+                                      # expected-status is not applied to these nodes
+
 proxy-groups:
   - name: pool-approved-region        # approved-region commercial nodes only
     type: url-test
-    use: [commercial-provider]        # provider defined elsewhere; per the docs this group's url
-                                      # checks only its own `proxies`, so give the provider its own
-                                      # health-check settings too
+    use: [commercial-provider]
     filter: "(?i)<approved-region-pattern>"
-    url: "https://<neutral-probe-host>/generate_204"
-    expected-status: 204              # do not accept portal/intercept pages
+    url: "https://<neutral-probe-host>/generate_204"   # same URL as the provider probe
+    expected-status: 204              # documents intent; the provider setting above is what applies
     interval: 120
     timeout: 5000
     tolerance: 100
-    empty-fallback: REJECT            # never fall through to a direct-type outbound
+    empty-fallback: REJECT            # empty group: reject instead of a direct-type outbound
 
   - name: egress
     type: fallback                    # order is priority: preferred first
     proxies: [preferred-exit, pool-approved-region]
     url: "https://<neutral-probe-host>/generate_204"
-    expected-status: 204
+    expected-status: 204              # applies to the two members listed here
     interval: 60
     timeout: 5000
     empty-fallback: REJECT
 
 rules:
   - MATCH,egress                      # no DIRECT in the agent path
+  - MATCH,REJECT                      # UDP skips egress when the selected member has no UDP;
+                                      # without this line it would fall through to DIRECT
 ```
 
-Remember this gives preemptive failback with no counters; hold-down and the egress-IP check belong in the watchdog described above.
+What this does and does not give you:
+
+- **Probes.** `preferred-exit` is probed by `egress` with that group's `url` and `expected-status`. The provider nodes are probed by the provider's `health-check`. `pool-approved-region` is probed by `egress` as a single member, through whichever provider node it has selected at that moment, so its status in `egress` is one sample and can lag the per-node results.
+- **All down.** If neither member passes, `egress` still dials `preferred-exit`, and the dial can succeed. That is not strict rejection; if you need it, add the watchdog-controlled `select` described under "Fail-Closed Versus Fail-Open".
+- **Failback.** Preemptive, with no counters; hold-down and the egress-IP check belong in the watchdog described above.
+- **Fail-closed check.** Test more than "stop everything". Include at least: the pool filter matching nothing (expect the pool group's `now` in the controller API to be `REJECT`, never a direct-type outbound), every member failing its probe (expect dials through `preferred-exit`, or rejection if you added the watchdog), and a TCP-only `preferred-exit` selected while a client sends UDP (expect the flow to hit `MATCH,REJECT`; mihomo's connection log shows which rule and chain a flow used). Remove the last rule in a test copy once to confirm the same UDP flow would otherwise go DIRECT.
 
 ## Practical Checklist for Agent Hosts
 
 1. Decide the allowed set (preferred exit plus approved region nodes) as an explicit allowlist, written down.
-2. Structure it as an ordered group: preferred exit first, then an approved-region pool group. No DIRECT in this path; set the empty-group behaviour to reject.
-3. Probe through the exit with HTTPS and a strict expected status (for example 204), at an interval you can justify. Add one destination-representative probe for diagnostics.
+2. Structure it as an ordered group: preferred exit first, then an approved-region pool group. No DIRECT in this path; set the empty-group behaviour to reject; set rule mode explicitly and end the rules with a reject after the egress rule, so UDP through a TCP-only member cannot fall through to DIRECT.
+3. Probe through the exit with HTTPS and a strict expected status (for example 204), at an interval you can justify, and set it where the probe actually runs (for provider nodes, on the provider). Add one destination-representative probe for diagnostics.
 4. Decide the failback policy explicitly: preemptive with a hold-down, or non-preemptive. If your client cannot hold down, implement it in a watchdog with consecutive-success counts and a dwell time.
-5. Block direct egress at the host firewall for the agent user, so proxy misconfiguration cannot leak.
-6. Verify the real exit continuously (IP/country/network against the allowlist), and treat mismatch as a stop condition.
+5. Enforce the allowlist at the host firewall twice: the agent user may reach only the local proxy port, and the proxy daemon's user only the approved exit servers (plus DNS and the provider-list fetch). The first alone leaves the daemon free to dial DIRECT.
+6. Verify the real exit continuously (IP/country/network against the allowlist), and treat mismatch as a stop condition. This is sampled detection, not enforcement.
 7. Do not kill in-flight connections on switch by default; let them drain. Handle broken flows with application timeouts and retry budgets.
 8. Make retried writes idempotent (keys, preconditions), and cap retries per task.
 9. Export the active exit, switch count, time on fallback and verified-egress result; alert on fallback duration separately from preferred-exit-down.
 10. Keep one controller per decision, and write down which one it is.
-11. Rehearse: take the preferred exit down on purpose on a schedule, and confirm the switch, the egress check, the alert, and the return all behave as designed.
+11. Rehearse: take the preferred exit down on purpose on a schedule, and confirm the switch, the egress check, the alert, and the return all behave as designed. Include the fail-closed cases: an empty pool, every member failing its probe, and UDP while a TCP-only member is selected.
 
 ## Sources
 
 - mihomo wiki, proxy groups (common fields, health check, expected-status, empty-fallback): https://wiki.metacubex.one/en/config/proxy-groups/
+- mihomo wiki, proxy providers (`health-check` fields): https://wiki.metacubex.one/en/config/proxy-providers/
 - mihomo wiki, fallback group: https://wiki.metacubex.one/en/config/proxy-groups/fallback/
 - mihomo wiki, url-test group: https://wiki.metacubex.one/en/config/proxy-groups/url-test/
 - mihomo wiki, load-balance group: https://wiki.metacubex.one/en/config/proxy-groups/load-balance/
 - mihomo wiki, general settings: https://wiki.metacubex.one/en/config/general/
 - mihomo wiki, external controller API: https://wiki.metacubex.one/en/api/
-- mihomo source (`adapter/outboundgroup/fallback.go`, `urltest.go`, `groupbase.go`, `parser.go`; `adapter/adapter.go`; `adapter/outbound/direct.go`), Meta branch as read on 2026-11-23: https://github.com/MetaCubeX/mihomo
+- mihomo source (`adapter/outboundgroup/fallback.go`, `urltest.go`, `groupbase.go`, `parser.go`; `adapter/provider/healthcheck.go`; `adapter/adapter.go`; `adapter/outbound/direct.go`, `reject.go`; `tunnel/tunnel.go`), Meta branch at commit 0455d0d28c4526937380505153e65a843d8612e8: https://github.com/MetaCubeX/mihomo/tree/0455d0d28c4526937380505153e65a843d8612e8
 - sing-box urltest outbound: https://sing-box.sagernet.org/configuration/outbound/urltest/
 - sing-box selector outbound: https://sing-box.sagernet.org/configuration/outbound/selector/
+- sing-box source, `protocol/group/urltest.go` at v1.14.4: https://github.com/SagerNet/sing-box/blob/v1.14.4/protocol/group/urltest.go
 - Envoy outlier detection: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier
 - Envoy health checking: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/health_checking
 - Envoy panic threshold: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/panic_threshold
