@@ -35,7 +35,7 @@ One caution: I do not know why the second alert fired. "Two checks or a restart 
 |---|---|---|---|
 | Prometheus Alertmanager | `group_by`: "The labels by which incoming alerts are grouped together." | `group_wait` before the first notification of a group, `group_interval` between later ones, `repeat_interval` (default 4h) before repeating | `send_resolved`: "Whether to notify about resolved alerts." Default true for most integrations; email, Rocketchat, Slack and WeChat default to false |
 | PagerDuty Events API v2 | `dedup_key`, max 255 characters | Later events with the same key are "applied to an open alert matching that `dedup_key`" | A `resolve` event with the same key |
-| Opsgenie | `alias`: "user-defined unique identifier for 'open' alerts" | "At most one open alert with the same alias"; repeats raise a Count | Alias is unique only among open alerts |
+| Opsgenie | `alias`: "user-defined unique identifier for 'open' alerts" | "at most one open alert with the same alias"; repeats raise a Count | Alias is unique only among open alerts |
 | Grafana alerting | Alert instance (label set) | Pending period in; "keep firing for" out | Recovering state, then Normal and Resolved |
 | Nagios / Icinga | Host or service object | Soft/hard states, flap detection, re-notify interval | Recovery notification |
 
@@ -168,7 +168,7 @@ Add a short human `incident_id` (`#14`) and an append-only history file with one
 Each owner-facing message the record tracks (the open and the resolve) has one of three delivery states:
 
 - `pending`: not delivered, and known not to be. Resending cannot create a duplicate.
-- `unknown`: a send started and its outcome is not known (a timeout, a connection dropped after the request went out, or a crash mid-send). Resending may duplicate; not resending may lose the message.
+- `unknown`: a send started and its outcome is not known (a timeout, a connection dropped after the request went out, a 5xx, or a crash mid-send). Resending may duplicate; not resending may lose the message.
 - `sent`: the platform accepted it. For the open message, `chat_msg_ref` is stored with it.
 
 `tries` counts the sends that may have reached the owner.
@@ -178,7 +178,7 @@ Write order:
 1. Detect. Look up the key. An open record exists: update `last_seen_at` and stay silent.
 2. No open record: write `state=open` with `open_send` set to `pending`, `tries` 0.
 3. Before each call to the messaging API, write `unknown` and `tries + 1` to disk.
-4. After the call: on success write `sent` (and the message reference). On a refused connection or an error response, the message did not go out: write `pending` and `tries - 1`. On a timeout, leave `unknown`.
+4. After the call: on success write `sent` (and the message reference). On a refused connection or a definite rejection (an error response, such as a 4xx, saying the message was not accepted), it did not go out: write `pending` and `tries - 1`. On a timeout, a connection dropped after the request went out, or a 5xx, leave `unknown`: the platform may have accepted it before failing.
 
 A crash at any point leaves one of the three states on disk, so a restarted supervisor sees what the running one would have seen.
 
