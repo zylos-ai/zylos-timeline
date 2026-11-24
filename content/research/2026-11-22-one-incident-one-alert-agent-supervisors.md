@@ -171,14 +171,16 @@ Each owner-facing message the record tracks (the open and the resolve) has one o
 - `unknown`: a send started and its outcome is not known (a timeout, a connection dropped after the request went out, a 5xx, or a crash mid-send). Resending may duplicate; not resending may lose the message.
 - `sent`: the platform accepted it. For the open message, `chat_msg_ref` is stored with it.
 
-`tries` counts the sends that may have reached the owner.
+`tries` counts the sends that may have reached the owner, so `pending` always goes with `tries` 0.
 
 Write order:
 
 1. Detect. Look up the key. An open record exists: update `last_seen_at` and stay silent.
 2. No open record: write `state=open` with `open_send` set to `pending`, `tries` 0.
 3. Before each call to the messaging API, write `unknown` and `tries + 1` to disk.
-4. After the call: on success write `sent` (and the message reference). On a refused connection or a definite rejection (an error response, such as a 4xx, saying the message was not accepted), it did not go out: write `pending` and `tries - 1`. On a timeout, a connection dropped after the request went out, or a 5xx, leave `unknown`: the platform may have accepted it before failing.
+4. After the call: on success write `sent` (and the message reference). On a refused connection or a definite rejection (an error response, such as a 4xx, saying the message was not accepted), this attempt did not go out: undo its increment (`tries - 1`) and set the status from what is left. With `tries` back at 0, no attempt may have landed, so write `pending`. With `tries` still above 0, an earlier ambiguous attempt may have reached the owner, so the status stays `unknown`. On a timeout, a connection dropped after the request went out, or a 5xx, leave `unknown`: the platform may have accepted it before failing.
+
+A rejection settles only its own attempt. An open whose first send timed out and whose resend was rejected stays `unknown` with `tries` 1, and if the condition then clears, the gate below sends the standalone resolve. The growing retry delay counts every attempt, rejected ones included, separately from `tries`.
 
 A crash at any point leaves one of the three states on disk, so a restarted supervisor sees what the running one would have seen.
 
@@ -284,7 +286,7 @@ An alert must not travel through the thing that failed. If the owner-facing chat
 
 1. **Send directly from the supervisor.** One plain HTTP call to the messaging API (or SMTP, or a push service), with a credential the supervisor holds. Not through the agent, its terminal, its tools or its model.
 2. **No LLM in the alert path.** Templates only.
-3. **Make the send resilient.** Record the delivery state of every send (section 4.2). A definite failure stays `pending` and is retried with a growing delay, while the supervisor runs and after a restart. A timeout is `unknown` and follows the capped resend rule. Write a local log line for each failure. A second channel for first-channel failure is a cheap extra.
+3. **Make the send resilient.** Record the delivery state of every send (section 4.2). A definite failure is retried with a growing delay, while the supervisor runs and after a restart; it leaves the message `pending` only if no earlier attempt may have landed. A timeout is `unknown` and follows the capped resend rule. Write a local log line for each failure. A second channel for first-channel failure is a cheap extra.
 4. **Watch the watcher (optional).** The usual answer is a dead man's switch: the supervisor pings an outside service on a schedule, and the service alerts when pings stop. Healthchecks.io: "When Healthchecks.io does not receive the HTTP request at the expected time, it notifies you," and grace time is "the amount of extra time to wait when a cron job is running late before declaring it as down" ([docs](https://healthchecks.io/docs/monitoring_cron_jobs/)). Keep the checker off the supervisor's machine.
 
 ## 7. What not to build
