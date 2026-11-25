@@ -85,7 +85,7 @@ All three platforms below let the sender (or a privileged user) remove or edit a
 
 Two consequences. First, a chat "undo" cannot be assumed to exist for the whole life of a message: Telegram's 48-hour bound is explicit, Feishu's bound is configured by the customer's admin and is therefore unknown to the agent unless it probes, and Slack's reference page is silent on time (workspace settings may impose limits, but I did not verify that, so I make no claim). Second, none of these is a recall of an *effect*: a person who read the message, or an integration that consumed it, keeps what they got. **(inference)** So outbound chat messages to other people belong in tier 3 after sending, and are worth moving into tier 2 by holding them first.
 
-Native delayed-send exists on at least one platform. Slack's `chat.scheduleMessage` posts at a future time, accepts schedules up to 120 days ahead, caps scheduled messages at 30 per 5-minute window per channel, and the scheduled message id can be passed to `chat.deleteScheduledMessage` "to delete the message before it is sent" ([Slack docs](https://docs.slack.dev/reference/methods/chat.scheduleMessage)). Telegram's `sendMessage` description lists no scheduling parameter among its parameters as of the page I fetched today, so on Telegram a delay has to live in the runtime. I did not check scheduling for Feishu.
+Native delayed-send exists on at least one platform. Slack's `chat.scheduleMessage` posts at a future time, accepts schedules up to 120 days ahead, caps scheduled messages at 30 per 5-minute window per channel, and the scheduled message id can be passed to `chat.deleteScheduledMessage` "to delete the message before it is sent" ([Slack docs](https://docs.slack.dev/reference/methods/chat.scheduleMessage)). The deletion has a cutoff: Slack rejects deleting a scheduled message "that will be posted to Slack within 60 seconds of the delete request" ([Slack docs](https://docs.slack.dev/reference/methods/chat.deleteScheduledMessage/#restrictions)), so a message scheduled 30 seconds ahead cannot be cancelled at all, and a native schedule's Undo ends a minute before the posting time. Once Slack holds the message, marking a local row `undone` does not cancel it; only a confirmed delete does. Telegram's `sendMessage` description lists no scheduling parameter among its parameters as of the page I fetched today, so on Telegram a delay has to live in the runtime. I did not check scheduling for Feishu.
 
 ### 2.2 Payments are not simply "irreversible"
 
@@ -153,7 +153,7 @@ Two patterns give tier 2 and tier 3.
 | Question | If yes | If no |
 |---|---|---|
 | Can another person or system observe the action immediately? | Prefer hold-then-commit | Act-then-compensate is fine |
-| Does the target offer its own delay or hold (Slack scheduled messages, payment authorization)? | Use the native hold; it survives your own runtime restarting | Hold in your own outbox |
+| Does the target offer its own delay or hold that can still be cancelled for the whole window (payment authorization; Slack scheduling only for windows well over a minute)? | Use the native hold; it survives your own runtime restarting. Advertise the provider's cancellation cutoff as the deadline, and report "undone" only after the provider confirms the cancellation | Hold in your own outbox |
 | Is there an exact, cheap inverse that does not depend on others? | Act and record the inverse | Hold, or confirm |
 | Would a delay of the window length hurt the owner's goal? | Shrink the window or act directly if the action is tier 1 | Hold |
 
@@ -179,7 +179,8 @@ CREATE TABLE action_log (
   finished_at   INTEGER            -- set when the row reaches a final state
 );
 
--- Sender: claim a due row; call the provider only if changes() = 1.
+-- Sender: claim a due row, in its own transaction, and COMMIT it before
+-- calling the provider; call only if changes() = 1.
 UPDATE action_log SET state = 'sending'
  WHERE id = :id AND state = 'held' AND commit_after <= :now;
 -- Then: 'sent' (with provider_ref, finished_at) on success, 'failed' on a
@@ -200,13 +201,14 @@ DELETE FROM action_log
    AND finished_at < :now - :keep;
 ```
 
-Three rules come with it.
+Four rules come with it.
 
+- **Commit the claim before the call.** `changes() = 1` says the worker won the claim, not that the claim survives a crash. If the claim sits in an open transaction (an explicit `BEGIN`, or a driver that wraps statements in one) while the provider is called, a crash rolls it back: restart finds the row `held` again and sends it a second time. SQLite's manual says a transaction started with `BEGIN` usually persists "until the next COMMIT or ROLLBACK command", and that it "will also ROLLBACK if the database is closed" ([SQLite](https://www.sqlite.org/lang_transaction.html)). Committed first, the row is `sending` on restart and becomes `unknown` instead.
 - **Due is not expired.** When `commit_after` passes, the row stays `held` and eligible for the sender until it is claimed; a runtime that was down past the window sends it on restart, as Gmail's launch post promises after a browser crash. Garbage collection touches only final rows and recovery data (trash files, snapshots) past their expiry, so a sweep can never race the sender and drop a message unsent.
 - **An ambiguous send is a state, not a retry.** The provider can accept a message whose reply is lost, or the worker can crash before recording `sent`; sending again duplicates it. A row id passed as an idempotency key prevents that only where the provider honors such a key for that operation and for the retry interval. Stripe (API v1) returns the saved response for a retried key, but keys can be pruned once they are at least 24 hours old, and a reused key after pruning makes a new request ([Stripe](https://docs.stripe.com/api/idempotent_requests)). Telegram's `sendMessage` has no idempotency or deduplication parameter in its parameter list ([Bot API](https://core.telegram.org/bots/api#sendmessage)). So an `unknown` row is reconciled where the provider allows it (a retry with the same key inside the key's lifetime, or a lookup where the API offers one) and otherwise reported to the owner as "may have been sent", not sent again.
 - **Undo after the claim is a different action.** When the Undo update changes no row, the answer follows the state: `sending` or `unknown` means too late to cancel, with the result pending or unknown; `sent` means the message is out, and the remaining option is a tier 3 compensation (delete it, within the limits in section 2.1), offered as a separate action.
 
-I replayed these statements in SQLite 3.45 with an in-memory provider stub that counts deliveries, against a read-then-send variant (select due `held` rows, send, mark them, and a sweeper that deletes rows past `undo_until`). The variant let an Undo report success while the message was delivered, delivered twice after a lost reply, and deleted an overdue message unsent when the sweep ran first after a restart. With the statements above, whichever of claim and Undo ran first won and the other changed no row; the lost reply ended as `unknown` with one delivery when the stub had no key, or `sent` with one delivery when it honored the key (a retry after the stub's 24-hour key lifetime delivered twice, which is why the retry interval matters); and the overdue row was sent.
+I replayed these statements in SQLite 3.45 with an in-memory provider stub that counts deliveries, against a read-then-send variant (select due `held` rows, send, mark them, and a sweeper that deletes rows past `undo_until`). The variant let an Undo report success while the message was delivered, delivered twice after a lost reply, and deleted an overdue message unsent when the sweep ran first after a restart. With the statements above, whichever of claim and Undo ran first won and the other changed no row; the lost reply ended as `unknown` with one delivery when the stub had no key, or `sent` with one delivery when it honored the key (a retry after the stub's 24-hour key lifetime delivered twice, which is why the retry interval matters); and the overdue row was sent. A claim still open in a transaction when the stub accepted the send was rolled back when the connection closed, and restart delivered the message a second time; committed first, the claim turned into `unknown` with one delivery.
 
 ### 4.2 How long should the window be
 
@@ -292,7 +294,7 @@ Build in order of value per unit of complexity. The first three need no new serv
 - Large batch tasks run in a worktree or after a filesystem snapshot where the host has one.
 - Shell is the main gap: intercept destructive patterns in a pre-execution hook (such as Claude Code's `PreToolUse`) and rewrite or snapshot, since file-edit checkpoints do not see shell changes.
 
-**Step 3: Outbox for outward messages to people other than the owner.** Hold for a short, configured window and show the pending notice with a visible Undo in the owner's channel (inline button on Telegram), never in the recipient's. When the hold ends, release only sends the owner already authorized; the rest wait for approval (5.1). Claim, Undo, recovery and sweeping follow the conditional updates in 4.1, and a send with an unknown result is reported, not repeated. Replies to the owner themselves need no hold. For authorized sends, use the platform's native scheduling and cancellation where it exists (Slack), because it survives a runtime restart.
+**Step 3: Outbox for outward messages to people other than the owner.** Hold for a short, configured window and show the pending notice with a visible Undo in the owner's channel (inline button on Telegram), never in the recipient's. When the hold ends, release only sends the owner already authorized; the rest wait for approval (5.1). Claim, Undo, recovery and sweeping follow the conditional updates in 4.1, and a send with an unknown result is reported, not repeated. Replies to the owner themselves need no hold. Short windows (seconds to a few minutes) stay in the local outbox. Native scheduling (Slack) suits only authorized sends with windows well over a minute, because its cancellation closes 60 seconds before posting; the owner's deadline is that cutoff, and the Undo is reported done only after the provider confirms the delete.
 
 **Step 4: The action log.** One table like the sketch in 4.1 for tier 1 to 3 actions: pre-image reference, inverse, `undo_until`, dependencies, idempotency key. Written before the action. Undo reads it; reports read it.
 
@@ -327,6 +329,8 @@ Build in order of value per unit of complexity. The first three need no new serv
 - Telegram Bot API (`deleteMessage`, `editMessageText`, `sendMessage`, `InlineKeyboardMarkup`, `answerCallbackQuery`). https://core.telegram.org/bots/api
 - Slack API reference. `chat.delete`. https://docs.slack.dev/reference/methods/chat.delete
 - Slack API reference. `chat.scheduleMessage`. https://docs.slack.dev/reference/methods/chat.scheduleMessage
+- Slack API reference. `chat.deleteScheduledMessage`. https://docs.slack.dev/reference/methods/chat.deleteScheduledMessage
+- SQLite documentation. Transactions. https://www.sqlite.org/lang_transaction.html
 - Feishu Open Platform. Recall message. https://open.feishu.cn/document/server-docs/im-v1/message/delete
 - Feishu Open Platform. Edit message. https://open.feishu.cn/document/server-docs/im-v1/message/update
 - Anthropic. Claude Code checkpointing. https://code.claude.com/docs/en/checkpointing
