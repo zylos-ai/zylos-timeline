@@ -13,10 +13,10 @@ Findings, in order of importance.
 
 1. **Agent memory is a proven leak channel, not a hypothetical one.** Public research from 2026 found credentials in agent transcripts on open servers, in committed agent settings files, in published session logs, and in compaction summaries that copy keys forward from earlier turns. A summary written by a model is a second copy of the secret, and often a third and fourth.
 2. **The cheapest control is upstream.** A secret the model never sees cannot be summarized. After that come instructions to record *references* instead of values, a deterministic redaction pass on whatever the summarizer produces, and a schema that gives credentials a typed field with a typed placeholder. The instruction alone is not a control: OWASP says such restrictions "may not always be honored".
-3. **Scanners are probabilistic and disagree with each other.** In the largest peer-reviewed comparison I found (nine tools, 97,479 labelled candidate secrets), no tool had both high precision and high recall; five of nine had precision under 7%. Verification of live credentials (trufflehog) helps precision but only for providers with a verifier, and it sends the candidate secret to a third party.
-4. **A blocking scanner in an unattended job fails in a specific way.** The job halts, nobody is watching the job, the halt is not noticed, and memory goes stale. The cost is paid every day the halt lasts; the leak the scanner prevents may be a credential in a private repository that is rotated in an hour. For these jobs the right default is **redact and continue, quarantine the one item that cannot be redacted, alert the owner with the rotation task, and alarm on staleness itself.**
+3. **Scanners are probabilistic and disagree with each other.** In the largest peer-reviewed comparison I found (nine tools, 97,479 labelled candidate secrets), no tool had both high precision and high recall; five of nine had precision under 7%. Verification of live credentials (trufflehog) helps precision but only for providers with a verifier, and it sends the candidate secret to a third party. It should rank findings for rotation, not decide what gets published: a detector match is enough to redact.
+4. **A blocking scanner in an unattended job fails in a specific way.** The job halts, nobody is watching the job, the halt is not noticed, and memory goes stale. The cost is paid every day the halt lasts; the leak the scanner prevents may be a credential in a private repository that is rotated in an hour. For these jobs the right default is **redact and continue, quarantine the one item that cannot be redacted or whose scan did not complete, alert the owner with the rotation task, and alarm on staleness itself.** In git, that only works if the redacted commit is built on a clean parent or every outgoing commit is scanned, since a push sends all of them.
 5. **Blocking still has a home.** Block when the destination is public or shared, when the action is not reversible, or when a human is at the keyboard and can clear the block immediately (a developer's pre-commit hook). Block on the *publication* step, not on writing local memory.
-6. **When a secret lands in history, rotate first and rewrite second.** GitHub's own documentation says the first step is to revoke or rotate, and that rewriting history leaves copies in clones, forks, cached views and pull-request refs. The industry data show rotation is the step that gets skipped: 64% of valid secrets found in 2022 were still not revoked in 2026 (GitGuardian).
+6. **When a secret lands in history, rotate first and rewrite second.** GitHub's own documentation says the first step is to revoke or rotate, and that rewriting history leaves copies in clones, forks, cached views and pull-request refs. The industry data show rotation is the step that gets skipped: 64% of valid secrets found in 2022 were still not revoked in 2026 (GitGuardian). Rotation stops future use of the credential; it does not undo access or data already obtained with it.
 
 Statements of my own reasoning are labelled **(inference)**. Where a number comes from a vendor or from secondary reporting I say so; I did not verify claims I could not trace to a source.
 
@@ -26,22 +26,32 @@ Statements of my own reasoning are labelled **(inference)**. Where a number come
 
 An always-on agent has more places for a secret to enter than a code repository does. The common routes, with the part that matters for memory:
 
-| Route | Example | Why memory is affected |
-|---|---|---|
-| Chat paste | The owner pastes a token to "just make it work" | The raw message is stored by the messaging layer, and the summarizer reads it |
-| Tool output | `env`, `printenv`, `cat .env`, `docker inspect`, a verbose `curl -v` showing an `Authorization` header | Output goes into the model's context and then into logs and summaries |
-| Error messages | A failing client library that echoes a connection string with a password | Same as above, and often unnoticed because the secret is in the middle of a stack trace |
-| Command lines | `--token abc123` in an approved command | The command itself is persisted, for example as a saved permission rule |
-| Model-written text | A summary that says "used token ghp_..." | The model faithfully copies what was in context, creating a new durable copy |
-| Reasoning traces | Hidden chain of thought that quotes a credential | Can persist in logs even when the visible reply does not contain it (see 1.2) |
+- **Chat paste**
+  - Example: the owner pastes a token to "just make it work".
+  - Why memory is affected: the raw message is stored by the messaging layer, and the summarizer reads it.
+- **Tool output**
+  - Example: `env`, `printenv`, `cat .env`, `docker inspect`, a verbose `curl -v` showing an `Authorization` header.
+  - Why memory is affected: output goes into the model's context and then into logs and summaries.
+- **Error messages**
+  - Example: a failing client library that echoes a connection string with a password.
+  - Why memory is affected: same as tool output, and often unnoticed because the secret is in the middle of a stack trace.
+- **Command lines**
+  - Example: `--token abc123` in an approved command.
+  - Why memory is affected: the command itself is persisted, for example as a saved permission rule.
+- **Model-written text**
+  - Example: a summary that says "used token ghp_...".
+  - Why memory is affected: the model faithfully copies what was in context, creating a new durable copy.
+- **Reasoning traces**
+  - Example: hidden chain of thought that quotes a credential.
+  - Why memory is affected: it can persist in logs even when the visible reply does not contain it (see 1.2).
 
 ### 1.2 What the 2026 evidence shows
 
 - **Volume in the wild.** GitGuardian's State of Secrets Sprawl 2026 (calendar year 2025) counts about 29 million newly leaked secrets on public GitHub, up 34% year on year, and leaks tied to AI services up 81% to 1,275,105. It reports that public commits co-authored by one popular coding agent leaked secrets at about 3.2%, twice a 1.5% baseline. That figure is a correlation; a reviewer of the report points out it does not prove the agent caused the leaks, and GitGuardian sells secrets-security products. The report also puts about 28% of incidents in collaboration and productivity tools rather than code repositories, which is the category chat and agent memory belongs to, and 24,008 unique secrets in MCP configuration files.
 - **Agent settings files.** Apiiro's November 2026 research, as reported by secondary outlets, found that an agent's "Yes, and don't ask again" approval saves the exact approved command, credentials included, into a project-local settings file, and that file reached public GitHub. The widest count in the coverage was 2,539 secrets across 1,994 repositories (including git history, shared settings and committed transcripts). The tool's vendor said it was looking at ways to prevent this, including basic secret scanning. I could not retrieve Apiiro's original post, so treat the sub-counts as secondary. The tool's own documentation confirms the mechanism: the approval is written as an allow rule to the local settings file, and the tool adds that file to the user's global git excludes so it stays out of commits, which protects only users whose commit path honours those excludes.
 - **Memory and summaries copy keys.** Brandefense's Odin report (published 19 November 2026) found 112 servers exposing the hidden home folders of five agent tools over plain HTTP. Of 266 distinct secret values, 131 came from real sessions and 135 were examples from skill packs and fixtures. Its key observation for this article: when context fills, the compaction step writes a summary, and "keys ... in the earlier turns carry over into that summary". One credential block in a Markdown memory note was duplicated across the primary sessions, six compaction files, two side-query logs and file-history snapshots, so "deleting the memory note does not remove the keys". The report did not test whether any of the credentials still worked.
-- **Published logs.** A research paper on stealing encrypted reasoning traces (arXiv 2608.09867) decoded 315,320 reasoning blocks scraped from public agent logs and recovered 367 PII artifacts and 182 credentials, a substantial share of which, per secondary coverage, existed only inside the encrypted reasoning and not in the visible transcript. The lesson is that "the visible transcript is clean" is not the same as "the log is clean".
-- **Prompts leave the building.** The Dragos canary study, as summarised by GitGuardian (a vendor), sent nearly two million prompts to AI services, each carrying a unique bait secret. A couple hundred stolen AWS keys drew tens of thousands of API calls, some within hours. Zero-data-retention flags did not hold along the whole route. This is about the model provider path rather than memory, but it supports the same upstream principle: the best secret hygiene is not letting the value into the context at all.
+- **Published logs.** Panfilov et al., in a paper on stealing encrypted reasoning traces from proprietary model APIs (arXiv 2608.09867), collected 6,708 public agent trajectories from GitHub and Hugging Face, decoded 315,320 reasoning blocks and recovered 367 PII artifacts and 182 credentials. Those headline totals (the paper's Figure 6) include benchmark traces; some benchmark rollouts give the model a complete synthetic persona to reason over. For genuine, non-benchmark sessions, the paper's Appendix D (Table 4) counts 126 distinct credentials, of which 16 appeared exclusively in the reasoning and nowhere else in the raw session: 11 API keys, 3 access tokens and 2 passwords. The lesson is that "the visible transcript is clean" is not the same as "the log is clean".
+- **Prompts leave the building.** Dragos sent nearly two million prompts to AI services over five months in 2026, each carrying unique canary URLs and credentials. In the largest breach it found, "a couple hundred" of its AWS keys were stolen; the attacker tested keys "in some cases within a few hours". The post sums up: "In total, our bait keys were used for tens of thousands of AWS API calls." Some stolen requests were marked Zero Data Retention, and the post warns that "a privacy flag only binds the first hop" and that "AI agents will happily send whatever they can read, including credentials". GitGuardian (a vendor) also summarized the study. This is about the model provider path rather than memory, but it supports the same upstream principle: the best secret hygiene is not letting the value into the context at all.
 
 None of these are the "unattended memory sync to a private repo" case exactly. They show the mechanism (model copies what it sees, copies persist in several places, and scanners find them after the fact), and the scale.
 
@@ -97,12 +107,22 @@ Summaries are derived data; the raw conversation store is the primary secret-bea
 
 ### 3.1 What each tool is
 
-| Tool | Method | Verification | Notable behaviour |
-|---|---|---|---|
-| gitleaks | Go regex rules, per-rule entropy threshold, keyword prefilter | None | Scans git history, directories and stdin; exit 1 on leaks or errors (configurable with `--exit-code`); baselines, allowlists, inline `gitleaks:allow`; `--redact`; README says it is "feature complete" with security patches only going forward |
-| trufflehog | 800+ detector types | Tries the credential against the provider; results are `verified`, `unverified` or `unknown` | `--results` filters states; `--fail` returns exit code 183 when results are found; exit 1 means an error and that sources may not have completed scanning |
-| detect-secrets | Regex plugins, base64/hex entropy detectors (default limits 4.5 and 3.0), keyword detector | Optional | Baseline file records known findings; pre-commit hook flags only new ones; README says it is "not meant to be a sure-fire solution" |
-| GitHub push protection | Partner patterns, generic patterns, custom patterns, and (public preview) AI-detected generic secrets such as passwords | Partner patterns are provider-specific | Blocks the push; anyone with write access can bypass with a reason unless delegated bypass is configured; a bypass raises an alert, an audit log entry and an email on protected repositories |
+- **gitleaks**
+  - Method: Go regex rules, per-rule entropy threshold, keyword prefilter.
+  - Verification: none.
+  - Notable behaviour: scans git history, directories and stdin; by default exits 1 on leaks *or* errors, and `--exit-code` changes only the leaks code (errors stay 1; see 3.4); baselines, allowlists, inline `gitleaks:allow`; `--redact`; the README says it is "feature complete" with security patches only going forward.
+- **trufflehog**
+  - Method: 800+ detector types.
+  - Verification: tries the credential against the provider; results are `verified`, `unverified` or `unknown`.
+  - Notable behaviour: `--results` filters states; `--fail` returns exit code 183 when results are found; exit 1 means an error and that sources may not have completed scanning; JSON results include the raw value (see 3.4).
+- **detect-secrets**
+  - Method: regex plugins, base64/hex entropy detectors (default limits 4.5 and 3.0), keyword detector.
+  - Verification: optional.
+  - Notable behaviour: a baseline file records known findings; the pre-commit hook flags only new ones; the README says it is "not meant to be a sure-fire solution".
+- **GitHub push protection**
+  - Method: partner patterns, generic patterns, custom patterns, and (public preview) AI-detected generic secrets such as passwords.
+  - Verification: partner patterns are provider-specific.
+  - Notable behaviour: blocks the push; anyone with write access can bypass with a reason unless delegated bypass is configured; a bypass raises an alert, an audit log entry and an email on protected repositories.
 
 ### 3.2 Precision and recall
 
@@ -123,16 +143,26 @@ This is a 2023 study of source code. Tool versions have moved, and agent memory 
 
 ### 3.4 Verification of live secrets
 
-Trufflehog's verification changes the question from "does this look like a secret" to "does this work". That raises the value of each alert and lets an alert be prioritized. The costs:
+Trufflehog's verification changes the question from "does this look like a secret" to "does this work". That raises the value of each alert and lets an alert be prioritized. It should not decide whether the value is published. **(inference)** The detector match decides what happens to the content (redact it or quarantine the item); the verification status only orders the remediation work (rotate `verified` results first, then `unknown`, then `unverified`). The costs:
 
 - Verification only exists for providers with a verifier. GitGuardian reports that about 46% of critical secrets have no vendor-provided validation mechanism.
-- The `unknown` state (network or API failure) means a verification outage turns into ambiguity, so a pipeline that treats only `verified` as actionable silently drops real secrets during an outage.
-- Verification sends the candidate to a provider's API. **(inference)** That is a reasonable thing to do for a live-secret check, but it is an outbound call with the secret in it, so it should not run on material you are about to redact and not on high volumes of low-confidence candidates.
+- The `unknown` state (network or API failure) means a verification outage turns into ambiguity. A pipeline that redacts or holds only `verified` results would publish every `unknown` result during an outage, and every `unverified` result, which the README describes as "Credential detected but not confirmed valid (may be invalid, expired, or verification disabled)". Neither state is evidence that the value is not a secret.
+- Verification sends the candidate to a provider's API. **(inference)** That is a reasonable thing to do for a live-secret check, but it is an outbound call with the secret in it, so it should not run on high volumes of low-confidence candidates, and for a value you will redact and rotate anyway it adds little beyond ordering the rotation.
 - A verified-dead secret is not harmless in memory. It may be a pattern to an attacker, or just a still-valid secret for a different environment. It is a lower urgency, not zero.
 
-### 3.5 Baselines
+Two further properties of the scanners decide how their results can be used safely.
 
-Baselines (detect-secrets, gitleaks) suppress findings already known. That is the right idea for onboarding a scanner onto a repo with history, and a trap for a memory repo that rewrites itself daily: a secret marked as a false positive in a baseline is no longer detected, and a baseline entry for a path that is regenerated can quietly allowlist the next real secret that appears at that path.
+- **Scanner output contains the secret.** Trufflehog's JSON results carry the matched value: in the README's example result for an AWS key, the `"Raw"` field holds the full access key ID, and the `"Redacted"` field holds the same unmasked string. Handle scanner output like the input it was run on: keep it out of logs, alerts, chat and the repository, and pass on only the type and location. (Gitleaks' `--redact` removes the secret from its logs and output.)
+- **An incomplete scan is not a clean scan.** Trufflehog's exit code 1 means "An error was encountered. Sources may not have completed scans." Gitleaks' README lists "1 - leaks or error encountered" as the default; in its source, a scan that hit an error logs "partial scan completed" and exits 1 even when `--exit-code` is set, while `--exit-code` only changes the code for leaks found in a complete scan. So set a distinct findings code (for example `--exit-code 2`) and read 0 as clean, that code as findings, and anything else as an error. **(inference)** An item whose scan errored or did not complete is held back from publication, as if quarantined, and the owner is alerted; items that scanned clean or were redacted are published as usual. Scanning per changed file, or in small batches, keeps an error from holding back more than the affected items; if the scanner cannot say which items it finished, hold every changed item in that run.
+
+### 3.5 Baselines and allowlists
+
+Both suppress findings, but in different ways, and the difference matters for a memory repo that rewrites itself daily.
+
+- **A path allowlist** (for example a gitleaks `paths` entry in an allowlist, or excluding a file from the scan) suppresses everything at that path, including a different, real secret that appears there next week.
+- **A baseline** records specific findings already known, which is the right idea for onboarding a scanner onto a repo with history. A gitleaks baseline is a previous gitleaks report. In gitleaks' comparison code, a new finding is skipped when it equals a baseline entry on rule ID, description, file, start and end line and column, commit, author, email, date, message and entropy, and, when the scan runs without `--redact`, also on the matched text and the secret itself. A normal baseline entry therefore does not suppress a different value at the same place. With `--redact` set to any value above zero, the match and secret comparison is skipped, so a different value found by the same rule at the same file, lines and columns, with the same commit fields and the same entropy score, counts as already known. **(inference)** A scan of a directory or staged tree has no commit fields, and a random token whose characters are all distinct has the same Shannon entropy as any other such token of the same length, so a regenerated memory file that receives a new token of the same type in the same place can match a redacted-scan baseline entry. Check the matching rule of whichever baseline tool you use.
+
+Either way, a secret marked as a false positive is no longer reported, so the entries need review like any exemption.
 
 ## 4. Fail-open versus fail-closed for unattended jobs
 
@@ -156,20 +186,37 @@ A related gap to know about: GitHub's AI-detected generic secret scanning is doc
 
 ### 4.3 The options, by what happens when a scanner fires
 
-| Policy | What the job does | Fits when | Risk |
-|---|---|---|---|
-| Block the whole job | Exit non-zero, halt | A human is present; the destination is public or shared; the data cannot be unpublished | Silent staleness in an unattended job |
-| Redact and continue | Replace the secret with a typed placeholder, commit the redacted text, record the event | The secret has a recognizable shape; the destination is private | A secret with no shape gets through |
-| Quarantine one item | Exclude only the affected file or segment from this sync; keep it local; alert | The item cannot be safely redacted (an opaque blob, a key file, an ambiguous high-entropy string) | Quarantined items need an expiry or they become a second backlog |
-| Alert only | Sync normally; tell the owner | Low-confidence, entropy-only findings | Findings are ignored if the alert is noisy |
+- **Block the whole job**
+  - What the job does: exits non-zero and halts.
+  - Fits when: a human is present; the destination is public or shared; the data cannot be unpublished.
+  - Risk: silent staleness in an unattended job.
+- **Redact and continue**
+  - What the job does: replaces the secret with a typed placeholder before the content is committed, commits the redacted text on a clean parent (see below), records the event.
+  - Fits when: the secret has a recognizable shape; the destination is private.
+  - Risk: a secret with no shape gets through; a raw copy left in an earlier, unpushed commit is pushed anyway unless every outgoing commit is checked.
+- **Quarantine one item**
+  - What the job does: excludes only the affected file or segment from this sync and from every commit that is pushed; keeps it local; alerts.
+  - Fits when: the item cannot be safely redacted (an opaque blob, a key file, an ambiguous high-entropy string), or its scan errored or did not complete (see 3.4).
+  - Risk: quarantined items need an expiry or they become a second backlog.
+- **Alert only**
+  - What the job does: syncs normally and tells the owner.
+  - Fits when: low-confidence, entropy-only findings.
+  - Risk: findings are ignored if the alert is noisy.
 
 The pattern in data pipelines is the same. A queue consumer that blocks on a poison message stops the whole queue; the standard answer is a dead-letter queue: set a bad message aside, keep processing, alarm on the dead-letter queue's depth. Amazon's SQS documentation describes dead-letter queues as a place to isolate unprocessed messages for diagnosis and recommends setting the dead-letter queue's retention longer than the source queue's, since a quarantined item that expires has silently become a deleted item. **(inference)** A quarantine for memory items needs the same retention rule and the same alarm.
+
+**Where the redaction has to happen in Git.** A push sends every commit the remote does not yet have, not only the tip. Redacting a file, or leaving it out, in the working tree or the index protects a push only if the commit to be pushed is built on a clean parent before the raw content has entered any history that will be pushed, and only if no other outgoing commit is unchecked. If an earlier local commit (from an interrupted run, an older version of the job or a manual commit) still contains the raw value, the remote receives it as the parent of the redacted tip. In my test with two local commits pushed to a disposable bare repository, the remote's tip holds the placeholder and its parent holds the original value. **(inference)** Two ways to hold the boundary:
+
+1. **One commit from a clean parent.** Each sync builds a single new commit on the remote's current tip from content that has already been redacted, with quarantined items left out. Raw content is never committed in the sync repository, so nothing unchecked is waiting to be pushed.
+2. **Check every outgoing commit.** If the job can leave local commits behind, scan the whole outgoing range, for example `gitleaks git --log-opts="origin/main..HEAD"` (the README says `--log-opts` configures the `git log -p` that gitleaks runs), not only the staged tree. If any outgoing commit has a finding, do not push that history: rebuild it as in option 1, with the affected item held locally and the clean items committed and pushed.
+
+GitHub's removal guide makes the same point from the other side: it recommends a hook that checks for sensitive data "before it is committed or pushed anywhere". Once the value is pushed, removing it means a history rewrite with the side effects listed in 5.2.
 
 ### 4.4 Make a halt impossible to miss
 
 If any part of the job can still halt (a scanner crash, a git failure, an authentication error), the halt has to produce a notification. Two layers:
 
-- **Explicit failure signal.** On any non-zero exit, send the owner a message that names the job, the reason in one line, and the next action. The trufflehog exit-code split is a useful model: exit 1 means "an error was encountered, sources may not have completed scans", which is different from 183, "results found", and the two need different handling. A scanner that *crashes* must not be read as "no leaks".
+- **Explicit failure signal.** On any non-zero exit, send the owner a message that names the job, the reason in one line, and the next action. The trufflehog exit-code split is a useful model: exit 1 means "An error was encountered. Sources may not have completed scans.", which is different from 183, "No errors were encountered, but results were found.", and the two need different handling. Gitleaks uses exit 1 for both by default, so give its findings a distinct code (3.4). A scanner that *crashes* must not be read as "no leaks".
 - **Dead man's switch on staleness.** Healthchecks.io describes the pattern: the job pings after each success, and an alert fires if the expected ping does not arrive within a grace time. This catches failures that produce no error at all, such as a deleted timer, a hung process or a halted job whose failure message nobody read. **(inference)** For memory sync, the staleness alarm ("last successful push is older than N hours") is the single most useful check, because it covers every cause of a halt, including the scanner you added.
 
 ### 4.5 A cost comparison
@@ -177,9 +224,9 @@ If any part of the job can still halt (a scanner crash, a git failure, an authen
 **(inference)** The comparison is not "leak versus no leak". It is:
 
 - **Cost of blocking, per halt:** every memory write since the halt is local-only, a recovery task for the owner, and a risk that the guard gets disabled in a hurry. This cost grows with each hour the halt lasts and scales with how unattended the job is.
-- **Cost of redact-and-continue, per miss:** one secret in a private repository for as long as it takes to detect and rotate it. This cost is bounded by rotation speed, and the response (rotate) is needed in either design.
+- **Cost of redact-and-continue, per miss:** one secret in a private repository for as long as it takes to detect and rotate it, plus whatever was done with it in that window. Rotation bounds how long *that credential* can be used: once it is revoked, GitHub's guide says, "it can no longer be used for access". It does not undo what was already done with it. Data already read stays read, and access the holder set up in the meantime can outlive the key: in the Dragos study the attacker tried "creating Bedrock API keys, and adding their own IAM users to keep access". The response (rotate, then check the provider's logs for use in the exposure window) is needed in either design.
 
-The blocking design wins only if the leak is not bounded by rotation: publication to the public, or a secret whose compromise cannot be undone. Most API keys and tokens can be rotated; that is the empirical premise of the next section.
+The blocking design wins when rotation does not bound the damage: publication to the public, a secret whose compromise cannot be undone, or a credential whose holder could read data or create persistent access in the window before rotation, where even a short window is too costly. Most API keys and tokens can be rotated; that is the empirical premise of the next section.
 
 ## 5. When a secret lands in history
 
@@ -223,12 +270,13 @@ The target setting: memory files synced to a private git repository, summaries w
 5. Run pattern rules over the summarizer output and replace hits with typed placeholders. Keep it to high-precision patterns so that a false positive costs nothing. Log counts and types, never values.
 
 **Layer 3: a non-blocking scan at sync time.**
-6. Scan the staged tree with gitleaks (or trufflehog restricted to its own verified results for a stricter pass). Sort findings into three outcomes:
-   - *High-confidence, well-formed:* auto-redact in the staged copy, sync the redacted version, alert the owner to rotate.
-   - *Cannot be redacted safely:* quarantine that one file from this sync, alert, set an expiry and a retention longer than the interval between reviews.
-   - *Low-confidence or entropy-only:* sync, add to a digest, review in batch.
-7. Use a baseline only for items a human has explicitly reviewed, with the path and the content hash, so that a regenerated file does not inherit an exemption.
-8. Treat *scanner errors* separately from *findings*: a crashed scanner is a failure to alert on, not a clean bill.
+6. Scan exactly what will be pushed. Build each sync as one commit on the remote's current tip from content that is already redacted, or, if local commits can accumulate, scan every outgoing commit (`origin/main..HEAD`), not only the staged tree (4.3). Use gitleaks, or trufflehog with all three result states. The detector match decides what happens to the content; the verification status only decides how urgently to rotate. Sort findings into four outcomes:
+   - *Well-formed match, in any verification state:* redact in the content before it is committed, sync the redacted version, alert the owner to rotate (`verified` first, then `unknown`, then `unverified`).
+   - *Cannot be redacted safely:* quarantine that one file from this sync and from every pushed commit, alert, set an expiry and a retention longer than the interval between reviews.
+   - *Low-confidence or entropy-only, with no provider shape:* sync, add to a digest, review in batch.
+   - *Scan errored or did not complete for an item:* hold that item locally as if quarantined, publish the items that scanned clean or were redacted, alert. If the scanner cannot say which items it finished, hold all changed items for that run.
+7. Do not allowlist memory paths: a path allowlist also suppresses the next, different secret at that path. Baseline only findings a human has reviewed as false positives, and keep the comparison on the value: with gitleaks, run the baselined scan without `--redact`, because with `--redact` the baseline ignores the value (3.5), and handle its report under the rule in step 8.
+8. Treat *scanner errors* separately from *findings*: a crashed or partial scan is a failure to alert on, not a clean bill. With gitleaks, set `--exit-code` to a value other than 0, 1 and 126 (for example 2), because errors always exit 1 and 126 means an unknown flag. Treat scanner output like the scanned content: trufflehog's JSON includes the raw value, so keep reports out of logs, alerts and the repository and forward only type and location.
 
 **Layer 4: make silence loud.**
 9. Add a dead man's switch: an alert if the last successful push is older than a few sync intervals. This covers the scanner, git, credentials and the timer all at once.
@@ -239,7 +287,7 @@ The target setting: memory files synced to a private git repository, summaries w
 12. Then, if warranted, rewrite the sync repo in a fresh clone and re-clone every consumer. Purge local transcript and compaction copies.
 13. Reserve a hard block for publication to a public or shared destination, and for pushes a person is doing at a keyboard.
 
-**What this does not solve.** Redaction misses secrets with no recognizable shape. A secret typed into chat reaches the model provider before any local filter sees it (the Dragos study is about exactly that path), so the only complete remedy for those is rotation. The calculation also changes if the memory repository's audience grows: more collaborators, a public mirror or a hosted agent service all move you toward the blocking side of the table in 4.3.
+**What this does not solve.** Redaction misses secrets with no recognizable shape. A secret typed into chat reaches the model provider before any local filter sees it (the Dragos study is about exactly that path), so rotation, with a check of the provider's logs, is the only remedy for those, and it stops future use without recalling what was already done. The calculation also changes if the memory repository's audience grows: more collaborators, a public mirror or a hosted agent service all move you toward the blocking option in 4.3.
 
 ## Sources
 
@@ -249,6 +297,8 @@ Primary documents and tool docs
 - GitHub Docs, Removing sensitive data from a repository: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository
 - GitHub Docs, Best practices for preventing data leaks in your organization: https://docs.github.com/en/code-security/getting-started/best-practices-for-preventing-data-leaks-in-your-organization
 - gitleaks README: https://github.com/gitleaks/gitleaks
+- gitleaks source, exit handling (cmd/root.go): https://github.com/gitleaks/gitleaks/blob/master/cmd/root.go
+- gitleaks source, baseline comparison (detect/baseline.go): https://github.com/gitleaks/gitleaks/blob/master/detect/baseline.go
 - trufflehog README: https://github.com/trufflesecurity/trufflehog
 - detect-secrets README: https://github.com/Yelp/detect-secrets
 - git-filter-repo README: https://github.com/newren/git-filter-repo
@@ -266,5 +316,6 @@ Research and incident reports
 - Privacy Guides on the Apiiro findings (secondary): https://www.privacyguides.org/news/2026/11/10/claude-code-leaks-secrets-and-passwords-in-public-github-repositories/
 - Qodo summary of the Apiiro findings (secondary): https://www.qodo.ai/blog/claude-code-dont-ask-again-secrets/
 - Panfilov et al., Stealing Reasoning Traces from Proprietary LLM APIs (arXiv 2608.09867): https://arxiv.org/abs/2608.09867
+- Dragos (HD Moore), Three breaches, endless leaks: Your AI supply chain needs canaries: https://www.dragos.com/blog/ai-supply-chain-security-canary-tokens
 - GitGuardian on the Dragos canary study (vendor summary): https://blog.gitguardian.com/zero-data-retention-ai-prompts/
 - Prismor, tool-boundary redaction for agent transcripts (practitioner blog): https://www.prismor.dev/blog/tool-boundary-redaction-ai-agents
