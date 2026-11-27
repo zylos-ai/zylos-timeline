@@ -196,8 +196,8 @@ Stripe gives the operational version. Network errors, it says, leave the client 
 When is it safe to send the same key again, and when is a new attempt warranted? **(inference)**
 
 - **Same key:** whenever the outcome is unknown and the key is within the server's retention window, with identical parameters. That is what the key is for. The dashboard can use a shorter replay window than the server's retention, because a switch requested hours ago may no longer be wanted.
-- **New key:** only after a confirmed terminal outcome for the old one: a `4xx` that refused the request before it started, a conflict refusal, or an operation record in state `failed`. A new key means a new operation, so it follows a fresh user action, not an automatic retry.
-- **Key expired, outcome still unknown:** never replay it, since the server may run it as a new request. If the operation ID is known, its record may still be readable, because operations can outlive keys (AIP-151's rule of thumb for operation expiry is 30 days). If not, the outcome stays unknown: tell the user, re-read and show the live runtime, and offer a fresh attempt only as an explicit choice made after seeing it.
+- **New key:** only after a confirmed terminal outcome for the old one: a `4xx` answer to the first send (a `4xx` to a replay, such as a rate limit, says nothing about the original request), a conflict refusal the server recorded under the key, or an operation record in state `failed`. A new key means a new operation, so it follows a fresh user action, not an automatic retry.
+- **Key expired, outcome still unknown:** never replay it, since the server may run it as a new request. If the operation ID is known, its record may still be readable, because operations can outlive keys (AIP-151's rule of thumb for operation expiry is 30 days). If not, the outcome stays unknown, and a read of the live runtime cannot change that: the original request may still be queued and apply later. Keep the intent unresolved and say so. If the user still wants to start over, the dashboard should state that the earlier request may yet take effect, so a new attempt accepts the risk of both applying; only that explicit choice justifies a new key.
 
 The flow below applies these rules. The helpers it calls (intent storage, `post`, `get`, `sleep`, `setBusy`, `showOutcome`, `showActive`, `watchOperation`) are left abstract. `post` sends the key in an `Idempotency-Key` header and throws an error with `status` and `body` on an HTTP error, or without `status` on a timeout or network failure. `showOutcome` replaces the busy label with the outcome beside the control; `showActive` reads and displays the live runtime.
 
@@ -205,20 +205,26 @@ The flow below applies these rules. The helpers it calls (intent storage, `post`
 // Intent, saved so a reload can resume it:
 // { kind, target, key, createdAt, opId? }
 async function submitSwitch(target) {
-  const intent = loadOrCreateIntent("runtime-switch", target);
+  const intent = createIntent("runtime-switch", target); // new key
   setBusy(intent.kind, "Starting switch…");
   return submit(intent, false);
 }
 
 async function submit(intent, isReplay) {
+  if (isReplay && !inReplayWindow(intent))     // before every replay
+    return unresolved(intent, "key-expired");
   let op;
   try {
     op = await post("/settings/runtime",
       { target: intent.target }, intent.key);  // same key every time
   } catch (e) {
     if (e.status === 409) return onConflict(intent, e.body, isReplay);
-    if (e.status >= 400 && e.status < 500)     // refused, never started
-      return finish(intent, "rejected", e.body);
+    // A 4xx answers this send only. On the first send, ours never
+    // started. On a replay (a 429, say) it says nothing about the
+    // original request, so the outcome stays unknown.
+    if (e.status >= 400 && e.status < 500)
+      return isReplay ? unresolved(intent)
+                      : finish(intent, "rejected", e.body);
     // Timeout, dropped connection or 5xx: outcome unknown.
     return isReplay ? unresolved(intent) : reconcile(intent);
   }
@@ -228,7 +234,8 @@ async function submit(intent, isReplay) {
 }
 
 async function onConflict(intent, body, isReplay) {
-  if (body.code === "same-key-in-flight") {    // our own request
+  const code = body && body.code;
+  if (code === "same-key-in-flight") {         // our own request
     if (body.operation) {
       intent.opId = body.operation.id;
       saveIntent(intent);
@@ -238,10 +245,13 @@ async function onConflict(intent, body, isReplay) {
     await sleep(RETRY_MS);
     return submit(intent, true);               // same key and parameters
   }
-  // "operation-conflict": another operation holds the lock;
-  // ours never started.
-  finish(intent, "refused", body.operation);
-  return watchOperation(body.operation);       // lock until it ends
+  if (code === "operation-conflict") {
+    // The server looked this key up first and recorded the refusal
+    // under it (section 2.2): ours never started and never will.
+    finish(intent, "refused", body.operation);
+    return watchOperation(body.operation);     // lock until it ends
+  }
+  return unresolved(intent);                   // unrecognised 409
 }
 
 async function follow(intent) {
@@ -262,9 +272,11 @@ async function follow(intent) {
 async function reconcile(intent) {
   setBusy(intent.kind, "Outcome unknown, checking…");
   if (intent.opId) return follow(intent);
-  if (Date.now() - intent.createdAt < REPLAY_WINDOW_MS)
-    return submit(intent, true);  // existing operation, or starts once
-  return unresolved(intent, "key-expired");
+  return submit(intent, true);  // existing operation, or starts once
+}
+
+function inReplayWindow(intent) {  // shorter than server key retention
+  return Date.now() - intent.createdAt < REPLAY_WINDOW_MS;
 }
 
 function finish(intent, outcome, detail) {
@@ -281,7 +293,7 @@ function unresolved(intent, reason) {
 }
 ```
 
-Every branch ends with the busy label replaced: by a result, by a stated refusal while the other operation is followed, or by "outcome unknown" with "Check again". A `4xx` other than `409` is treated as final only because, as AIP-151 puts it, "errors that prevent a long-running operation from starting must return an error response", while failures during execution go in the operation record. While an intent is unresolved, the control offers "Check again" rather than a fresh start; a different target or a new attempt waits until the intent resolves or the user, having seen the live runtime, chooses to start over.
+Every branch ends with the busy label replaced: by a result, by a stated refusal while the other operation is followed, or by "outcome unknown" with "Check again". A `4xx` other than `409` on the first send is treated as final only because, as AIP-151 puts it, "errors that prevent a long-running operation from starting must return an error response", while failures during execution go in the operation record. A `4xx` to a replay, or a `409` whose body the client does not recognise, leaves the outcome unknown, because neither is an answer about the original request. The replay window is checked before every replay, including the one after a `409` wait. While an intent is unresolved, the control offers "Check again" rather than a fresh start; a different target or a new attempt waits until the intent resolves, or, after the key has expired, until the user explicitly accepts the risk described above.
 
 The live read must report the applied state, not the stored setting; an earlier article on this site covers why "saved" and "applied" differ in a long-running runtime.
 
@@ -327,12 +339,12 @@ Each is named in a source above or follows from combining them.
 7. **Live region created at the moment of the message, or busy text that just disappears.** The announcement may be dropped, and screen reader users get no "available" signal. Answer: region in the initial markup; replace busy text with an outcome message.
 8. **Timeout shown as failure.** The change may have been applied; the user retries and double applies. Answer: the unknown state and a reconcile step.
 9. **Failure inferred from surrounding state.** An empty running list and an unchanged runtime are read as "not applied", yet the original request can still register and apply; an operation can finish between the two reads, and a matching runtime may come from another client. Answer: resolve by operation ID or by resending the same key; use the live runtime only to show what is active.
-10. **Error branches that escape the UI.** A shared catch treats every `4xx` as final or rethrows, or a failed status read is not handled, and "Starting switch…" stays on screen. Answer: handle each `409` case, show terminal operation errors beside the control, turn unreadable status into "unknown" with "Check again", and replace the busy label in every branch.
+10. **Error branches that escape the UI.** A shared catch treats every `4xx` as final or rethrows, so a rate-limited replay clears an intent whose original may have been accepted, or a failed status read is not handled, and "Starting switch…" stays on screen. Answer: handle each `409` case, show terminal operation errors beside the control, turn unreadable status into "unknown" with "Check again", and replace the busy label in every branch.
 11. **Optimistic display of a side-effecting operation.** The UI claims the new runtime is active; rolling back a label does not roll back the effect. Answer: show confirmed state, pending target and outcome separately.
 12. **Busy state in local memory only.** A reload or second tab shows an enabled control mid-operation. Answer: derive busy from server operations on load, reconnect and visibility change.
 13. **A busy flag that never clears.** The panel, and anything else gated by that flag, stays stuck. Answer: a server-side terminal state for every operation, a "taking longer than expected" state with a re-read, and an escape route the flag never locks.
 14. **Panel-wide locks, especially with `inert`.** Controls the user needs are blocked and the panel leaves the accessibility tree. Answer: conflict groups.
-15. **Wrong key discipline.** Reusing a key for a different request is refused by a payload-comparing server; a fresh key per retry defeats the mechanism; replaying a key the server has already dropped can start a new operation. Answer: one persisted key per user intent, a new key only after a confirmed terminal outcome, and no replay past the retention window.
+15. **Wrong key discipline.** Reusing a key for a different request is refused by a payload-comparing server; a fresh key per retry defeats the mechanism; replaying a key the server has already dropped can start a new operation. Answer: one persisted key per user intent, a new key only after a confirmed terminal outcome (or, once the key has expired, an explicit user choice that accepts the earlier request may still apply), and no replay past the retention window.
 16. **Conflicting writes from two tabs.** Both pass their client guards, and a server that checks for conflicts before registering the operation in a separate step lets both through. Answer: conflict check and registration in one atomic step, and a re-read on refusal.
 17. **Success claimed from the stored setting.** The save worked but the running process has not picked it up. Answer: report the applied state from the live source.
 
@@ -352,7 +364,7 @@ Each is named in a source above or follows from combining them.
 
 - [ ] Busy is derived from server operations on load, reconnect and when the page becomes visible; local flags only cover the gap before the operation exists.
 - [ ] A conflict table decides which controls lock; the server enforces the same table.
-- [ ] One idempotency key per user intent, persisted before the first send and reused on retries; the operation ID is persisted as soon as it is known. A new key only after a confirmed terminal outcome; a key past the server's retention window is never replayed.
+- [ ] One idempotency key per user intent, persisted before the first send and reused on retries; the operation ID is persisted as soon as it is known. A new key only after a confirmed terminal outcome, or after expiry by an explicit user choice that is told the earlier request may still apply; the replay window is checked before every replay, and a key past it is never replayed. A `4xx` to a replay or an unrecognised `409` keeps the outcome unknown.
 - [ ] Timeouts, dropped connections and unstructured 5xx mean outcome unknown. Resolve by reading the operation by ID or resending the same key, never from an empty running list plus the live runtime. Status that cannot be read stays "unknown" with a "Check again" action.
 - [ ] Every branch, including `409`, `404` and failed status reads, replaces the busy label with a stated outcome; terminal operation errors appear beside the control.
 - [ ] Optimistic updates only where a wrong guess is harmless and reversible.
