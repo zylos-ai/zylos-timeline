@@ -7,18 +7,18 @@ tags: ["research", "ai-agents", "dashboards", "ux", "async-operations", "idempot
 
 ## Executive Summary
 
-A dashboard for an always-on agent has controls that behave unlike ordinary form fields. Switching the agent's runtime or model, or saving which models it uses by default, can take seconds or minutes, may restart a live process, and can fail, time out or succeed after the page has stopped listening. A recent fix to one such panel shows the shape of the problem. While a runtime switch was in flight the buttons stayed clickable, so a second submit was possible. A single status line at the top of the page reported results far from the control that caused them, and that line was removed. The same treatment was then applied to a default-settings card with a "set as default" switch and a "save models" button. This article asks what published guidance says about that situation and turns it into a playbook.
+A dashboard for an always-on agent has controls that behave unlike ordinary form fields. Switching the agent's runtime or model, or saving which models it uses by default, can take seconds or minutes, may restart a live process, and can fail, time out or succeed after the page has stopped listening. Consider a panel where, while a runtime switch is in flight, the buttons stay clickable, so a second submit is possible, and a single status line at the top of the page reports results far from the control that caused them. A default-settings card on the same page, with a "set as default" switch and a "save models" button, has the same exposure. This scenario is an illustration built for this article, not a report of a specific incident. The article asks what published guidance says about that situation and turns it into a playbook.
 
 Earlier articles on this site cover stale-tab writes, "saved" versus "applied", durable pending intent and phone layouts; this one is about the interval between "the user clicked" and "the system has settled".
 
 1. **Feedback has to start within about a second and say what is happening.** Nielsen Norman Group (NN/g) puts the limits at 0.1 s, 1 s and 10 s, and says that "without any visual change from the system, most users will assume the action was not registered and they will try again." That is the double-submit bug, described for users in general.
 2. **Disabling is a fair double-submit guard, but native `disabled` is blunt.** GOV.UK says to avoid disabled buttons if possible, yet ships an opt-in double-click guard. Accessibility guidance converges on keeping a busy control focusable with `aria-disabled="true"`, blocking activation in code, and announcing the state through a live region that already exists in the page.
-3. **Feedback belongs beside the control that caused it.** NN/g describes a banner far from the user's focus being missed, and users repeating the action as a result. That is what the removed top-of-page line did.
-4. **A client guard is a courtesy; the server is the guarantee.** Idempotency keys let a retry be recognized.
+3. **Feedback belongs beside the control that caused it.** NN/g describes a banner far from the user's focus being missed, and users repeating the action as a result. A single status line at the top of a long panel invites exactly that.
+4. **A client guard is a courtesy; the server is the guarantee.** Idempotency keys let a retry be recognized, and the server must check for conflicts and register the operation in one atomic step.
 5. **Lock only the controls that conflict with the running operation.** **(inference)**
 6. **For operations with real side effects, show pending, not success.** Redrawing a toggle cannot undo an agent restart.
-7. **A long operation is a resource.** AIP-151 and HTTP 202 return something the client can poll, so busy state can come from the server and survive a reload.
-8. **A timeout is not a failure.** HTTP says a client that read no response cannot know whether the request was applied. Re-read live state and say "outcome unknown, checking".
+7. **A long operation is a resource.** AIP-151 defines an operation resource the client can poll. HTTP 202 only says the request was accepted and does not guarantee anything to poll, so this article recommends pairing it with such a resource. Busy state can then come from the server and survive a reload.
+8. **A timeout is not a failure.** HTTP says a client that read no response cannot know whether the request was applied. Keep the intent's idempotency key, and the operation ID once known, and resolve the outcome from them: read the operation's record by ID, or resend with the same key. An empty list of running operations plus an unchanged runtime proves nothing. Until resolved, say "outcome unknown" and offer a way to check again.
 
 Sections 1 and 2 cover the UX evidence and the engineering, section 3 a worked example in generic terms, section 4 failure modes, section 5 a checklist. Statements of my own reasoning are labelled **(inference)**; claims I could not verify are left out and listed at the end.
 
@@ -78,9 +78,9 @@ NN/g's article on indicators and notifications says that indicators "are associa
 - In an e-commerce case, shoppers did not notice a confirmation "due to its location far away from the user's area of focus at the time", and "users who miss the message may respond by adding an item to the cart multiple times."
 - A toast "while appropriate for passive notifications, would be a bad way to implement an error message", and the article's example is a participant who missed a message at the bottom of the screen that faded in 5 seconds.
 
-The last two points match the incident. A result line at the top of a long panel is far from a button lower down, and a message that auto-hides cannot be recovered by a user who looked away. The cart example is the double-submit bug: the user missed the feedback, so they repeated the action.
+The last two points match the panel described in the summary. A result line at the top of a long panel is far from a button lower down, and a message that auto-hides cannot be recovered by a user who looked away. The cart example is the double-submit bug: the user missed the feedback, so they repeated the action.
 
-NN/g's error-message guidance says to "display the error message close to the error's source" and to "preserve the user's input" ([NN/g: Error-Message Guidelines](https://www.nngroup.com/articles/error-message-guidelines/)). GOV.UK's notification banner guidance is the counterweight. A banner is for something "not directly related to the page content", such as a service-wide issue or the outcome of an earlier action on a previous page, and "if the information relates to the current task, put the information in the main page content instead"; use banners sparingly, at most one per page ([GOV.UK Design System: Notification banner](https://design-system.service.gov.uk/components/notification-banner/)). **(inference)** Global banners fit events the user's click did not cause, such as the agent having been restarted by something else. The result of the user's own click is not that.
+NN/g's error-message guidance says to "display the error message close to the error's source" and to "preserve the user's input" ([NN/g: Error-Message Guidelines](https://www.nngroup.com/articles/error-message-guidelines/)). GOV.UK's notification banner guidance is the counterweight. A banner is for something "not directly related to the page content", such as a service-wide issue or the outcome of an earlier action on a previous page, and "if the information is directly relevant to the thing the user is doing on that page, put the information in the main page content instead"; use banners sparingly, at most one per page ([GOV.UK Design System: Notification banner](https://design-system.service.gov.uk/components/notification-banner/)). **(inference)** Global banners fit events the user's click did not cause, such as the agent having been restarted by something else. The result of the user's own click is not that.
 
 ## 2. Engineering the busy state
 
@@ -92,17 +92,17 @@ Stripe's documentation is the clearest public description of the server half ([S
 
 - Keys are compared with the original request's parameters, and a mismatch is an error.
 - Results are saved only once execution begins; a request that fails validation, or conflicts with one still executing, saves nothing and can be retried.
-- A `409` means another request with the same key is still executing; the guidance is to "wait and retry with that key and the same parameters. A new key can start a second operation."
+- The `409` guidance is conditional: "If a 409 indicates that another request with the same key is still executing, wait and retry with that key and the same parameters. A new key can start a second operation." A `409` can also mean other conflicts (Stripe's status table: "The request conflicts with another request, potentially due to using the same idempotent key"), and this article also uses `409` for a different operation holding a lock (section 2.2), so a client has to tell the two cases apart.
 - Keys can be random (UUID v4) or derived "from a user-attached object, like the ID of a shopping cart", which "provides a relatively straightforward way to protect against double submissions."
 - If a client retries across separate calls or process restarts, it should "generate and persist a key for the operation and supply it to every attempt."
 
 An IETF Internet-Draft, `draft-ietf-httpapi-idempotency-key-header` (version -09 when I read it; active, not an RFC), standardizes the header for POST and PATCH ([IETF datatracker](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/)). The key must be unique and not reused with a different payload; a missing key where one is required should get a 400, a retry while the original is processing a 409, and a reused key with a different payload a 422 (when the server fingerprints payloads). I cite it for the shape of the contract, not as a settled standard.
 
-For a settings call, mint the key when the user confirms, the persist-then-send discipline from an earlier article on durable user intent. **(inference)** When the operation is "make the system state X", the server can also dedupe without a header: compare the requested target with the current state and the in-flight operation, and answer a duplicate "switch to X" with the existing operation. RFC 9110 defines an idempotent method by its intended effect: "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request" ([RFC 9110, section 9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)). "Set default to X" fits if the handler is a set, not a toggle. "Restart" does not, unless the server defines what a second request means while the first runs.
+For a settings call, mint the key when the user confirms, the persist-then-send discipline from an earlier article on durable user intent. **(inference)** When the operation is "make the system state X", the server can also dedupe without a header: compare the requested target with the current state and the in-flight operation, and answer a duplicate "switch to X" with the existing operation. That is the server deciding, in its response to this request, which operation carries it, which is different from a client guessing from a matching runtime (section 2.5). RFC 9110 defines an idempotent method by its intended effect: "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request" ([RFC 9110, section 9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)). "Set default to X" fits if the handler is a set, not a toggle. "Restart" does not, unless the server defines what a second request means while the first runs.
 
 ### 2.2 Busy scope: per control, per group, per panel
 
-The incident behind this article is partly a scope question. Which controls should go busy when one starts an operation? Three choices exist.
+The panel in the summary raises a scope question. Which controls should go busy when one starts an operation? Three choices exist.
 
 - **Per control.** Only the button that was clicked is busy. This is the minimum, and it stops the double submit. It leaves other controls free to start conflicting operations.
 - **Per panel.** Everything in the panel is locked. It is simple and safe, but it blocks things the user can legitimately do, and it hides more of the interface from screen reader users if done with `inert` (section 1.4).
@@ -132,6 +132,8 @@ function isLocked(scope: Scope, running: Set<Scope>): boolean {
 
 The same predicate should run on the server. A request that conflicts with a running operation gets an explicit refusal (a 409 is the natural code; AIP-151 says a resource that does not allow parallel operations "must return `ABORTED`", the gRPC-style equivalent). The client-side lock then becomes an optimization that avoids sending requests that will be refused, and the server rule is what holds when two tabs race.
 
+The server's check and the registration of the new operation have to be one atomic step. **(inference)** If the handler first asks whether a conflicting operation is running and then inserts the new one, two requests that arrive together can both pass the check before either inserts, and both start. Doing both in one transaction guarded by a unique constraint (for example one lock row per conflict group, and a unique index on the idempotency key) makes the second insert fail, and that failure becomes the `409`. The same step should look up the key first, so a replay of an accepted key gets its own operation back instead of a conflict with itself, and it can record a refusal under the key, so a delayed copy of a refused request gets the same refusal instead of starting later. The `409` body should say which case applies: this key's own request still in flight, or a different operation holding the lock, named in the body.
+
 A related rule from the earlier article on durable user intent applies here as well: **busy must never remove the way out.** If "cancel" or "end" is disabled by the same flag as "start", a stuck operation welds the whole panel shut. The conflict table should be written with escape hatches in mind, and every busy state needs a timeout path (section 2.5).
 
 ### 2.3 Pessimistic for side effects, optimistic only when it can be undone
@@ -144,13 +146,13 @@ A middle path from the same page: show the pending value from the mutation's var
 
 ### 2.4 Long-running operations are resources
 
-When an operation takes seconds to minutes, holding one HTTP request open and calling that "busy" ties the truth about the operation to one connection. Two widely documented patterns break that tie.
+When an operation takes seconds to minutes, holding one HTTP request open and calling that "busy" ties the truth about the operation to one connection. AIP-151 defines a resource that breaks that tie; HTTP 202 only points toward one.
 
 **AIP-151.** Google's API Improvement Proposal on long-running operations says slow methods should return an `Operation` object instead of the final response, and adds that "a good rule of thumb is 10 seconds" for what counts as slow ([AIP-151](https://google.aip.dev/151)). The `Operation` resource has a name that the client can poll, a `done` flag, a metadata type used "to provide information such as progress, partial failures, and similar information", and, on failure, an error in `Operation.error`. Errors that prevent the operation from starting are returned directly; failures during execution go in the operation. The page gives a 30-day rule of thumb for operation expiry, so a finished operation stays readable for a while. **(inference)** On a dashboard the name is what the UI holds, `done` decides whether the control is busy, metadata supplies the step label and `error` the message beside the control.
 
-**HTTP 202.** The status means the request "has been accepted for processing, but processing has not been completed or may not have started", and MDN adds that "the actual processing of the request is not guaranteed; a task or action may fail or be disallowed when a server tries to process it." It is also "non-committal": the HTTP response cannot be followed by a later asynchronous response with the outcome. The page's example response includes a `monitorUrl` the client can use to follow the task ([MDN: 202 Accepted](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/202)). The consequence is that a 202 is only useful together with a status resource.
+**HTTP 202.** The status means the request "has been accepted for processing, but processing has not been completed or may not have started", and MDN adds that "the actual processing of the request is not guaranteed; a task or action may fail or be disallowed when a server tries to process it." It is also "non-committal": the HTTP response cannot be followed by a later asynchronous response with the outcome. The page's example response includes a `monitorUrl` the client can use to follow the task ([MDN: 202 Accepted](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/202)). RFC 9110 says the 202 response "is intentionally noncommittal" and that its representation "ought to describe the request's current status and point to (or embed) a status monitor" ([RFC 9110, section 15.3.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.3)). "Ought to" is not a guarantee: a 202 by itself promises nothing the client can poll. **(inference)** The pattern this article recommends for a dashboard is a 202 that carries an operation resource in the AIP-151 style, as below.
 
-A minimal shape for an agent runtime's settings API, adapted from those two sources **(inference)**:
+A minimal shape for an agent runtime's settings API, adapted from those sources and from the idempotency contract in section 2.1 **(inference)**:
 
 ```ts
 type OperationState = "pending" | "running" | "succeeded" | "failed";
@@ -166,8 +168,11 @@ interface Operation {
   finishedAt?: string;
 }
 
-// POST /settings/runtime  -> 202 { id, ...Operation }
-// GET  /operations/:id    -> Operation
+// POST /settings/runtime, Idempotency-Key: K -> 202 Operation
+//   same K again  -> the same Operation, never a second one
+//   409 { code: "same-key-in-flight", operation? }
+//   409 { code: "operation-conflict", operation }  // lock holder
+// GET  /operations/:id  -> Operation, retained after it ends
 // GET  /operations?state=pending,running  -> Operation[]
 ```
 
@@ -175,46 +180,109 @@ The third route is the one most often forgotten. It is what lets a freshly loade
 
 ### 2.5 Timeouts and the unknown outcome
 
-A client-side timeout means the client stopped waiting, not that the server stopped working. RFC 9110 says idempotent methods are distinguished because a request "can be repeated automatically if a communication failure occurs before the client is able to read the server's response", and warns in the other direction: "a client SHOULD NOT automatically retry a request with a non-idempotent method unless it has some means to know that the request semantics are actually idempotent, regardless of the method, or some means to detect that the original request was never applied." ([RFC 9110, section 9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)). The same section describes recovering from partial failure by checking the target resource after a failed connection.
+A client-side timeout means the client stopped waiting, not that the server stopped working. RFC 9110 says idempotent methods are distinguished because a request "can be repeated automatically if a communication failure occurs before the client is able to read the server's response", and warns in the other direction: "a client SHOULD NOT automatically retry a request with a non-idempotent method unless it has some means to know that the request semantics are actually idempotent, regardless of the method, or some means to detect that the original request was never applied." ([RFC 9110, section 9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)). The same section describes a client recovering from partial failure "by checking the target resource revision(s) after a failed connection". **(inference)** That works for a version-control client because a revision identifies whose write it was. A snapshot of which runtime is active does not.
 
-Stripe gives the operational version. Network errors, it says, leave the client unable to know "whether Stripe received or executed the request", and "restoring connectivity doesn't tell you whether the original request succeeded." The outcome of a `500` is "indeterminate: the operation might have produced side effects even though you received an error"; the instruction is not to start a new operation with a new key until the original outcome is resolved, by retrieving the object and reconciling ([Stripe: Advanced error handling](https://docs.stripe.com/error-low-level)). A `504` means a gateway did not receive a timely upstream response ([RFC 9110, section 15.6.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.6.5)); **(inference)** that says nothing about whether upstream later acted.
+Stripe gives the operational version. Network errors, it says, leave the client unable to know "whether Stripe received or executed the request", and "restoring connectivity doesn't tell you whether the original request succeeded." Its instruction is to "retry with the same idempotency key and parameters within the first 24 hours after the original request." The outcome of a `500` is "indeterminate: the operation might have produced side effects even though you received an error"; the instruction is not to start a new operation with a new key until the original outcome is resolved, by retrieving the object and reconciling. Keys expire: Stripe retains them "for at least 24 hours", and "reusing a key after it's removed can execute a new request", so "if the outcome is still unknown after that window, don't retry with either the old key or a new one" ([Stripe: Advanced error handling](https://docs.stripe.com/error-low-level)). A `504` means a gateway did not receive a timely upstream response ([RFC 9110, section 15.6.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.6.5)); **(inference)** that says nothing about whether upstream later acted.
 
-**(inference)** For a dashboard this yields a fourth operation outcome beyond succeeded, failed and running: **unknown**. The UI should enter it on any of: the request timed out; the connection dropped before a response; the server answered 5xx without a structured operation error; the operation resource itself became unreachable. In the unknown state:
+**(inference)** For a dashboard this yields a fourth operation outcome beyond succeeded, failed and running: **unknown**. The UI should enter it on any of: the request timed out; the connection dropped before a response; the server answered 5xx without a structured operation error; the operation's status could not be read. The operation resolves it, not a guess from the surrounding state:
 
-- keep the control locked, or at least refuse a second identical request without checking;
-- show "outcome unknown, checking" beside the control, not a failure message;
-- re-read the live state: the operation by its id if the client has it, the operation list if not, and the actual runtime state in either case;
-- decide the next display from the re-read, and say which source it came from;
-- give the user an explicit retry only after the re-read shows nothing running and the target not yet reached, reusing the same idempotency key if the server still holds it.
+- The client creates the intent and its key before the first send and saves them where a reload can find them. Once the server names the operation, it saves the operation ID too.
+- With an operation ID, the client reads that operation's retained record and acts on its terminal state.
+- If the submit's response was lost, so there is no ID, the client sends the same request again with the same key. Under the idempotency contract the server answers with the operation that key already started, or starts it once if the first request never arrived. A delayed copy of the first request then finds the key taken and starts nothing, provided the server checks the key atomically (section 2.2).
+- An empty list of running operations plus a runtime still on the old value proves nothing. The first request may not be registered yet and can still apply; an operation can finish between the two reads; a runtime that matches the target may have been switched by another client. The live runtime read is for showing what is active now, not for deciding this intent's outcome.
+- If the status cannot be read (a `404` for the ID, a network error, a 5xx), the outcome stays unknown. Stop the spinner, say so beside the control, and offer "Check again". Do not show a failure.
+- A terminal error in the operation record is shown beside the control, and the busy state is cleared.
+
+When is it safe to send the same key again, and when is a new attempt warranted? **(inference)**
+
+- **Same key:** whenever the outcome is unknown and the key is within the server's retention window, with identical parameters. That is what the key is for. The dashboard can use a shorter replay window than the server's retention, because a switch requested hours ago may no longer be wanted.
+- **New key:** only after a confirmed terminal outcome for the old one: a `4xx` that refused the request before it started, a conflict refusal, or an operation record in state `failed`. A new key means a new operation, so it follows a fresh user action, not an automatic retry.
+- **Key expired, outcome still unknown:** never replay it, since the server may run it as a new request. If the operation ID is known, its record may still be readable, because operations can outlive keys (AIP-151's rule of thumb for operation expiry is 30 days). If not, the outcome stays unknown: tell the user, re-read and show the live runtime, and offer a fresh attempt only as an explicit choice made after seeing it.
+
+The flow below applies these rules. The helpers it calls (intent storage, `post`, `get`, `sleep`, `setBusy`, `showOutcome`, `showActive`, `watchOperation`) are left abstract. `post` sends the key in an `Idempotency-Key` header and throws an error with `status` and `body` on an HTTP error, or without `status` on a timeout or network failure. `showOutcome` replaces the busy label with the outcome beside the control; `showActive` reads and displays the live runtime.
 
 ```ts
-async function submitSwitch(target: string) {
-  const intent = loadOrCreateIntent("runtime-switch", target); // persists key
-  setBusy("runtime-switch", "Starting switch…");
+// Intent, saved so a reload can resume it:
+// { kind, target, key, createdAt, opId? }
+async function submitSwitch(target) {
+  const intent = loadOrCreateIntent("runtime-switch", target);
+  setBusy(intent.kind, "Starting switch…");
+  return submit(intent, false);
+}
+
+async function submit(intent, isReplay) {
+  let op;
   try {
-    const op = await post("/settings/runtime", { target }, intent.key);
-    return await follow(op.id);                // poll until done
+    op = await post("/settings/runtime",
+      { target: intent.target }, intent.key);  // same key every time
   } catch (e) {
-    if (isTimeoutOrNetwork(e) || isServerError(e)) {
-      setBusy("runtime-switch", "Outcome unknown, checking…");
-      return await reconcile(intent);          // re-read, never assume
+    if (e.status === 409) return onConflict(intent, e.body);
+    if (e.status >= 400 && e.status < 500)     // refused, never started
+      return finish(intent, "rejected", e.body);
+    // Timeout, dropped connection or 5xx: outcome unknown.
+    return isReplay ? unresolved(intent) : reconcile(intent);
+  }
+  intent.opId = op.id;
+  saveIntent(intent);
+  return follow(intent);
+}
+
+async function onConflict(intent, body) {
+  if (body.code === "same-key-in-flight") {    // our own request
+    if (body.operation) {
+      intent.opId = body.operation.id;
+      saveIntent(intent);
+      return follow(intent);
     }
-    throw e;                                   // 4xx: a real, final failure
+    await sleep(RETRY_MS);
+    return submit(intent, true);               // same key and parameters
+  }
+  // "operation-conflict": another operation holds the lock;
+  // ours never started.
+  finish(intent, "refused", body.operation);
+  return watchOperation(body.operation);       // lock until it ends
+}
+
+async function follow(intent) {
+  for (;;) {
+    let op;
+    try {
+      op = await get(`/operations/${intent.opId}`); // retained record
+    } catch (e) {
+      return unresolved(intent);               // 404, network or 5xx
+    }
+    if (op.state === "succeeded") return finish(intent, "succeeded");
+    if (op.state === "failed") return finish(intent, "failed", op.error);
+    setBusy(intent.kind, op.step || "Switching…");
+    await sleep(POLL_MS);
   }
 }
 
-async function reconcile(intent: Intent) {
-  const running = await get("/operations?state=pending,running");
-  const mine = running.find(o => o.kind === intent.kind && sameTarget(o, intent));
-  if (mine) return follow(mine.id);            // still going: resume the busy state
-  const live = await get("/runtime");          // what is actually running now?
-  return live.current === intent.target
-    ? showSucceeded(intent)                    // applied, response was lost
-    : showFailedOrNotApplied(intent);          // safe to offer retry
+async function reconcile(intent) {
+  setBusy(intent.kind, "Outcome unknown, checking…");
+  if (intent.opId) return follow(intent);
+  if (Date.now() - intent.createdAt < REPLAY_WINDOW_MS)
+    return submit(intent, true);  // existing operation, or starts once
+  return unresolved(intent, "key-expired");
+}
+
+function finish(intent, outcome, detail) {
+  clearIntent(intent);          // key retired; a new attempt needs a new key
+  showOutcome(intent.kind, outcome, detail);
+  return showActive();          // live runtime, display only
+}
+
+function unresolved(intent, reason) {
+  // Key and opId stay saved; no failure is claimed.
+  showOutcome(intent.kind, "unknown", reason,
+    () => reconcile(intent));   // the "Check again" action
+  return showActive();
 }
 ```
 
-The reconcile step must read the applied state, not the stored setting; an earlier article on this site covers why "saved" and "applied" differ in a long-running runtime.
+Every branch ends with the busy label replaced: by a result, by a stated refusal while the other operation is followed, or by "outcome unknown" with "Check again". A `4xx` other than `409` is treated as final only because, as AIP-151 puts it, "errors that prevent a long-running operation from starting must return an error response", while failures during execution go in the operation record. While an intent is unresolved, the control offers "Check again" rather than a fresh start; a different target or a new attempt waits until the intent resolves or the user, having seen the live runtime, chooses to start over.
+
+The live read must report the applied state, not the stored setting; an earlier article on this site covers why "saved" and "applied" differ in a long-running runtime.
 
 ### 2.6 Busy state belongs to the server, not to one tab's memory
 
@@ -225,6 +293,7 @@ The fix is cheap if the API from section 2.4 exists: derive busy from the server
 - On load and on every reconnect of the realtime channel, fetch the non-terminal operations and render busy from them.
 - Keep following each by polling or events; treat events as hints to re-fetch, since a missed event leaves the UI stuck.
 - Treat the local flag as a cache of the server's answer. It may cover the short gap before the operation exists; the server's operation then replaces it.
+- On load, pick up any saved intent that has not resolved and resolve it as in section 2.5, by its operation ID or by its key.
 
 The Page Visibility API gives a natural trigger. The `visibilitychange` event fires when the user switches tabs, minimizes the browser or, on mobile, switches apps ([MDN: visibilitychange](https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event)). **(inference)** Re-reading the operation list when the document becomes visible again closes most of the gap that a sleeping tab leaves. MDN says the `hidden` transition is also a good point to stop making UI updates, which supports pausing polling while hidden and resuming with a re-read.
 
@@ -240,7 +309,7 @@ What the second tab should show is the same as the first: the step label beside 
 
 ## 3. Worked example: a runtime switch and a defaults card
 
-**Runtime switch.** Within 100 ms of activation the control shows "Switching to the new runtime...", is `aria-disabled`, keeps focus, and the same text goes into a polite live region from the initial markup. The client persists an intent with a key and posts; the server returns 202 with an operation id (or the running operation for the same target). The label follows the operation's step beside the control, with no global line. A second target for the same switch is locked with a short reason; unrelated controls stay usable. On a timeout the control shows "outcome unknown, checking" and reconciles. A reload mid-switch restores the busy state from the server's list of non-terminal operations.
+**Runtime switch.** Within 100 ms of activation the control shows "Switching to the new runtime...", is `aria-disabled`, keeps focus, and the same text goes into a polite live region from the initial markup. The client persists an intent with a key and posts; the server returns 202 with an operation id, which the client saves (a replay of the same key gets the same operation back). The label follows the operation's step beside the control, with no global line. A second target for the same switch is locked with a short reason; unrelated controls stay usable. On a timeout the control shows "outcome unknown, checking" and resends with the same key, or reads the operation by its id if it has one; if neither answers, it says the outcome is unknown and offers "Check again", with the live runtime shown beside it. A `409` naming another operation shows that operation's step and keeps the control locked until it ends. A failed operation shows its error beside the control. A reload mid-switch restores the busy state from the server's list of non-terminal operations.
 
 **Defaults card.** The "set as default" switch and the "save models" button share a conflict group, because the switch's meaning depends on the saved model list. **(inference)** Both are usually quick, so the treatment stays light: a spinner and `aria-disabled` for the request, a "Saved" result beside the button, no toast. After an unknown outcome the card shows what is stored and keeps the typed values for a retry. If the switch moves optimistically and the write fails, it must move back with a reason beside it. **(inference)**
 
@@ -256,13 +325,15 @@ Each is named in a source above or follows from combining them.
 6. **`aria-disabled` without a guard.** The click still fires. Answer: block mouse and keyboard activation in code and test with the keyboard.
 7. **Live region created at the moment of the message, or busy text that just disappears.** The announcement may be dropped, and screen reader users get no "available" signal. Answer: region in the initial markup; replace busy text with an outcome message.
 8. **Timeout shown as failure.** The change may have been applied; the user retries and double applies. Answer: the unknown state and a reconcile step.
-9. **Optimistic display of a side-effecting operation.** The UI claims the new runtime is active; rolling back a label does not roll back the effect. Answer: show confirmed state, pending target and outcome separately.
-10. **Busy state in local memory only.** A reload or second tab shows an enabled control mid-operation. Answer: derive busy from server operations on load, reconnect and visibility change.
-11. **A busy flag that never clears.** The panel, and anything else gated by that flag, stays stuck. Answer: a server-side terminal state for every operation, a "taking longer than expected" state with a re-read, and an escape route the flag never locks.
-12. **Panel-wide locks, especially with `inert`.** Controls the user needs are blocked and the panel leaves the accessibility tree. Answer: conflict groups.
-13. **Wrong key discipline.** Reusing a key for a different request is refused by a payload-comparing server; a fresh key per retry defeats the mechanism. Answer: one persisted key per user intent.
-14. **Conflicting writes from two tabs.** Both pass their client guards. Answer: server-side conflict refusal and a re-read on refusal.
-15. **Success claimed from the stored setting.** The save worked but the running process has not picked it up. Answer: report the applied state from the live source.
+9. **Failure inferred from surrounding state.** An empty running list and an unchanged runtime are read as "not applied", yet the original request can still register and apply; an operation can finish between the two reads, and a matching runtime may come from another client. Answer: resolve by operation ID or by resending the same key; use the live runtime only to show what is active.
+10. **Error branches that escape the UI.** A shared catch treats every `4xx` as final or rethrows, or a failed status read is not handled, and "Starting switch…" stays on screen. Answer: handle each `409` case, show terminal operation errors beside the control, turn unreadable status into "unknown" with "Check again", and replace the busy label in every branch.
+11. **Optimistic display of a side-effecting operation.** The UI claims the new runtime is active; rolling back a label does not roll back the effect. Answer: show confirmed state, pending target and outcome separately.
+12. **Busy state in local memory only.** A reload or second tab shows an enabled control mid-operation. Answer: derive busy from server operations on load, reconnect and visibility change.
+13. **A busy flag that never clears.** The panel, and anything else gated by that flag, stays stuck. Answer: a server-side terminal state for every operation, a "taking longer than expected" state with a re-read, and an escape route the flag never locks.
+14. **Panel-wide locks, especially with `inert`.** Controls the user needs are blocked and the panel leaves the accessibility tree. Answer: conflict groups.
+15. **Wrong key discipline.** Reusing a key for a different request is refused by a payload-comparing server; a fresh key per retry defeats the mechanism; replaying a key the server has already dropped can start a new operation. Answer: one persisted key per user intent, a new key only after a confirmed terminal outcome, and no replay past the retention window.
+16. **Conflicting writes from two tabs.** Both pass their client guards, and a server that checks for conflicts before registering the operation in a separate step lets both through. Answer: conflict check and registration in one atomic step, and a re-read on refusal.
+17. **Success claimed from the stored setting.** The save worked but the running process has not picked it up. Answer: report the applied state from the live source.
 
 ## 5. A playbook for agent dashboards
 
@@ -272,15 +343,17 @@ Each is named in a source above or follows from combining them.
 - [ ] Long-running actions return 202 (or equivalent) with an operation resource: id, state, step, structured error, retained for a defined period.
 - [ ] A list endpoint returns non-terminal operations, so a page can learn what is running without knowing an id.
 - [ ] Every operation reaches a terminal state on the server, including after a worker crash or timeout.
-- [ ] The server refuses a conflicting start explicitly (409 or equivalent) and names the running operation.
-- [ ] Mutating endpoints accept an idempotency key or deduplicate by target; a retry returns the existing operation.
+- [ ] The server refuses a conflicting start explicitly (409 or equivalent), names the running operation, and says whether it is this key's own request still in flight or a different operation.
+- [ ] Mutating endpoints accept an idempotency key; a replay of the same key returns the operation it started, never a second one.
+- [ ] Key lookup, conflict check and registration happen in one atomic step (one transaction with a unique constraint), so two concurrent requests cannot both pass the check.
 
 **Client state**
 
 - [ ] Busy is derived from server operations on load, reconnect and when the page becomes visible; local flags only cover the gap before the operation exists.
 - [ ] A conflict table decides which controls lock; the server enforces the same table.
-- [ ] One idempotency key per user intent, persisted before the first send and reused on retries.
-- [ ] Timeouts, dropped connections and unstructured 5xx mean outcome unknown; reconcile before showing anything final.
+- [ ] One idempotency key per user intent, persisted before the first send and reused on retries; the operation ID is persisted as soon as it is known. A new key only after a confirmed terminal outcome; a key past the server's retention window is never replayed.
+- [ ] Timeouts, dropped connections and unstructured 5xx mean outcome unknown. Resolve by reading the operation by ID or resending the same key, never from an empty running list plus the live runtime. Status that cannot be read stays "unknown" with a "Check again" action.
+- [ ] Every branch, including `409`, `404` and failed status reads, replaces the busy label with a stated outcome; terminal operation errors appear beside the control.
 - [ ] Optimistic updates only where a wrong guess is harmless and reversible.
 
 **Presentation and accessibility**
@@ -294,10 +367,11 @@ Each is named in a source above or follows from combining them.
 
 **Checks worth automating**
 
-- [ ] Double click and double Enter create exactly one operation; a reload mid-operation returns the control to busy; a response lost after the server applied the change ends in "succeeded"; two clients starting conflicting operations get one refusal and the same busy display.
+- [ ] Double click and double Enter create exactly one operation; a reload mid-operation returns the control to busy; a response lost after the server applied the change ends in "succeeded"; a submit that times out before the server registers it ends in one operation, not a "failed" message; a `409` and a status `404` each leave the control in a stated state; two clients starting conflicting operations get one refusal and the same busy display.
 
 ## Limits of this analysis
 
+- **The opening scenario is illustrative.** The panel in the summary is a composite used to frame the question, not a documented incident.
 - **No measurements of my own.** I did not time a real runtime switch or measure double-click rates. Thresholds come from NN/g; the application to agent runtimes is my reasoning, labelled where it appears.
 - **The sources are general-purpose.** GOV.UK, Stripe, Google and NN/g write about public services, payments, cloud APIs and general interfaces, so the mapping to a runtime switch is an analogy.
 - **Assistive-technology behavior varies.** MDN says live-region behavior differs across browser and assistive technology combinations. Any implementation needs testing with real screen readers; none of the sources here replace that.
