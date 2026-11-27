@@ -216,7 +216,7 @@ async function submit(intent, isReplay) {
     op = await post("/settings/runtime",
       { target: intent.target }, intent.key);  // same key every time
   } catch (e) {
-    if (e.status === 409) return onConflict(intent, e.body);
+    if (e.status === 409) return onConflict(intent, e.body, isReplay);
     if (e.status >= 400 && e.status < 500)     // refused, never started
       return finish(intent, "rejected", e.body);
     // Timeout, dropped connection or 5xx: outcome unknown.
@@ -227,13 +227,14 @@ async function submit(intent, isReplay) {
   return follow(intent);
 }
 
-async function onConflict(intent, body) {
+async function onConflict(intent, body, isReplay) {
   if (body.code === "same-key-in-flight") {    // our own request
     if (body.operation) {
       intent.opId = body.operation.id;
       saveIntent(intent);
       return follow(intent);
     }
+    if (isReplay) return unresolved(intent);   // one automatic retry only
     await sleep(RETRY_MS);
     return submit(intent, true);               // same key and parameters
   }
